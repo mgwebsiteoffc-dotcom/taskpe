@@ -40,7 +40,9 @@ app instead: search, or paste the article URL.)
 Every extension folder holds exactly four things: `shopify.extension.toml`,
 `package.json`, `tsconfig.json` (JSX runtime = preact; **required**, see the table
 under Notes) and `src/<Entry>.jsx`, which is a two-line wrapper around the shared
-implementation. `locales/en.default.json` supplies the merchant-visible name.
+implementation. All JSX lives in `shared/`, and those three files open with
+`/* @jsxRuntime classic */` + `/** @jsx h */` so the factory is pinned per file —
+a bundler that skipped our tsconfig would otherwise emit `React.createElement`. `locales/en.default.json` supplies the merchant-visible name.
 
 ```
 extensions/shared/api.js                 APP_URL + session token + api() + GID→type
@@ -127,8 +129,10 @@ extension trusts it:
    itself has no build step, the extensions do):
    ```bash
    shopify app build        # or `shopify app dev` to click through on a dev store
-   npm run test:extensions  # repo root: static build-config sanity, no network needed
-   ```
+   npm run test:extensions  # static build-config sanity (no network, no Partner auth)
+   npm run test:bundle      # the real bundler: esbuild builds all six and checks the
+   ```                      # 64 KiB limit, one hoisted preact, and that JSX became
+                            # preact's h — each is ≈25 KiB today, so there is headroom
 
 7. **Set `include_config_on_deploy = true`** under `[build]` in `shopify.app.toml`
    if you want Dashboard config managed from the file.
@@ -159,7 +163,9 @@ extensions into your dev store's admin, including the block.
   | `shopify app build` says | fix |
   | --- | --- |
   | `Could not resolve "preact"` / `"preact/hooks"` from `extensions/shared/…` | no root `npm install` (step 5), or a stale per-folder `node_modules` shadowing it |
-  | `Could not resolve "react/jsx-runtime"` | the extension's `tsconfig.json` is missing or lost `jsxImportSource: "preact"` — that file is what tells esbuild the automatic JSX runtime is preact's. The entry also needs `import "@shopify/ui-extensions/preact"` as its first line |
+  | `Could not resolve "react/jsx-runtime"` | the extension's `tsconfig.json` is missing or lost `jsxImportSource: "preact"`, and/or the entry lost its first line `import "@shopify/ui-extensions/preact"` |
+| `Could not resolve "@preact/signals"` | `@shopify/ui-extensions/preact` imports it, npm marks that peer **optional** (so it is not installed for you), and every `extensions/*/package.json` must therefore declare it — at the same range as the root, or two copies land in one bundle |
+| builds clean, then **`React is not defined`** in the admin | a `.jsx` file without the `@jsx` pragmas. esbuild consults a tsconfig for `.ts`/`.tsx` inputs **only**, so `jsxImportSource` never reaches a `.jsx` — least of all one outside the extension folder. Each shared file pins `/* @jsxRuntime classic */` + `/** @jsx h */`; `npm run test:bundle` fails if the output ever mentions `React.createElement` |
   | `Network access is not enabled` / fetch refused at runtime | `[extensions.capabilities] network_access = true` in that TOML, and `APP_URL` in `shared/api.js` must be the https domain from `.env` |
   Last resort if a CLI version refuses files outside the extension folder: copy
   `shared/CreateTaskAction.jsx` + `shared/api.js` next to that extension's

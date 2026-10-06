@@ -48,6 +48,9 @@
         "test:extensions": [
             "node tests/js/extensions.static.mjs"
         ],
+        "test:bundle": [
+            "node tests/js/extensions.bundle.mjs"
+        ],
         "test": [
             "@php artisan config:clear --ansi",
             "@php artisan test"

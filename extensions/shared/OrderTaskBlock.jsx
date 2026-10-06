@@ -1,4 +1,7 @@
-import { render } from "preact";
+/* @jsxRuntime classic */
+/** @jsx h */
+/** @jsxFrag Fragment */
+import { render, h, Fragment } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import {
   api,

@@ -50,6 +50,7 @@ php artisan serve                  # or: composer dev
 node tests/js/boot.smoke.mjs       # SPA boot screens — no framework, plain node
                                    # or: composer test:js   /   npm run test:js
 node tests/js/extensions.static.mjs # Admin extensions: build-config sanity (npm run test:extensions)
+node tests/js/extensions.bundle.mjs # …and the real esbuild bundle of all six (npm run test:bundle)
 ```
 
 **No `npm install`, no `npm run dev`, no `npm run build` — this app has no bundler.**

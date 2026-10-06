@@ -200,6 +200,43 @@ check('preact is declared once, at one range (two copies = broken hooks)', () =>
   assert.match(String([...ranges.keys()][0]).replace(/[^\d.]/g, ''), /^10/, 'preact must be v10 (v11 changed the JSX runtime exports)');
 });
 
+// `@shopify/ui-extensions/preact` imports `@preact/signals`, and that peer is flagged
+// optional in the package's own metadata — so npm will not fetch it for you. Omit it
+// and the build fails inside node_modules with "Could not resolve \"@preact/signals\"".
+check('every extension declares the runtime trio, at the root\u2019s ranges', () => {
+  const trio = ['preact', '@preact/signals', '@shopify/ui-extensions'];
+  for (const e of exts) {
+    for (const name of trio) {
+      assert.ok(e.deps[name],
+        `${e.name}: package.json is missing "${name}" — the preact runtime needs all three`);
+      const mine = String(e.deps[name]).replace(/\.x$/, '');
+      const root = String(rootDeps[name]).replace(/\.x$/, '');
+      assert.equal(mine, root,
+        `${e.name}: ${name}@${e.deps[name]} differs from the root ${rootDeps[name]} — `
+        + 'two ranges can install two copies, and two copies of preact means dead hooks');
+    }
+  }
+  assert.ok(exists(path.join(ROOT, 'package-lock.json')),
+    'commit package-lock.json: extension bundles are built on a laptop, and a lockfile is the '
+    + 'only thing that makes "shopify app build" reproduce between two machines');
+});
+
+check('every file with JSX pins the factory to preact', () => {
+  // esbuild reads a tsconfig for .ts/.tsx inputs only — so `jsxImportSource` never
+  // reaches a .jsx file, and the fallback is React.createElement: a bundle that
+  // compiles, deploys, then throws "React is not defined" in front of the merchant.
+  // The per-file pragma is the one thing the bundler cannot miss.
+  const jsxFiles = allSources.filter(f => /<\/(s-[a-z-]+|div|span|button|p|label)>/.test(read(f)));
+  assert.ok(jsxFiles.length >= 3, `expected the shared components to be found, saw ${jsxFiles.length}`);
+  for (const f of jsxFiles) {
+    const src = read(f);
+    assert.ok(/@jsxRuntime\s+classic/.test(src) && /@jsx\s+h\b/.test(src),
+      `${rel(f)}: needs /* @jsxRuntime classic */ + /** @jsx h */ above the preact import`);
+    assert.match(src, /import\s*\{[^}]*\bh\b[^}]*\}\s*from\s*["']preact["']/,
+      `${rel(f)}: @jsx h points at an "h" that is not imported from preact`);
+  }
+});
+
 check('the extensions are npm workspaces of the repo root (shared/ needs it)', () => {
   assert.ok(Array.isArray(rootPkg.workspaces),
     'root package.json needs "workspaces": ["extensions/taskpe-*"] so ONE hoisted node_modules '

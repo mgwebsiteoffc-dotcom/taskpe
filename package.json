@@ -8,13 +8,16 @@
     ],
     "devDependencies": {
         "preact": "^10.10.x",
-        "@shopify/ui-extensions": "2026.7.x"
+        "@preact/signals": "^2.3.x",
+        "@shopify/ui-extensions": "2026.7.x",
+        "esbuild": "^0.25.0"
     },
     "scripts": {
         "test:js": "node tests/js/boot.smoke.mjs",
         "test:extensions": "node tests/js/extensions.static.mjs",
         "test:all": "node tests/js/boot.smoke.mjs && node tests/js/extensions.static.mjs",
         "dev": "node -e \"console.error('No bundler for the app. It is php artisan serve. The Admin extensions are bundled by Shopify CLI: shopify app build (after running npm install here once, so extensions/shared can resolve preact).')\" && exit 1",
-        "build": "node -e \"console.error('Nothing to build. public/js/app.js + public/css/app.css are committed as-is. Extensions are bundled by Shopify CLI (shopify app build), not by vite.')\" && exit 1"
+        "build": "node -e \"console.error('Nothing to build. public/js/app.js + public/css/app.css are committed as-is. Extensions are bundled by Shopify CLI (shopify app build), not by vite.')\" && exit 1",
+        "test:bundle": "node tests/js/extensions.bundle.mjs"
     }
 }
