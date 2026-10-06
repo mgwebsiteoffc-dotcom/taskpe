@@ -46,9 +46,19 @@ cp .env.example .env
 php artisan key:generate
 php artisan migrate
 php artisan test        # PHP suite: session-token boundary, tenant isolation, plan gates, OTP, billing, webhooks
-php artisan serve
-node tests/js/boot.smoke.mjs   # SPA boot screens — no framework, plain node
+php artisan serve                  # or: composer dev
+node tests/js/boot.smoke.mjs       # SPA boot screens — no framework, plain node
+                                   # or: composer test:js   /   npm run test:js
 ```
+
+**No `npm install`, no `npm run dev`, no `npm run build` — this app has no bundler.**
+`public/js/app.js` and `public/css/app.css` *are* the sources and are served as written,
+which is what makes "upload the files" a complete deploy. `npm run build` prints that
+sentence and exits non-zero on purpose, so the wrong command can't fail as a cryptic
+Rollup/Vite error ("Could not resolve entry module index.html" — that was Laravel's
+default `composer dev` script still calling `npm run dev`; it is gone now). The one place
+Node is used is **building the Shopify Admin extensions**, and Shopify CLI does that from
+`extensions/*/` on your own machine — see `extensions/README.md`.
 
 To test against real Shopify, point a tunnel (cloudflared/ngrok) at the app and install it on a dev store via the Partner Dashboard.
 

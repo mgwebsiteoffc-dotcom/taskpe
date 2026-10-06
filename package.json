@@ -1,0 +1,10 @@
+{
+    "name": "taskpe",
+    "private": true,
+    "description": "TaskPe has no JavaScript build step: public/js/app.js and public/css/app.css are the sources and are served as written. This file exists so `npm run test:js` works, and so `npm run dev` / `npm run build` say that out loud instead of failing inside a bundler that was never configured. The only npm users here are the Shopify Admin extensions, and Shopify CLI builds those (shopify app build) from the extensions/ folders.",
+    "scripts": {
+        "test:js": "node tests/js/boot.smoke.mjs",
+        "dev": "node -e \"console.error('No bundler in this project. App dev: php artisan serve (or composer dev). Admin extensions: shopify app dev, which builds them itself.')\" && exit 1",
+        "build": "node -e \"console.error('Nothing to build. public/js/app.js + public/css/app.css are committed as-is; extensions are built by Shopify CLI (shopify app build).')\" && exit 1"
+    }
+}
