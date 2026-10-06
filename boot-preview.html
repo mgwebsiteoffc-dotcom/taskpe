@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<!--
+  Static preview of the four board-load states (no Shopify store, no PHP needed):
+
+      cd <repo root> && php -S localhost:8123      # or: python3 -m http.server 8123
+      open http://localhost:8123/boot-preview.html
+
+  Each frame loads the real public/js/app.js and only stubs window.shopify /
+  window.fetch, so it is the actual screen a merchant sees. Same idea as
+  tour-preview.html for the onboarding slides.
+-->
+
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TaskPe — boot states preview</title>
+<link rel="stylesheet" href="public/css/app.css">
+<style>
+  body { margin: 0; background: #f1f2f4; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .head { padding: 22px 24px 10px; }
+  .head h1 { margin: 0 0 6px; font-size: 20px; }
+  .head p { margin: 0; color: #6d7175; font-size: 13.5px; max-width: 80ch; line-height: 1.5; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); gap: 18px; padding: 16px 24px 32px; }
+  .cell { background: #fff; border: 1px solid #e1e3e5; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+  .cell > h2 { margin: 0; padding: 11px 14px; font-size: 13px; letter-spacing: .02em; text-transform: uppercase; color: #44474c; border-bottom: 1px solid #eceef0; display: flex; gap: 8px; align-items: baseline; }
+  .cell > h2 code { font-size: 11px; text-transform: none; letter-spacing: 0; background: #f1f2f4; padding: 2px 7px; border-radius: 6px; color: #6d7175; }
+  .cell iframe { width: 100%; height: 460px; border: 0; display: block; background: #fff; }
+</style>
+</head>
+<body>
+  <div class="head">
+    <h1>TaskPe — what each board-load state now says</h1>
+    <p>
+      These four frames run the real <code>public/js/app.js</code> against stubbed responses, so you can read the
+      exact copy a merchant sees. Previously all four collapsed into “Something went wrong loading the board. Reload
+      the page.” Only the last one is a genuine server failure; the first three are states to explain.
+    </p>
+  </div>
+  <div class="grid" id="grid"></div>
+
+<script>
+const BOARD = {
+  shop: { domain: 'demo.myshopify.com', name: 'Demo Store', plan: 'free',
+          plan_cfg: { member_limit: 2, task_limit: 50 }, timezone: 'Asia/Kolkata',
+          currency: 'INR', onboarded: true },
+  plans: { free: { name: 'Free', prices: {}, trial_days: 0 },
+           starter: { name: 'Starter', prices: { USD: 5.99, INR: 499 }, trial_days: 7 } },
+  task_templates: {},
+  columns: [
+    { id: 1, name: 'To Do', position: 0, is_done_stage: false, tasks: [
+      { id: 11, column_id: 1, title: 'Confirm COD order #1042 on WhatsApp', description: '- [x] Call buyer\n- [ ] Note address',
+        priority: 'high', due_at: '2026-10-07T10:00:00+05:30', overdue: false, position: 0,
+        completed_at: null, created_at: '2026-10-05T09:12:00+05:30', created_by: 'Ravi',
+        assignee: { id: 1, name: 'Ravi Kumar', initials: 'RK' },
+        resource: { type: 'order', id: 1042, gid: null, label: 'Order', title: '#1042', url: '#' } } ] },
+    { id: 2, name: 'In Progress', position: 1, is_done_stage: false, tasks: [] },
+    { id: 3, name: 'Done', position: 2, is_done_stage: true, tasks: [] },
+  ],
+  members: [{ id: 1, name: 'Ravi Kumar', initials: 'RK', phone: '919876500001', role: 'owner',
+              active: true, whatsapp_verified: true, portal_active: true }],
+  me: 1,
+  whatsapp: { plan_allowed: false, master_on: false, has_key: false, enabled: false },
+};
+
+const SCENARIOS = [
+  {
+    title: 'Loaded inside Shopify Admin',
+    tag: '/api/board → 200',
+    note: 'normal path',
+    bridge: true,
+    fetch: { status: 200, body: BOARD },
+  },
+  {
+    title: 'App URL opened as a plain link',
+    tag: 'no session token',
+    note: 'this is what a browser tab on the app URL shows',
+    bridge: false,
+    fetch: null,
+  },
+  {
+    title: 'Host strips the Authorization header',
+    tag: '401 missing_session_token',
+    note: 'CGI/FastCGI/LiteSpeed case — fixed by .htaccess + X-TaskPe-Auth',
+    bridge: true,
+    fetch: { status: 401, body: { error: 'missing_session_token',
+             message: 'No Shopify session token reached the server.' } },
+  },
+  {
+    title: 'Board query fails on the server',
+    tag: '500 SQLSTATE',
+    note: 'real incident — the API message is now printed verbatim',
+    bridge: true,
+    fetch: { status: 500, body: { message: "SQLSTATE[42S02]: Base table or view not found: 1146 Table 'taskpe.shops' doesn't exist" } },
+  },
+];
+
+function frameSrc(scenario) {
+  const fetchShim = scenario.fetch
+    ? `window.fetch = async (url) => {
+         const r = ${JSON.stringify(scenario.fetch)};
+         return { status: r.status, ok: r.status >= 200 && r.status < 300, json: async () => r.body };
+       };`
+    : 'window.fetch = async () => { throw new Error("preview: no network"); };';
+
+  const shim = `
+    window.__TASKPE__ = { appUrl: location.origin === 'null' ? '' : location.origin,
+                          shop: 'demo.myshopify.com', embedded: ${scenario.bridge},
+                          billingFlag: null, openTask: null };
+    ${scenario.bridge ? "window.shopify = { idToken: async () => 'a.b.c' };" : ''}
+    ${fetchShim}
+  `;
+  // The shell markup mirrors resources/views/app.blade.php (minus PHP).
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+    <link rel="stylesheet" href="public/css/app.css"></head>
+    <body><main id="root"><div class="boot"><div class="boot-text">Loading your board…</div></div></main>
+    <script>${shim}<\/script>
+    <script src="public/js/app.js"><\/script></body></html>`;
+}
+
+const grid = document.getElementById('grid');
+for (const s of SCENARIOS) {
+  const cell = document.createElement('div');
+  cell.className = 'cell';
+  cell.innerHTML = `<h2>${s.title}<code>${s.tag}</code></h2>`;
+  const f = document.createElement('iframe');
+  f.srcdoc = frameSrc(s);
+  cell.append(f);
+  grid.append(cell);
+}
+</script>
+</body>
+</html>

@@ -356,3 +356,22 @@ input, select, textarea { font: inherit; }
 .fab-toast { position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 16px); background: #1a1a1a; color: #fff; font-size: 13.5px; padding: 10px 16px; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.25); opacity: 0; transition: opacity .2s, transform .2s; z-index: 5000; max-width: 88vw; text-align: center; }
 .fab-toast.err { background: var(--critical,#d72c0d); }
 .fab-toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ------------------------------------------------- connect gate / boot error
+   Shown instead of the old one-line "Something went wrong loading the board"
+   when there is no Shopify session (app opened outside the admin) or when
+   /api/board actually answers with an error. Readable > alarming. */
+.gate { min-height: 100dvh; display: flex; align-items: center; justify-content: center; padding: 24px 16px; background: var(--bg,#f6f6f7); }
+.gate-card { width: min(520px, 100%); }
+.gate-card .p-head h2 { font-size: 16px; }
+.gate-card p { line-height: 1.5; }
+.gate-steps { margin: 12px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; line-height: 1.5; }
+.gate-steps li::marker { color: var(--primary,#008060); font-weight: 700; }
+.gate .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.gate .row a.btn { text-decoration: none; display: inline-flex; align-items: center; }
+.gate-rows { display: flex; flex-direction: column; gap: 6px; }
+.gate-row { display: flex; gap: 10px; font-size: 13px; align-items: baseline; }
+.gate-row .k { flex: 0 0 108px; color: var(--text-subdued,#6d7175); font-weight: 600; }
+.gate-row .v { word-break: break-word; }
+.login-err { color: var(--critical,#d72c0d); font-size: 13px; min-height: 18px; margin: 4px 0 10px; }
+.gate code, .banner code { background: #eee; border-radius: 5px; padding: 1px 6px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }

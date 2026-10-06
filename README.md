@@ -38,11 +38,29 @@ composer install
 cp .env.example .env
 php artisan key:generate
 php artisan migrate
-php artisan test        # 83 tests: HMAC, JWT, tenant isolation, plan gates, OTP, Whatify client, billing currency, COD/NDR automation, onboarding, staff portal, demo seeder
+php artisan test        # PHP suite: session-token boundary, tenant isolation, plan gates, OTP, billing, webhooks
 php artisan serve
+node tests/js/boot.smoke.mjs   # SPA boot screens — no framework, plain node
 ```
 
 To test against real Shopify, point a tunnel (cloudflared/ngrok) at the app and install it on a dev store via the Partner Dashboard.
+
+## "Something went wrong loading the board" ?
+
+That sentence is gone by design: every failure now names itself. The board needs a
+Shopify **session token**, which only exists while the app is opened *inside*
+`admin.shopify.com` (or, for teammates, inside the `/staff` portal with a portal
+cookie). Opening the app URL as a plain link therefore shows a **connect your
+store** screen — a login step, not a crash.
+
+| What you see | What it means |
+|---|---|
+| "Open TaskPe from your Shopify admin" + a store-domain box | no session (link opened outside the admin) — Apps → TaskPe, or type the domain to install |
+| …and "stripping the Authorization header" | shared-hosting SAPI ate `Authorization`; see **DEPLOYMENT.md § 3** |
+| "The board could not be loaded" + an SQL / HTTP message | real server-side failure — the message is the one from `/api/board`, plus `storage/logs/laravel.log` |
+| "TaskPe is not configured on this server yet" | `APP_KEY` / `SHOPIFY_API_KEY` / `SHOPIFY_API_SECRET` / `APP_URL` / unmigrated DB — listed on screen |
+
+Full deploy + failure-mode guide: **DEPLOYMENT.md**.
 
 ## Partner Dashboard configuration (do these once)
 
@@ -121,7 +139,8 @@ config/task_templates.php  The COD/NDR one-click checklist pack (edit copy/add t
 LISTING.md               App Store submission pack: listing copy, screenshot shot-list, reviewer instructions
 assets/app-icon.png      App icon for the listing
 tour-preview.html        Static preview of the 5-slide onboarding (open in any browser)
-tests                    83 tests — run `php artisan test`
+boot-preview.html        Static preview of the four board-load states (see DEPLOYMENT.md § 5)
+tests                    PHP suite (`php artisan test`) + tests/js/boot.smoke.mjs (SPA boot screens)
 ```
 
-Deploy to shared hosting? See **DEPLOYMENT.md**.
+Deploy to shared hosting (and triage a broken board)? See **DEPLOYMENT.md**.

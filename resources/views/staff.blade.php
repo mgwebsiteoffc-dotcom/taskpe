@@ -77,12 +77,14 @@
     </div>
     <script>
     (function () {
-        const APP = @json($appUrl);
+        // Same-origin relative on purpose: the sign-in endpoints belong to this
+        // very app, so a stale APP_URL (or a proxied Host header) can never send
+        // a staff login POST somewhere else.
         const $ = id => document.getElementById(id);
         const err = t => { $('sl-err').textContent = t || ''; };
 
         async function post(path, body) {
-            const res = await fetch(APP + path, {
+            const res = await fetch(path, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                 body: JSON.stringify(body),

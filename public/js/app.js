@@ -10,6 +10,10 @@
   const root = document.getElementById('root');
   const IS_STAFF = !!cfg.staff;   // staff web portal (cookie auth, no App Bridge)
 
+  // One sentence, used by both the boot gate and any toast raised by a later
+  // call, so "no Shopify session" never surfaces as a stack-trace-ish string.
+  const NO_SESSION_MSG = 'No Shopify session for this page — open TaskPe from your Shopify admin (Apps → TaskPe).';
+
   const state = {
     board: null,          // /api/board payload
     view: 'board',        // board | team | settings | plan
@@ -52,47 +56,117 @@
     setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 2600);
   }
 
-  async function token() {
-    return await window.shopify.idToken();
+  function fail(message, code, extra) {
+    const e = new Error(message);
+    e.code = code || message;
+    return Object.assign(e, extra || {});
   }
 
-  async function api(path, { method = 'GET', body } = {}) {
+  // Shopify hands embedded apps a session token through App Bridge. Outside
+  // the admin iframe (someone pasted the app URL into a new tab, a monitor
+  // link, an email…) there is no bridge and therefore no token — that is a
+  // *state we can explain*, not a board failure, so detect it up front.
+  function appBridge() {
+    return window.shopify && typeof window.shopify.idToken === 'function' ? window.shopify : null;
+  }
+
+  async function token() {
+    if (IS_STAFF) return null;                 // cookie auth, no bridge needed
+    const bridge = appBridge();
+    if (!bridge) throw fail(NO_SESSION_MSG, 'not_embedded');
+
+    // App Bridge can still be mid-handshake on a cold iframe load; give it a
+    // bounded window instead of failing the whole board instantly.
+    let timer;
+    try {
+      const jwt = await Promise.race([
+        bridge.idToken(),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(fail('bridge_timeout')), 8000); }),
+      ]);
+      if (typeof jwt !== 'string' || !jwt) throw fail(NO_SESSION_MSG, 'not_embedded');
+      return jwt;
+    } catch (e) {
+      if (e.code === 'not_embedded') throw e;
+      throw fail(NO_SESSION_MSG, 'not_embedded', { detail: String(e.message || e) });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function shopFromQuery() {
+    return new URLSearchParams(location.search).get('shop') || '';
+  }
+
+  // Same-origin by default. The SPA is served by the same Laravel app that
+  // owns /api/*, so a stale or wrong APP_URL in .env must never be allowed to
+  // point the XHRs at another host (a classic "board won't load" cause after
+  // a domain change or a subdirectory deploy).
+  function apiBase() {
+    const configured = String(cfg.appUrl || '').replace(/\/+$/, '');
+    if (!configured) return '';
+    try {
+      return new URL(configured, location.href).origin === location.origin ? '' : configured;
+    } catch {
+      return '';
+    }
+  }
+
+  function appUrl() { return apiBase(); }
+
+  async function api(path, { method = 'GET', body, retry = true } = {}) {
     const init = {
       method,
-      headers: { ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      // Accept: JSON → Laravel renders API failures as JSON instead of an
+      // HTML error page, which is what makes the real reason readable here.
+      headers: { Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     };
 
     let url;
     if (IS_STAFF) {
-      url = cfg.appUrl + '/staff/api' + path;   // cookie-authed (SameSite=Lax cookie)
+      url = appUrl() + '/staff/api' + path;     // cookie-authed (SameSite=Lax cookie)
     } else {
-      url = cfg.appUrl + '/api' + path;
-      init.headers.Authorization = 'Bearer ' + (await token());
+      url = appUrl() + '/api' + path;
+      const jwt = await token();
+      init.headers.Authorization = 'Bearer ' + jwt;
+      // Apache/LiteSpeed on shared hosting sometimes strips Authorization
+      // before PHP sees it; the middleware accepts this twin as a fallback.
+      init.headers['X-TaskPe-Auth'] = jwt;
       init.headers['X-TaskPe-Member'] = state.me || '';
     }
 
-    const res = await fetch(url, init);
+    let res;
+    try {
+      res = await fetch(url, init);
+    } catch (e) {
+      throw fail('Cannot reach the TaskPe server (' + (e.message || 'network error') + ')',
+        'network', { url });
+    }
 
     if (res.status === 401) {
-      if (IS_STAFF) { location.assign('/staff'); throw new Error('staff_auth'); }
-      // Not installed / token rejected → restart OAuth at top level.
-      let shop = '';
-      try { shop = (await res.json()).shop || ''; } catch { /* noop */ }
-      shop = shop || new URLSearchParams(location.search).get('shop') || '';
+      const body401 = await res.json().catch(() => ({}));
+      if (IS_STAFF) { location.assign('/staff'); throw fail('staff_auth', 'staff_auth'); }
+
+      // A token we never had vs. a token the server refused are different
+      // fixes — don't restart OAuth in a loop when App Bridge isn't there.
+      if ((body401.error === 'missing_session_token' || body401.error === 'invalid_session_token') && retry) {
+        await new Promise(r => setTimeout(r, 700));            // let the bridge settle
+        return api(path, { method, body, retry: false });      // then try exactly once
+      }
+
+      // Not installed → restart OAuth at top level.
+      let shop = body401.shop || shopFromQuery();
       if (shop && !api._redirecting) {
         api._redirecting = true;
-        open(cfg.appUrl + '/auth/shopify?shop=' + encodeURIComponent(shop), '_top');
+        open(appUrl() + '/auth/shopify?shop=' + encodeURIComponent(shop), '_top');
       }
-      throw new Error('reauth');
+      throw fail('reauth', 'reauth', { shop, reason: body401.error || 'unauthorized' });
     }
 
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const err = new Error(data.message || data.error || 'Request failed');
-      err.code = data.error;
-      err.status = res.status;
-      throw err;
+      throw fail(data.message || data.error || 'Request failed (' + res.status + ')',
+        data.error || 'http_' + res.status, { status: res.status, url, body: data });
     }
     return data;
   }
@@ -120,8 +194,17 @@
   /* ---------------------------------------------------------------- board */
 
   async function loadBoard() {
-    state.board = await api('/board');
-    document.title = (state.board.shop.name || '') + ' · TaskPe';
+    const data = await api('/board');
+    // Shape check, not decoration: a 200 with an HTML body (captive portal,
+    // old cache, an opcache-served page) used to land here and die somewhere
+    // deep inside render() with a TypeError.
+    if (!data || !data.shop || !Array.isArray(data.columns)) {
+      throw fail('The server replied to /api/board without a board payload — '
+        + 'usually an HTML/error page instead of JSON. Check storage/logs/laravel.log.',
+        'bad_payload', { body: data });
+    }
+    state.board = data;
+    document.title = (data.shop.name || '') + ' · TaskPe';
   }
 
   function render() {
@@ -166,7 +249,7 @@
   }
 
   async function staffLogout() {
-    try { await fetch(cfg.appUrl + '/staff/logout', { method: 'POST' }); } catch { /* still navigate */ }
+    try { await fetch(appUrl() + '/staff/logout', { method: 'POST' }); } catch { /* still navigate */ }
     location.assign('/staff');
   }
 
@@ -1586,11 +1669,132 @@
       render();
       if (!IS_STAFF && !state.board?.shop?.onboarded) setTimeout(openTour, 300);   // first-run intro (admin only)
     } catch (e) {
-      if (e.message !== 'reauth') {
-        root.replaceChildren(h('div', { class: 'boot' },
-          h('div', { class: 'boot-text' }, 'Something went wrong loading the board. Reload the page.')));
-      }
+      // Every branch renders something *specific*. Silently replacing the
+      // shell with one generic sentence is what made this failure so hard to
+      // read for merchants (and for us) — see DEPLOYMENT.md § Troubleshooting.
+      const gate = e.code === 'reauth' || e.code === 'not_embedded' || e.code === 'staff_auth';
+      if (gate) renderConnectGate(e);
+      else renderBootError(e);
     }
+  }
+
+  /* --------------------------------------------------- boot failure surfaces */
+
+  // Not embedded / not installed: explain how to get in, and offer the
+  // OAuth entry point for the store domain they type in.
+  function renderConnectGate(err) {
+    const known = cfg.shop || err?.shop || shopFromQuery() || '';
+    const asStaff = IS_STAFF;   // portal session expired — same gate, different door
+    const input = h('input', {
+      class: 'input', id: 'gate-shop', placeholder: 'mystore.myshopify.com',
+      value: known, inputmode: 'url', autocomplete: 'off', spellcheck: 'false',
+      onkeydown: ev => { if (ev.key === 'Enter') connect(); },
+    });
+
+    function connect() {
+      const shop = String(input.value || '').trim().toLowerCase()
+        .replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+      if (!/^[a-z0-9][a-z0-9-]*\.(myshopify\.com|myshopify\.io)$/.test(shop)) {
+        document.getElementById('gate-err').textContent =
+          'Enter the full myshopify domain, e.g. mystore.myshopify.com';
+        return;
+      }
+      location.assign(appUrl() + '/auth/shopify?shop=' + encodeURIComponent(shop));
+    }
+
+    // Three different real causes, three different sentences — the whole point
+    // of this screen is that you never have to guess which one you are in.
+    let why;
+    if (err?.reason === 'missing_session_token' && appBridge()) {
+      why = 'App Bridge produced a session token, but it never reached PHP. The web server is '
+        + 'stripping the Authorization header (typical on CGI/FastCGI/LiteSpeed shared hosting) — '
+        + 'see DEPLOYMENT.md → “Authorization header never arrives”. The app.js twin header and '
+        + 'public/.htaccess rules handle this; both must be deployed together.';
+    } else if (err?.reason === 'not_installed') {
+      why = 'This store is not connected to TaskPe yet — approve the app scopes below and the '
+        + 'board will open on its own.';
+    } else if (err?.code === 'reauth') {
+      why = 'TaskPe could not verify your Shopify session for this store — connect a store to continue.';
+    } else {
+      why = 'TaskPe runs inside Shopify Admin. Opened as a plain link there is no Shopify session token, '
+        + 'so the board has nothing to load — this is a login step, not a crash.';
+    }
+
+    const note = h('div', { class: 'muted small mt' });
+    if (!IS_STAFF && !appBridge()) {
+      note.append(h('div', null, 'No App Bridge detected on this page. That is normal when the URL is opened outside admin.shopify.com; inside the admin it is loaded from Shopify’s CDN. If you already see this screen inside Shopify Admin, the app URL/allowed origins in the Partner Dashboard need to match '
+        + location.origin + '.'));
+    }
+    const configured = String(cfg.appUrl || '').replace(/\/+$/, '');
+    if (configured && configured !== location.origin) {
+      note.append(h('div', { class: 'mt' },
+        h('b', null, 'Heads-up: '),
+        'APP_URL on the server is ' + configured + ' but the app is being served from ' + location.origin
+        + ' — Shopify session tokens are origin-bound, so keep the two identical.'));
+    }
+    if (err?.detail) note.append(h('div', { class: 'muted small mt' }, 'App Bridge said: ' + err.detail));
+
+    root.replaceChildren(h('div', { class: 'gate' },
+      h('div', { class: 'panel gate-card' },
+        h('div', { class: 'p-head' },
+          h('div', { class: 'brand-badge' }, 'T'),
+          h('h2', null, asStaff ? 'Your staff link has expired' : 'Open TaskPe from your Shopify admin')),
+        h('div', { class: 'p-body' },
+          h('p', { class: 'muted small' }, asStaff
+            ? 'The board needs a staff session for this store, and this browser has none (or it was revoked).'
+            : why),
+          h('ol', { class: 'gate-steps' }, asStaff
+            ? h('li', null, 'Ask your store manager for a fresh ', h('a', { href: appUrl() + '/staff' }, 'staff sign-in'),
+                ' (WhatsApp code) or a new portal link — Team tab → Portal link.')
+            : h('div', null,
+              h('li', null, 'Go to ', h('b', null, 'admin.shopify.com'), ' → ', h('b', null, 'Apps'), ' → ', h('b', null, 'TaskPe'), '.'),
+              h('li', null, 'Not installed yet? Connect your store below — you will be asked to approve the app scopes once.'),
+              h('li', null, 'Teammates without admin access should use the ',
+                h('a', { href: appUrl() + '/staff' }, 'staff board'), ' instead.'))),
+          asStaff ? null : h('div', { class: 'field mt' },
+            h('label', null, 'Your store domain'),
+            input,
+            h('div', { class: 'login-err', id: 'gate-err' })),
+          h('div', { class: 'row' },
+            asStaff
+              ? h('a', { class: 'btn primary', href: appUrl() + '/staff' }, 'Go to staff sign-in')
+              : h('button', { class: 'btn primary', onclick: connect }, 'Connect store'),
+            h('button', { class: 'btn', onclick: () => location.reload() }, 'Reload')),
+          note))));
+  }
+
+  // Anything else the API said — show it verbatim plus where to look, so the
+  // next person does not have to guess between "bad DB" and "bad deploy".
+  function renderBootError(err) {
+    const rows = [
+      ['What failed', err?.message || 'Unknown error'],
+      ['Endpoint', err?.url || (appUrl() + '/api/board')],
+      ['HTTP status', err?.status ? String(err.status) : '—'],
+    ];
+
+    root.replaceChildren(h('div', { class: 'gate' },
+      h('div', { class: 'panel gate-card' },
+        h('div', { class: 'p-head' },
+          h('div', { class: 'brand-badge', style: 'background:var(--critical)' }, '!'),
+          h('h2', null, 'The board could not be loaded')),
+        h('div', { class: 'p-body' },
+          h('div', { class: 'gate-rows' },
+            rows.map(([k, v]) => h('div', { class: 'gate-row' },
+              h('span', { class: 'k' }, k), h('span', { class: 'v' }, v)))),
+          h('div', { class: 'banner crit mt' },
+            h('div', null,
+              h('div', { class: 'b-title' }, 'If this shows inside Shopify Admin, it is a server-side problem'),
+              h('div', { class: 'b-body' },
+                'Check, in order: (1) ', h('code', null, 'php artisan migrate'), ' ran and the DB is reachable; (2) ',
+                h('code', null, 'APP_KEY'), ', ', h('code', null, 'SHOPIFY_API_KEY'), '/',
+                h('code', null, 'SHOPIFY_API_SECRET'), ' and ', h('code', null, 'APP_URL'),
+                ' are set in .env; (3) the exact message at the end of ',
+                h('code', null, 'storage/logs/laravel.log'), '.'))),
+          h('div', { class: 'row mt' },
+            h('button', { class: 'btn primary', onclick: () => location.reload() }, 'Try again'),
+            h('a', { class: 'btn', href: appUrl() + '/staff' }, 'Staff sign-in'))))));
+
+    if (window.console) console.error('[TaskPe] board load failed:', err);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
