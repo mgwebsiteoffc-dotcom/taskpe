@@ -73,7 +73,7 @@ class El {
   }
 }
 
-function makeEnv({ taskpe = {}, shopify, fetchImpl } = {}) {
+function makeEnv({ taskpe = {}, shopify, fetchImpl, pathname = '/' } = {}) {
   const root = new El('main');
   const body = new El('body');
   const byId = { root };
@@ -98,13 +98,23 @@ function makeEnv({ taskpe = {}, shopify, fetchImpl } = {}) {
     listeners: docListeners,
   };
 
+  const pushes = [];
+  const winListeners = {};
   const location = {
-    href: ORIGIN + '/',
+    href: ORIGIN + pathname,
     origin: ORIGIN,
+    pathname,                      // makeEnv({ pathname }) drives the section path logic
     search: '',
     assign: u => navigations.push(u),
     replace: u => navigations.push(u),
     reload: () => navigations.push('#reload'),
+    // ui-nav-menu links are paths; App Bridge keeps the admin URL in sync with
+    // ours, so the harness has to model both halves or the nav is untestable.
+    pushState: (state, title, url) => {
+      pushes.push(url);
+      location.pathname = String(url || '/').split('?')[0];
+      location.search = String(url || '').includes('?') ? '?' + String(url).split('?')[1] : '';
+    },
   };
 
   const sandbox = {
@@ -112,11 +122,15 @@ function makeEnv({ taskpe = {}, shopify, fetchImpl } = {}) {
     location,
     root,
     navigations,
+    pushes,
     calls,
     fetch: async (url, init) => {
       calls.push({ url, init });
       return (fetchImpl || (async () => ({ status: 599, ok: false, json: async () => ({}) })))(url, init, calls.length);
     },
+    addEventListener: (type, fn) => { (winListeners[type] ||= []).push(fn); },
+    fireWindow: type => { for (const fn of winListeners[type] || []) fn({}); },
+    history: { pushState: location.pushState },
     setTimeout, clearTimeout, Intl, URL, URLSearchParams,
     console: { log() {}, warn() {}, error() {} },        // keep the harness output readable Promise, JSON,
     Math, Number, String, Array, Object, Error, RegExp, Boolean, Symbol, TypeError,
@@ -313,31 +327,81 @@ const check = (name, fn) => {
   });
 }
 
-// 6b — the nav itself: Shopify-admin section tabs, icon+label, zero emoji.
+// 6b — navigation: it belongs to the Shopify admin (ui-nav-menu → the admin's
+// own left sidebar), NOT to a strip we paint inside the app.
 {
   const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply(200, okBoard) });
   await settle();
-  check('section nav is a tab list (no app brand bar)', () => {
-    const nav = env.root.find(n => n.attrs.class === 'appnav')[0];
-    assert.ok(nav, 'appnav row missing');
-    const tabs = env.root.find(n => n.attrs.class && String(n.attrs.class).split(' ').includes('tab'));
-    assert.deepEqual(tabs.map(t => t.text()), ['Board', 'Team', 'Settings', 'Plan'], 'wrong tab labels');
-    assert.ok(!env.root.find(n => n.attrs.class === 'brand-badge').length, 'app brand bar must be gone');
+  const nav = () => env.document.getElementById('taskpe-app-nav');
+
+  check('no nav strip of our own inside the app', () => {
+    assert.equal(env.root.find(n => n.attrs.role === 'tablist').length, 0, 'in-app tab list is back');
+    assert.equal(env.root.find(n => n.attrs.class === 'appnav').length, 0, 'admin must not paint an app header row');
+    assert.equal(env.root.find(n => n.attrs.class === 'brand-badge').length, 0, 'no app brand bar either');
   });
-  check('active tab is marked for AT (aria-selected)', () => {
-    const tabs = env.root.find(n => n.attrs.class && String(n.attrs.class).split(' ').includes('tab'));
-    assert.equal(tabs[0].attrs['aria-selected'], 'true');
-    assert.equal(tabs[1].attrs['aria-selected'], 'false');
-    assert.ok(String(tabs[0].attrs.class).includes('is-active'));
+  check('the app menu is handed to App Bridge as ui-nav-menu', () => {
+    const menu = nav();
+    assert.ok(menu, 'ui-nav-menu not mounted');
+    assert.equal(menu.tagName, 'UI-NAV-MENU');
+    assert.equal(menu.style.display, 'none', 'the element is data for App Bridge, never painted');
+    const links = menu.children;
+    // Docs rule: the first link is the home route, rel="home", and is hidden
+    // from the rendered menu — so the admin's app name opens the board.
+    assert.equal(links[0].attrs.rel, 'home');
+    assert.equal(links[0].attrs.href, '/');
+    assert.deepEqual(links.map(l => l.attrs.href), ['/', '/team', '/settings', '/plan']);
+    assert.deepEqual(links.slice(1).map(l => l.text()), ['Team', 'Settings', 'Plan']);
   });
-  check('every tab carries an SVG icon, not a glyph', () => {
-    for (const t of env.root.find(n => n.attrs.class && String(n.attrs.class).split(' ').includes('tab'))) {
-      const svg = t.children.find(c => c.tagName === 'SVG');
-      assert.ok(svg, 'tab missing <svg>: ' + t.text());
-      assert.equal(svg.attrs.stroke, 'currentColor');
-      assert.equal(svg.attrs['stroke-width'], '1.7');
-    }
+  check('the active section is marked for AT on the menu link', () => {
+    assert.equal(nav().children[0].attrs['aria-current'], 'page');
+    assert.equal(nav().children[1].attrs['aria-current'], undefined);
   });
+  // The click is raised on the container with the link as target — the shape a
+  // bubbled click has by the time App Bridge's own document listener sees it.
+  check('clicking a menu item switches section without reloading the iframe', () => {
+    const before = env.calls.length;
+    let defaulted = false;
+    const menu = nav();
+    menu.fire('click', { target: menu.children[1], preventDefault: () => { defaulted = true; } });
+    assert.ok(defaulted, 'the SPA must cancel the link — otherwise the iframe reloads');
+    assert.equal(env.pushes.at(-1), '/team', 'admin URL must follow the section');
+    assert.ok(env.root.text().includes('Team'), 'team view did not render');
+    assert.equal(env.calls.length, before, 'switching sections must not refetch the board');
+    assert.equal(nav().children[1].attrs['aria-current'], 'page', 'menu highlight did not move');
+  });
+  check('the browser back arrow inside the iframe switches section too', () => {
+    env.location.pathname = '/';
+    env.fireWindow('popstate');
+    assert.ok(env.root.text().includes('To Do'), 'board did not come back');
+    assert.equal(nav().children[0].attrs['aria-current'], 'page');
+  });
+  // Without App Bridge there is no sidebar to talk to — and mounting a menu
+  // nobody reads would be the least of our problems; the gate is.
+  const bare = makeEnv({ fetchImpl: reply(200, okBoard) });
+  await settle();
+  check('no session (not embedded): no menu mounted, gate still explains', () => {
+    assert.ok(!bare.document.getElementById('taskpe-app-nav'), 'menu must not be built without App Bridge');
+    assert.ok(bare.root.text().includes('Open TaskPe from your Shopify admin'), bare.root.text().slice(0, 160));
+  });
+  // A subdirectory deploy is a documented shared-hosting setup, and it is the
+  // one place where absolute '/team' links would leave the app entirely.
+  const sub = makeEnv({
+    shopify: { idToken: async () => 'a.b.c' },
+    fetchImpl: reply({ '/api/settings': okSettings }),
+    pathname: '/taskpe/public/team',
+  });
+  await settle();
+  check('subdirectory deploy: the menu links stay inside the mount point', () => {
+    const menu = sub.document.getElementById('taskpe-app-nav');
+    assert.deepEqual(
+      menu.children.map(l => l.attrs.href),
+      ['/taskpe/public', '/taskpe/public/team', '/taskpe/public/settings', '/taskpe/public/plan'],
+      'menu hrefs escaped the app folder: ' + JSON.stringify(menu.children.map(l => l.attrs.href)),
+    );
+    assert.ok(sub.root.find(n => n.attrs.class === 'mem-row').length, 'the path did not open the Team section');
+    assert.equal(menu.children[1].attrs['aria-current'], 'page', 'highlight did not follow the path');
+  });
+
   check('no emoji anywhere in the rendered UI (board view)', () => {
     const bad = uiText(env).filter(t => EMOJI.test(t));
     assert.deepEqual(bad, [], 'emoji found: ' + JSON.stringify(bad.slice(0, 4)));
@@ -375,8 +439,11 @@ const check = (name, fn) => {
   for (const view of ['team', 'settings', 'plan']) {
     const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply({ '/api/settings': okSettings }) });
     await settle();
-    const tabs = env.root.find(n => n.attrs.class && String(n.attrs.class).split(' ').includes('tab'));
-    tabs.find(t => t.text() === view[0].toUpperCase() + view.slice(1)).click();
+    {
+      const menu = env.document.getElementById('taskpe-app-nav');
+      const link = menu.children.find(l => l.text() === view[0].toUpperCase() + view.slice(1));
+      menu.fire('click', { target: link });
+    }
     check(`no emoji in the ${view} view`, () => {
       const bad = uiText(env).filter(t => EMOJI.test(t));
       assert.deepEqual(bad, [], 'emoji found: ' + JSON.stringify(bad.slice(0, 4)));
@@ -389,7 +456,7 @@ const check = (name, fn) => {
 {
   const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply(200, okBoard) });
   await settle();
-  const tabs = () => env.root.find(n => n.attrs.class && String(n.attrs.class).split(' ').includes('tab'));
+  const menu = () => env.document.getElementById('taskpe-app-nav');
   const overlays = () => env.document.body.children.filter(c => String(c.className).split(' ').includes('overlay'));
 
   check('n opens the add-task editor in the first open column', () => {
@@ -414,11 +481,12 @@ const check = (name, fn) => {
   });
   await settle();
 
-  check('1-4 switch sections (no mouse needed)', () => {
+  check('1-4 switch sections and keep the admin menu in sync', () => {
     env.document.fire('keydown', { key: '2' });
-    assert.equal(tabs()[1].attrs['aria-selected'], 'true', 'Team tab not activated');
+    assert.equal(env.pushes.at(-1), '/team', 'Team not activated from the keyboard');
+    assert.equal(menu().children[1].attrs['aria-current'], 'page', 'menu highlight did not follow');
     env.document.fire('keydown', { key: '1' });
-    assert.equal(tabs()[0].attrs['aria-selected'], 'true', 'Board tab not restored');
+    assert.equal(env.pushes.at(-1), '/', 'Board not restored');
   });
   await settle();
 
@@ -430,7 +498,7 @@ const check = (name, fn) => {
     assert.ok(area && area.tagName === 'TEXTAREA', 'add-task editor did not reopen');
     area.value = 'Send a refund note abo';
     env.document.fire('keydown', { key: '2', target: area });
-    assert.equal(tabs()[0].attrs['aria-selected'], 'true', 'view changed while typing in a textarea');
+    assert.equal(env.pushes.at(-1), '/', 'view changed while typing in a textarea');
   });
 
   // `c` acts on whatever the drawer has open — no confirm dialog, no modal.

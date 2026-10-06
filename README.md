@@ -17,6 +17,8 @@ A Laravel 12 + MySQL **public Shopify app** for Indian D2C teams:
 - 🚑 **Optional NDR watcher** — paste your per-shop secret intake URL into Shiprocket / Delhivery / XpressBees webhook settings; every NDR push becomes an **urgent 12-hour rescue task**, auto-linked to the order (found via Shopify search) with the courier's NDR reason + AWB on top. No open NDR duplicates, AWB-only pushes still create tasks
 - 🔁 **Weekly COD remittance chore** — one switch and the "COD remittance check" task recreates itself every week until completed (runs on the existing single cron; never piles up open copies)
 
+**Navigation is Shopify's, not ours:** Board · Team · Settings · Plan are menu items in the admin's left sidebar (App Bridge reads a `<ui-nav-menu>` the SPA mounts; each is a path Laravel answers with the same shell). The app paints no header, no tab strip and no brand bar — it starts at its content. Keyboard `1`–`4` / clicking a menu item switch in place (no iframe reload), and the sidebar highlight follows the path.
+
 Built to the **2026 public-app requirements** — see the compliance map below.
 
 ---
@@ -32,7 +34,7 @@ Built to the **2026 public-app requirements** — see the compliance map below.
 | Jobs | Database queue + `schedule:run` cron | No Redis/supervisor needed on shared hosting |
 | Frontend | App Bridge v4 (Shopify CDN) + hand-written Polaris CSS + vanilla JS | Zero build step — FTP upload just works |
 | Iconography | Inline SVG from the `ICONS` map in `public/js/app.js` (`icon(name)`) | No emoji: OS-dependent glyphs, untintable, wrong at 13px — and `boot.smoke.mjs` fails the build if one appears |
-| Navigation | Shopify-admin section tabs (icon + label, bottom-border active state) | No duplicate app header inside the admin frame |
+| Navigation | Shopify's own app menu: App Bridge `<ui-nav-menu>` + one path per section (`/team`, `/settings`, `/plan`) | The admin sidebar (and the mobile title-bar menu) is the menu — nothing inside the app duplicates it, and there is no app header |
 | Admin surface | 6 UI extensions: 4 actions + 1 bulk selection action + 1 order-page block, sharing `extensions/shared/api.js` | Shopify has no per-row list button; these are the three real affordances, and one shared file keeps APP_URL/auth from drifting |
 | Bulk creation | `POST /api/tasks/bulk` via `App\Services\TaskTemplates` | One materialisation path for board, block, bulk and the COD webhook: same title format, same checklist, same plan ceiling |
 
@@ -137,7 +139,7 @@ app/Services             ShopifyClient (GraphQL, retry), WhatifyClient, TaskNoti
 app/Http/Controllers     OAuth / webhooks / billing + /api/* tenant-scoped JSON
 app/Jobs                 ProcessShopifyWebhook, SendWhatsAppJob
 config/cors.php          API CORS for the admin extensions (/api/* only)
-public/js/app.js         the whole SPA (board, drawer, resource picker, team, settings, plan, shortcuts)
+public/js/app.js         the whole SPA (board, drawer, resource picker, team, settings, plan, shortcuts, admin app-menu mount)
 extensions/              6 Admin UI extensions (Create task / bulk / order-page block) + shared/
 resources/views          app shell (App Bridge) + privacy policy
 config/task_templates.php  The COD/NDR one-click checklist pack (edit copy/add templates here)

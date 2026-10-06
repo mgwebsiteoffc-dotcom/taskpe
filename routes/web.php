@@ -6,8 +6,18 @@ use App\Http\Controllers\BillingController;
 use App\Http\Controllers\WebhookController;
 use Illuminate\Support\Facades\Route;
 
-// Embedded app shell (serves the SPA; App Bridge + session tokens take over)
+// Embedded app shell (serves the SPA; App Bridge + session tokens take over).
 Route::get('/', [AppController::class, 'index'])->name('app');
+
+// One path per section, because that is what the app menu in Shopify's own
+// sidebar links to (ui-nav-menu → <a href="/team">). Same shell, and the path
+// decides which section opens — the alternative (a tab strip inside the app)
+// duplicates navigation the admin already provides. Constrained to these four
+// words, so it can never swallow /privacy, /staff, /api, /auth, /webhooks.
+Route::get('/{section}', [AppController::class, 'section'])
+    ->where('section', 'board|team|settings|plan')
+    ->name('app.section');
+
 Route::get('/privacy', [AppController::class, 'privacy'])->name('privacy');
 
 // OAuth (top-level navigation, outside the iframe)

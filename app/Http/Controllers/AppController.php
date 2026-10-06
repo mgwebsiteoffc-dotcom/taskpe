@@ -8,6 +8,9 @@ use Illuminate\Support\Facades\Schema;
 
 class AppController extends Controller
 {
+    /** Sections reachable as their own path (see routes/web.php). */
+    public const SECTIONS = ['board', 'team', 'settings', 'plan'];
+
     /**
      * GET / — the embedded app shell.
      *
@@ -22,6 +25,17 @@ class AppController extends Controller
      */
     public function index(Request $request)
     {
+        return $this->shell($request, 'board');
+    }
+
+    /** GET /{section} — the same shell, opened on one section of the app. */
+    public function section(Request $request, string $section)
+    {
+        return $this->shell($request, in_array($section, self::SECTIONS, true) ? $section : 'board');
+    }
+
+    protected function shell(Request $request, string $section)
+    {
         $shop = (string) $request->query('shop', '');
         $host = (string) $request->query('host', '');
 
@@ -34,6 +48,11 @@ class AppController extends Controller
         $missing = $this->missingConfig();
 
         return view('app', [
+            // ?view= still wins: extension/deep links (and the staff board) can
+            // point at a section without needing the pretty path.
+            'section'      => in_array((string) $request->query('view', ''), self::SECTIONS, true)
+                ? (string) $request->query('view')
+                : $section,
             'apiKey'       => config('shopify.api_key'),
             // Never trust the Host header for link building (the app sits
             // behind proxies with trustProxies('*')); APP_URL is authoritative
@@ -88,7 +107,7 @@ class AppController extends Controller
         return $missing;
     }
 
-    /** GET /privacy — public privacy policy (required for app listing). */
+    /** GET /privacy — public privacy policy (required for the app listing). */
     public function privacy()
     {
         return view('privacy', ['appName' => config('app.name')]);

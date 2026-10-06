@@ -116,6 +116,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://taskpe.example.in/up           
 curl -s https://taskpe.example.in/api/board                                        # JSON 401 = routing + middleware alive
 curl -s https://taskpe.example.in/privacy | head -5                                # HTML renders, views writable
 curl -s https://taskpe.example.in/api/task-templates?type=order  # 401 JSON = extension endpoints deployed; 404 = old routes/api.php
+curl -s -o /dev/null -w '%{http_code}\n' https://taskpe.example.in/team     # 200 = section paths serve the shell (the admin sidebar links to these)
 php artisan taskpe:demo-store demo.myshopify.com --force   # fill a dev store's board
 php artisan test                     # PHP suite (auth boundary, tenancy, bulk creation, billing, …)
 node tests/js/boot.smoke.mjs         # SPA boot screens for each failure mode
@@ -135,3 +136,25 @@ When you ship both halves, **order matters**: the bulk action
 run `php artisan config:clear`, and only then `shopify app deploy`. A 404 inside
 the bulk modal means the extensions were deployed against an older backend — not
 that Shopify rejected the extension.
+
+## 8. Section paths (the app menu in Shopify's sidebar)
+
+TaskPe has no in-app nav strip: **Board · Team · Settings · Plan** are menu items
+in the admin's own left sidebar. App Bridge reads a `<ui-nav-menu>` element that
+`public/js/app.js` mounts, and each entry is a path Laravel serves from the same
+shell (`/`, `/team`, `/settings`, `/plan` — see `AppController::SECTIONS`).
+
+* **No new `.env` keys and nothing to deploy to Shopify.** This is routing plus a
+  web component, not an extension — `php artisan config:clear` and the updated
+  `public/js/app.js` are the whole change.
+* **`/team` must return the SPA, not a 404.** That is the same
+  `RewriteCond … !-f / !-f → index.php` rule in `public/.htaccess` the app already
+  depends on. A host that 404s on `/team` (rare; usually an old `RewriteBase`
+  experiment) shows up as sidebar links doing nothing while `Apps → TaskPe` still
+  works — fix the rewrite, don't add a nav bar back.
+* **The sidebar is only inside the admin.** Opened as a plain link there is no
+  App Bridge to read the menu, which is why `/` still renders the "open this from
+  your Shopify admin" gate, and staff keep using `/staff`.
+* If Shopify ever shows the section list twice, the culprit is a stale cached
+  `app.js` still mounting the old in-app tab strip: hard-reload the app frame
+  (or bump the asset version) before touching anything else.

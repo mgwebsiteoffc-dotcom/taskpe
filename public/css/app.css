@@ -55,23 +55,13 @@ input, select, textarea { font: inherit; }
    Shopify admin shape: no app brand bar (the admin chrome already names the
    app) and no pill-highlighted buttons — sections are a tab list with a
    bottom-border active state, exactly like Orders / Customers / Analytics. */
+/* Only the staff portal still paints an .appnav row (who you are + log out);
+   the admin never does — its section menu lives in Shopify's own sidebar. */
 .appnav {
   display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap;
   padding: 0 20px; background: var(--surface); border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 40;
 }
-.appnav-tabs { display: flex; gap: 2px; }
-.appnav .tab {
-  display: inline-flex; align-items: center; gap: 8px;
-  border: 0; border-bottom: 3px solid transparent; background: transparent;
-  padding: 13px 14px 10px; margin-bottom: -1px;
-  color: var(--text-subdued); font-weight: 550; font-size: 14px; cursor: pointer;
-}
-.appnav .tab .tab-icon { color: var(--text-subdued); }
-.appnav .tab:hover { color: var(--text); background: var(--surface-hover); }
-.appnav .tab:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
-.appnav .tab.is-active { color: var(--text); font-weight: 650; border-bottom-color: var(--text); }
-.appnav .tab.is-active .tab-icon { color: var(--text); }
 .appnav-title {
   display: inline-flex; align-items: center; gap: 9px; padding: 13px 0 10px;
   font-weight: 650; font-size: 14.5px; color: var(--text);
@@ -81,11 +71,9 @@ input, select, textarea { font: inherit; }
   font-weight: 500; font-size: 12.5px; color: var(--text-subdued);
   border-left: 1px solid var(--border-strong); padding-left: 9px; margin-left: 2px;
 }
-.appnav .me-chips { padding-bottom: 7px; }
+.board-tools .me-chips { gap: 5px; }
 @media (max-width: 720px) {
   .appnav { align-items: stretch; flex-direction: column; gap: 0; padding: 0 12px; }
-  .appnav .tab { padding: 12px 10px 9px; font-size: 13.5px; }
-  .appnav .me-chips { padding: 0 0 10px; margin-left: 0; }
 }
 .brand-badge {
   width: 30px; height: 30px; border-radius: 9px; background: var(--primary);
@@ -96,7 +84,7 @@ input, select, textarea { font: inherit; }
    One rule keeps every glyph on the text baseline: icons are stroke-based and
    inherit currentColor, so they recolour with the control they sit in. */
 .icon { flex: none; display: inline-block; vertical-align: -3px; }
-.btn .icon, .pill .icon, .verify-badge .icon, .me-chip .icon, .tab-icon,
+.btn .icon, .pill .icon, .verify-badge .icon, .me-chip .icon,
 .ck-progress .icon, .card-foot .icon, .empty-state .icon, .lbl .icon { vertical-align: 0; }
 .btn, .pill, .verify-badge, .add-col-btn, .ck-progress, .add-card-toggle {
   display: inline-flex; align-items: center; gap: 7px;
@@ -352,7 +340,7 @@ input, select, textarea { font: inherit; }
 .card.priority-urgent .pill.urgent { font-weight: 650; }
 
 /* ---------------------------------------------------------------- COD/NDR pack */
-.board-tools { display: flex; align-items: center; gap: 12px; padding: 0 16px 10px; }
+.board-tools { display: flex; align-items: center; gap: 12px; padding: 12px 16px 10px; }
 .tmpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
 .tmpl-card { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; text-align: left; padding: 14px; border: 1px solid var(--border,#e3e3e3); border-radius: 10px; background: #fff; cursor: pointer; transition: box-shadow .12s, transform .12s; }
 .tmpl-card:hover { box-shadow: 0 4px 14px rgba(0,0,0,.08); transform: translateY(-1px); }
@@ -445,3 +433,11 @@ input, select, textarea { font: inherit; }
 .how-row > .icon { margin-top: 2px; color: var(--text-subdued); }
 .how-row p { line-height: 1.5; }
 .how-row code { background: var(--bg); border-radius: 5px; padding: 1px 5px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* Mobile: the tools row carries the template button, the "who am I" chips and
+   the shortcut help — let it wrap rather than squeeze them. Placed after the
+   .board-tools rule on purpose, so it is the one that wins. */
+@media (max-width: 720px) {
+  .board-tools { flex-wrap: wrap; gap: 8px; padding: 10px 12px 10px; }
+  .board-tools .me-chips { margin-left: 0; }
+}

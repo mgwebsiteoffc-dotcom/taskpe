@@ -14,17 +14,32 @@
   // call, so "no Shopify session" never surfaces as a stack-trace-ish string.
   const NO_SESSION_MSG = 'No Shopify session for this page — open TaskPe from your Shopify admin (Apps → TaskPe).';
 
-  // The four sections of the app, in admin-nav order. `icon` keys into ICONS.
+  // The four sections of the app. `icon` keys into ICONS; `path` is what the
+  // merchant's own Shopify sidebar links to (see mountAdminNav). Laravel serves
+  // the same shell on each path and tells us which section to open — there is
+  // deliberately no second, in-app tab strip competing with the admin's nav.
   const SECTIONS = [
-    { view: 'board',    label: 'Board',    icon: 'board' },
-    { view: 'team',     label: 'Team',     icon: 'people' },
-    { view: 'settings', label: 'Settings', icon: 'settings' },
-    { view: 'plan',     label: 'Plan',     icon: 'premium' },
+    { view: 'board',    label: 'Board',    icon: 'board',    path: '/' },
+    { view: 'team',     label: 'Team',     icon: 'people',   path: '/team' },
+    { view: 'settings', label: 'Settings', icon: 'settings', path: '/settings' },
+    { view: 'plan',     label: 'Plan',     icon: 'premium',  path: '/plan' },
   ];
+  const SECTION_BY_VIEW = Object.fromEntries(SECTIONS.map(sec => [sec.view, sec]));
+
+  function viewFromLocation() {
+    const fromServer = cfg.view;                      // path-derived, by Laravel
+    if (SECTION_BY_VIEW[fromServer]) return fromServer;
+    const fromQuery = new URLSearchParams(location.search).get('view');
+    if (SECTION_BY_VIEW[fromQuery]) return fromQuery;   // deep links still work
+    // Last segment, not the first: a subdirectory deploy lives at
+    // /taskpe/public/team and the first segment there is the folder, not the app.
+    const seg = String(location.pathname || '/').replace(/\/+$/, '').split('/').pop();
+    return SECTION_BY_VIEW[seg] ? seg : 'board';
+  }
 
   const state = {
     board: null,          // /api/board payload
-    view: 'board',        // board | team | settings | plan
+    view: viewFromLocation(),   // board | team | settings | plan
     settings: null,       // /api/settings payload (lazy)
     me: Number(localStorage.getItem('taskpe_me') || 0),
     drawerTaskId: null,
@@ -305,6 +320,82 @@
     }, icon(name, { size: 16 }));
   }
 
+  /* ------------------------------------------------- Shopify sidebar menu */
+
+  // App Bridge reads <ui-nav-menu> out of the document and renders those links
+  // in the admin's own left sidebar (on mobile, the title-bar dropdown). Its
+  // rules: the first link is the app's home route and is NOT shown as an item
+  // (it needs rel="home" + href="/") — which suits us exactly, because the app
+  // name in the sidebar already opens the board.
+  function mountAdminNav() {
+    if (IS_STAFF || !appBridge()) return null;
+
+    let nav = document.getElementById('taskpe-app-nav');
+    if (!nav) {
+      nav = document.createElement('ui-nav-menu');
+      nav.setAttribute('id', 'taskpe-app-nav');
+      nav.style.display = 'none';        // consumed by App Bridge, never painted
+      document.body.append(nav);
+
+      // A nav click would otherwise reload the whole iframe (the known App
+      // Bridge issue #240): we take it first and switch sections in place, so
+      // nothing on the board — a half-typed task, a scroll position, the open
+      // drawer — is thrown away.
+      nav.addEventListener('click', ev => {
+        const link = dataViewLink(ev.target);
+        if (!link) return;
+        ev.preventDefault();
+        if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
+        goView(link.dataset.view);
+      }, true);
+    }
+
+    nav.replaceChildren(...SECTIONS.map(sec => {
+      const link = document.createElement('a');
+      link.setAttribute('href', sectionPath(sec.view));
+      link.textContent = sec.label;
+      link.dataset.view = sec.view;
+      if (sec.view === 'board') link.setAttribute('rel', 'home');
+      if (sec.view === state.view) link.setAttribute('aria-current', 'page');
+      return link;
+    }));
+
+    return nav;
+  }
+
+  // The admin sidebar (and the browser URL) needs the section path *relative to
+  // wherever the shell is mounted*, so a subdirectory deploy — where the board is
+  // /taskpe/public/ — swaps its last segment instead of assuming root paths.
+  function sectionPath(view) {
+    const label = SECTION_BY_VIEW[view].path.split('/').pop();
+    const here = String(location.pathname || '/').replace(/\/+$/, '');
+    const parent = here.includes('/') ? here.slice(0, here.lastIndexOf('/') + 1) : '/';
+    return label ? parent + label : (parent.replace(/\/+$/, '') || '/');
+  }
+
+  function dataViewLink(node) {
+    for (let el = node, depth = 0; el && depth < 4; depth++) {
+      if (el.dataset && el.dataset.view) return el;
+      el = el.parentElement || el.parentNode || el.parent;
+    }
+    return null;
+  }
+
+  // One way to change section: update state, keep the admin URL in sync (that is
+  // what drives the sidebar's active highlight), re-render.
+  function goView(view) {
+    if (!SECTION_BY_VIEW[view]) view = 'board';
+    if (state.view !== view) { state.view = view; state.drawerTaskId = null; }
+
+    const path = sectionPath(view);
+    if (!IS_STAFF && appBridge() && location.pathname !== path) {
+      try { history.pushState({ view: state.view }, '', path); } catch (e) { /* odd base URL: the view still switched */ }
+    }
+
+    mountAdminNav();
+    render();
+  }
+
   /* ---------------------------------------------------------------- board */
 
   async function loadBoard() {
@@ -352,20 +443,11 @@
       );
     }
 
-    // Section nav in the shape Shopify's own admin uses: an icon+label tab list
-    // with a bottom-border active state, no app-brand bar (the admin chrome
-    // already shows the app name) and no emoji anywhere.
+    // No nav of our own here on purpose: Board / Team / Settings / Plan are menu
+    // items in the Shopify admin sidebar (mountAdminNav), so the app starts at
+    // its content. The board's own tools row carries the "who am I" chips and
+    // the shortcut help, because those are utilities, not a second menu.
     return h('div', null,
-      h('div', { class: 'appnav' },
-        h('div', { class: 'appnav-tabs', role: 'tablist', 'aria-label': 'TaskPe sections' },
-          SECTIONS.map(sec => h('button', {
-            class: 'tab' + (state.view === sec.view ? ' is-active' : ''),
-            role: 'tab',
-            'aria-selected': state.view === sec.view ? 'true' : 'false',
-            onclick: () => { state.view = sec.view; render(); },
-          }, icon(sec.icon, { size: 18, class: 'tab-icon' }), sec.label))),
-        renderMeChips(),
-        iconButton('info-circle', { title: 'Keyboard shortcuts (?)', onClick: openShortcutsHelp })),
       renderBanners(),
       state.view === 'board' ? renderBoard() :
       state.view === 'team' ? renderTeam() :
@@ -389,7 +471,7 @@
         h('div', null,
           h('div', { class: 'b-title' }, 'You are on the Free plan'),
           h('div', { class: 'b-body' }, 'Upgrade to Starter (≈ ₹499/mo) to enable WhatsApp alerts for your team, unlimited tasks and the daily owner digest.')),
-        h('button', { class: 'btn primary sm', onclick: () => { state.view = 'plan'; render(); } }, 'View plans')));
+        h('button', { class: 'btn primary sm', onclick: () => goView('plan') }, 'View plans')));
       return wrap;
     }
 
@@ -401,7 +483,7 @@
         h('div', null,
           h('div', { class: 'b-title' }, 'WhatsApp is ON — connect your Whatify account to finish'),
           h('div', { class: 'b-body' }, 'Paste your Whatify API key in Settings — takes 2 minutes. Task alerts then land directly on your staff\'s WhatsApp.')),
-        h('button', { class: 'btn primary sm', onclick: () => { state.view = 'settings'; render(); } }, 'Connect')));
+        h('button', { class: 'btn primary sm', onclick: () => goView('settings') }, 'Connect')));
     }
 
     const anyMember = s.members.some(m => m.role === 'owner' && m.whatsapp_verified);
@@ -410,7 +492,7 @@
         h('div', null,
           h('div', { class: 'b-title' }, 'Verify your own number'),
           h('div', { class: 'b-body' }, 'Add yourself in the Team tab with the Owner role so the morning digest reaches you.')),
-        h('button', { class: 'btn sm', onclick: () => { state.view = 'team'; render(); } }, 'Add me')));
+        h('button', { class: 'btn sm', onclick: () => goView('team') }, 'Add me')));
     }
     return wrap;
   }
@@ -445,7 +527,10 @@
     return h('div', null,
       h('div', { class: 'board-tools' },
         h('button', { class: 'btn sm', onclick: openTemplatesModal }, ...withIcon('stack', 'COD / NDR task templates')),
-        h('span', { class: 'muted small' }, 'One-click checklists built for Indian D2C: COD confirm, NDR rescue, RTO checks…')),
+        h('span', { class: 'muted small' }, 'One-click checklists built for Indian D2C: COD confirm, NDR rescue, RTO checks…'),
+        IS_STAFF ? null : h('span', { class: 'spacer' }),
+        IS_STAFF ? null : renderMeChips(),
+        IS_STAFF ? null : iconButton('info-circle', { title: 'Keyboard shortcuts (?)', onClick: openShortcutsHelp })),
       board);
   }
 
@@ -1394,7 +1479,7 @@
               } catch (err) { toast(err.message, true); e.target.disabled = false; }
             },
           }, waOn ? 'Save' : 'Enable WhatsApp'),
-          !planAllowsWA ? h('button', { class: 'btn plain sm', onclick: () => { state.view = 'plan'; render(); } }, 'View plans →') : null)));
+          !planAllowsWA ? h('button', { class: 'btn plain sm', onclick: () => goView('plan') }, 'View plans →') : null)));
 
     // COD / NDR automation hub — independent of WhatsApp, always visible
     // (every sub-feature OFF by default; merchants enable what they need).
@@ -1876,7 +1961,7 @@
       const idx = ['1', '2', '3', '4'].indexOf(ev.key);
       if (idx > -1 && SECTIONS[idx]) {
         ev.preventDefault();
-        if (SECTIONS[idx].view !== state.view) { state.view = SECTIONS[idx].view; render(); }
+        if (SECTIONS[idx].view !== state.view) goView(SECTIONS[idx].view);
       }
     });
   }
@@ -1927,8 +2012,16 @@
   async function boot() {
     try {
       await loadBoard();
+      mountAdminNav();
       render();
       bindShortcuts();
+      // In-iframe history (the admin back arrow drives it) is a section change.
+      if (typeof window.addEventListener === 'function') {
+        window.addEventListener('popstate', () => {
+          const view = viewFromLocation();
+          if (view !== state.view) { state.view = view; mountAdminNav(); render(); }
+        });
+      }
       if (!IS_STAFF && !state.board?.shop?.onboarded) setTimeout(openTour, 300);   // first-run intro (admin only)
     } catch (e) {
       // Every branch renders something *specific*. Silently replacing the

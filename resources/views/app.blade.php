@@ -66,6 +66,10 @@
             embedded: @json($embedded),
             billingFlag: new URLSearchParams(location.search).get('billing') || null,
             openTask: new URLSearchParams(location.search).get('task') || null,
+            // Which section this path/param asks for. The app menu in Shopify's
+            // sidebar (ui-nav-menu, mounted by app.js) is what moves between
+            // them — there is deliberately no in-app tab strip.
+            view: @json($section ?? 'board'),
         };
     </script>
     <script src="{{ asset('js/app.js') }}" defer></script>
