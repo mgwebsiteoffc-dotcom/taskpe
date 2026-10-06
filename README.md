@@ -30,6 +30,8 @@ Built to the **2026 public-app requirements** — see the compliance map below.
 | WhatsApp | Whatify **External API** (`X-API-Key`, bring-your-own-key) | Merchants reuse the BSP they already pay for |
 | Jobs | Database queue + `schedule:run` cron | No Redis/supervisor needed on shared hosting |
 | Frontend | App Bridge v4 (Shopify CDN) + hand-written Polaris CSS + vanilla JS | Zero build step — FTP upload just works |
+| Iconography | Inline SVG from the `ICONS` map in `public/js/app.js` (`icon(name)`) | No emoji: OS-dependent glyphs, untintable, wrong at 13px — and `boot.smoke.mjs` fails the build if one appears |
+| Navigation | Shopify-admin section tabs (icon + label, bottom-border active state) | No duplicate app header inside the admin frame |
 
 ## Local development
 

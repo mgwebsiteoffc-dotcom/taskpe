@@ -14,6 +14,14 @@
   // call, so "no Shopify session" never surfaces as a stack-trace-ish string.
   const NO_SESSION_MSG = 'No Shopify session for this page — open TaskPe from your Shopify admin (Apps → TaskPe).';
 
+  // The four sections of the app, in admin-nav order. `icon` keys into ICONS.
+  const SECTIONS = [
+    { view: 'board',    label: 'Board',    icon: 'board' },
+    { view: 'team',     label: 'Team',     icon: 'people' },
+    { view: 'settings', label: 'Settings', icon: 'settings' },
+    { view: 'plan',     label: 'Plan',     icon: 'premium' },
+  ];
+
   const state = {
     board: null,          // /api/board payload
     view: 'board',        // board | team | settings | plan
@@ -191,6 +199,111 @@
 
   function esc(s) { return s === null || s === undefined ? '' : String(s); }
 
+  /* ------------------------------------------------------------------- icons
+     Inline SVG instead of emoji. Emoji render differently on every OS, cannot
+     be recoloured or sized to the text, and look toy-like at 13px in an admin
+     panel. Every path here is stroke-only + currentColor, so an icon inherits
+     the colour of the button, pill or link it sits in. 24px Polaris grid. */
+
+  const ICONS = {
+    board:      [['path', { d: 'M4 5.4h4.6v13.2H4zM10.4 5.4H15v8.2h-4.6zM16.7 5.4h3.9v11h-3.9z' }]],
+    people:     [['circle', { cx: 9.6, cy: 8.6, r: 3.2 }], ['path', { d: 'M4.2 18.8a5.4 5.4 0 0 1 10.8 0' }],
+                 ['path', { d: 'M15.6 6.2a3.2 3.2 0 0 1 0 4.9' }], ['path', { d: 'M17.2 18.8a5.5 5.5 0 0 0-1.7-3.9' }]],
+    settings:   [['path', { d: 'M4 7.6h8.8M17.4 7.6H20M4 16.4h4.4M12.9 16.4H20' }],
+                 ['circle', { cx: 15, cy: 7.6, r: 2.3 }], ['circle', { cx: 10.7, cy: 16.4, r: 2.3 }]],
+    premium:    [['path', { d: 'M12 3.9l2.5 5 5.6.9-4.1 3.9 1 5.6-5-2.6-5 2.6 1-5.6-4.1-3.9 5.6-.9z' }]],
+    plus:       [['path', { d: 'M12 5.4v13.2M5.4 12h13.2' }]],
+    minus:      [['path', { d: 'M5.4 12h13.2' }]],
+    edit:       [['path', { d: 'M4.6 19.4h4L20 8a2.1 2.1 0 0 0-3-3L5.6 16.4z' }], ['path', { d: 'M14.9 7.1l3 3' }]],
+    delete:     [['path', { d: 'M4.6 7h14.8M9.4 7V4.8h5.2V7M6.7 7l.9 12.3h8.8L17.3 7' }],
+                 ['path', { d: 'M10.4 10.6v5.6M13.6 10.6v5.6' }]],
+    clock:      [['circle', { cx: 12, cy: 12, r: 7.8 }], ['path', { d: 'M12 7.5V12l3.1 1.9' }]],
+    check:      [['path', { d: 'M5 12.7l4.5 4.5L19 6.9' }]],
+    'check-circle': [['circle', { cx: 12, cy: 12, r: 8 }], ['path', { d: 'M8.1 12.2l2.7 2.7 5-5.4' }]],
+    'alert-circle': [['circle', { cx: 12, cy: 12, r: 8 }], ['path', { d: 'M12 7.9v4.7M12 16.2h.01' }]],
+    'info-circle':  [['circle', { cx: 12, cy: 12, r: 8 }], ['path', { d: 'M12 11.2v4.9M12 7.9h.01' }]],
+    link:       [['path', { d: 'M10.3 13.7a3.6 3.6 0 0 0 5.1 0l2.4-2.4a3.6 3.6 0 1 0-5.1-5.1l-1.2 1.2' }],
+                 ['path', { d: 'M13.7 10.3a3.6 3.6 0 0 0-5.1 0L6.2 12.7a3.6 3.6 0 1 0 5.1 5.1l1.2-1.2' }]],
+    text:       [['path', { d: 'M4.6 7.6h14.8M4.6 12h10.6M4.6 16.4h12.8' }]],
+    stack:      [['path', { d: 'M12 4.2l8 3.5-8 3.4-8-3.4z' }], ['path', { d: 'M4 12.1l8 3.4 8-3.4M4 16.1l8 3.4 8-3.4' }]],
+    bell:       [['path', { d: 'M6.6 16.3V11a5.4 5.4 0 0 1 10.8 0v5.3l1.5 2.1H5.1z' }], ['path', { d: 'M10 20.5a2.2 2.2 0 0 0 4 0' }]],
+    'bell-off': [['path', { d: 'M6.6 16.3V11a5.4 5.4 0 0 1 8.3-4.5M17.4 12.6v3.7l1.5 2.1H7.4' }],
+                 ['path', { d: 'M4.4 4.4l15.2 15.2' }]],
+    close:      [['path', { d: 'M6.6 6.6l10.8 10.8M17.4 6.6L6.6 17.4' }]],
+    search:     [['circle', { cx: 11, cy: 11, r: 6 }], ['path', { d: 'M15.4 15.4L19.6 19.6' }]],
+    send:       [['path', { d: 'M4.6 12l14.8-7-3.6 14.6-4.5-5.3z' }], ['path', { d: 'M11.3 14.3l11.4-9.3' }]],
+    refresh:    [['path', { d: 'M19.4 12a7.4 7.4 0 1 1-2.2-5.3' }], ['path', { d: 'M19.6 4.4v4.3h-4.3' }]],
+    reopen:     [['path', { d: 'M4.6 12a7.4 7.4 0 1 0 2.2-5.3' }], ['path', { d: 'M4.4 4.4v4.3h4.3' }]],
+    'arrow-left': [['path', { d: 'M19 12H5.6' }], ['path', { d: 'M11.2 5.6L4.8 12l6.4 6.4' }]],
+    'chevron-right': [['path', { d: 'M9.6 5.6L16 12l-6.4 6.4' }]],
+    'chevron-down':  [['path', { d: 'M5.6 9.4L12 15.8l6.4-6.4' }]],
+    globe:      [['circle', { cx: 12, cy: 12, r: 7.8 }],
+                 ['path', { d: 'M4.2 12h15.6M12 4.2c2.2 2.2 3.3 5 3.3 7.8s-1.1 5.6-3.3 7.8c-2.2-2.2-3.3-5-3.3-7.8s1.1-5.6 3.3-7.8z' }]],
+    chat:       [['path', { d: 'M4.6 12a7.4 7.4 0 1 1 3 5.9l-3.6 1.2 1.2-3.4A7.3 7.3 0 0 1 4.6 12z' }],
+                 ['path', { d: 'M8.8 10.8h6.4M8.8 13.8h4.2' }]],
+    logout:     [['path', { d: 'M14.4 5.2H6.6a1.4 1.4 0 0 0-1.4 1.4v10.8a1.4 1.4 0 0 0 1.4 1.4h7.8' }],
+                 ['path', { d: 'M17.6 8.4L21 12l-3.4 3.6M21 12h-9.4' }]],
+    phone:      [['path', { d: 'M5.4 5.4h3.4l1.5 3.8-2 1.4a9.6 9.6 0 0 0 4.7 4.7l1.4-2 3.8 1.5v3.4c0 .8-.7 1.5-1.5 1.4C10 19.2 4.8 14 4.4 7c-.1-.8.6-1.5 1.4-1.6z' }]],
+    wallet:     [['path', { d: 'M4.6 7.7a2.2 2.2 0 0 1 2.2-2.2h11v13.1h-11a2.2 2.2 0 0 1-2.2-2.2z' }],
+                 ['path', { d: 'M4.6 10.6h13.2M15 14.2h2.8' }]],
+    receipt:    [['path', { d: 'M6.4 4.5h11.2v15l-2.8-1.6-2.8 1.6-2.8-1.6-2.8 1.6z' }],
+                 ['path', { d: 'M9.2 8.6h5.6M9.2 12.2h5.6' }]],
+    map:        [['path', { d: 'M12 20.6s6-5.3 6-9.5a6 6 0 1 0-12 0c0 4.2 6 9.5 6 9.5z' }], ['circle', { cx: 12, cy: 11, r: 2.2 }]],
+    truck:      [['path', { d: 'M3.6 7.3h9.2v8.4H3.6zM12.8 10.4h3.5l2.7 2.8v2.5h-6.2z' }],
+                 ['circle', { cx: 7, cy: 17.6, r: 1.7 }], ['circle', { cx: 16.5, cy: 17.6, r: 1.7 }]],
+    calendar:   [['path', { d: 'M4.8 6.8h14.4v12H4.8z' }], ['path', { d: 'M4.8 10.6h14.4M9 4.8v3.4M15 4.8v3.4' }]],
+    'user-plus':[['circle', { cx: 10, cy: 8.4, r: 3.2 }], ['path', { d: 'M4.4 18.8a5.6 5.6 0 0 1 11.2 0' }],
+                 ['path', { d: 'M18.6 6.2v5.2M16 8.8h5.2' }]],
+    rupee:      [['path', { d: 'M7.4 5.6h9.2M7.4 9.4h9.2M15.4 5.6c0 3.1-2.3 4.3-5.8 4.3H7.4l7.4 8.9' }],
+                 ['path', { d: 'M7.4 13.2h4.8' }]],
+    box:        [['path', { d: 'M4.6 8.2L12 4.4l7.4 3.8v7.6L12 19.6 4.6 15.8z' }],
+                 ['path', { d: 'M4.6 8.2L12 12l7.4-3.8M12 12v7.6' }]],
+  };
+
+  // opts: { size, label } — `label` makes it an accessible, focus-revealing
+  // element; without a label it is pure decoration and hidden from AT.
+  function icon(name, opts = {}) {
+    const spec = ICONS[name] || ICONS['info-circle'];
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('class', 'icon' + (opts.class ? ' ' + opts.class : ''));
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', String(opts.size || 18));
+    svg.setAttribute('height', String(opts.size || 18));
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', String(opts.stroke || '1.7'));
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', opts.label ? 'false' : 'true');
+    if (opts.label) svg.setAttribute('role', 'img');
+    for (const [tag, attrs] of spec) {
+      const el = document.createElementNS(NS, tag);
+      for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+      svg.append(el);
+    }
+    if (opts.label) {
+      const title = document.createElementNS(NS, 'title');
+      title.textContent = opts.label;
+      svg.append(title);
+    }
+    return svg;
+  }
+
+  // Icon + text, the shape 90% of the callsites need.
+  function withIcon(name, label, opts = {}) {
+    return [icon(name, opts), label];
+  }
+
+  // Icon-only control: the visible glyph is the button, so the name has to
+  // live in aria-label (and title, for hover). Never a bare emoji.
+  function iconButton(name, { title, onClick, className = 'icon-btn', disabled }) {
+    return h('button', {
+      class: className, title: title, 'aria-label': title, disabled: !!disabled,
+      onclick: onClick,
+    }, icon(name, { size: 16 }));
+  }
+
   /* ---------------------------------------------------------------- board */
 
   async function loadBoard() {
@@ -217,28 +330,38 @@
     const s = state.board;
     if (!s) return h('div', { class: 'boot' }, h('div', { class: 'boot-text' }, 'Loading…'));
 
-    // Staff portal: board-only surface, own topbar, no admin tabs.
+    // Staff portal: board-only surface, so no section nav — just who you are
+    // and how to get out. Same row shape as the admin nav, minus the tabs.
     if (IS_STAFF) {
       return h('div', null,
-        h('div', { class: 'topbar' },
-          h('div', { class: 'brand' }, h('div', { class: 'brand-badge' }, 'T'), 'TaskPe',
-            s.shop.name ? h('span', { class: 'staff-shop' }, '· ' + s.shop.name) : null),
+        h('div', { class: 'appnav' },
+          h('div', { class: 'appnav-title' },
+            icon('board', { size: 18 }),
+            h('span', null, s.shop.name || 'Your board'),
+            h('span', { class: 'appnav-sub' }, 'Staff board')),
           h('span', { class: 'spacer' }),
-          h('span', { class: 'staff-chip', title: 'Signed in via staff portal' }, cfg.staff.initials ? cfg.staff.initials + ' · ' + cfg.staff.name : cfg.staff.name),
-          h('button', { class: 'btn plain sm', onclick: staffLogout }, 'Log out')),
+          h('span', { class: 'staff-chip', title: 'Signed in via staff portal' },
+            h('span', { class: 'avatar' }, cfg.staff.initials || ''),
+            cfg.staff.name),
+          h('button', { class: 'btn plain sm', onclick: staffLogout },
+            ...withIcon('logout', 'Log out', { size: 15 }))),
         renderBoard(),
         state.drawerTaskId ? renderTaskDrawer(state.drawerTaskId) : null,
       );
     }
 
-    const tabs = [['board', '📋 Board'], ['team', '👥 Team'], ['settings', '⚙️ Settings'], ['plan', '⭐ Plan']];
-
+    // Section nav in the shape Shopify's own admin uses: an icon+label tab list
+    // with a bottom-border active state, no app-brand bar (the admin chrome
+    // already shows the app name) and no emoji anywhere.
     return h('div', null,
-      h('div', { class: 'topbar' },
-        h('div', { class: 'brand' }, h('div', { class: 'brand-badge' }, 'T'), 'TaskPe',
-          s.shop.plan !== 'free' ? h('span', { class: 'pill medium' }, s.shop.plan.toUpperCase()) : null),
-        h('nav', null, tabs.map(([v, label]) =>
-          h('button', { class: state.view === v ? 'active' : '', onclick: () => { state.view = v; render(); } }, label))),
+      h('div', { class: 'appnav' },
+        h('div', { class: 'appnav-tabs', role: 'tablist', 'aria-label': 'TaskPe sections' },
+          SECTIONS.map(sec => h('button', {
+            class: 'tab' + (state.view === sec.view ? ' is-active' : ''),
+            role: 'tab',
+            'aria-selected': state.view === sec.view ? 'true' : 'false',
+            onclick: () => { state.view = sec.view; render(); },
+          }, icon(sec.icon, { size: 18, class: 'tab-icon' }), sec.label))),
         renderMeChips()),
       renderBanners(),
       state.view === 'board' ? renderBoard() :
@@ -314,11 +437,11 @@
     const board = h('div', { class: 'board' });
 
     for (const col of s.columns) board.append(renderColumn(col));
-    board.append(h('button', { class: 'add-col-btn', onclick: promptAddColumn }, '+ Add column'));
+    board.append(h('button', { class: 'add-col-btn', onclick: promptAddColumn }, ...withIcon('plus', 'Add column', { size: 16 })));
 
     return h('div', null,
       h('div', { class: 'board-tools' },
-        h('button', { class: 'btn sm', onclick: openTemplatesModal }, '📦 COD / NDR task templates'),
+        h('button', { class: 'btn sm', onclick: openTemplatesModal }, ...withIcon('stack', 'COD / NDR task templates')),
         h('span', { class: 'muted small' }, 'One-click checklists built for Indian D2C: COD confirm, NDR rescue, RTO checks…')),
       board);
   }
@@ -329,9 +452,9 @@
         h('h3', null, col.name),
         h('span', { class: 'col-count' }, col.tasks.length),
         h('div', { class: 'col-actions' },
-          h('button', { title: 'Rename', onclick: () => promptRenameColumn(col) }, '✏️'),
+          iconButton('edit', { title: 'Rename column', onClick: () => promptRenameColumn(col) }),
           state.board.columns.length > 1
-            ? h('button', { title: 'Delete column', onclick: () => deleteColumn(col) }, '🗑') : null)),
+            ? iconButton('delete', { title: 'Delete column', onClick: () => deleteColumn(col) }) : null)),
       h('div', { class: 'col-cards' }, col.tasks.map(t => renderCard(t, col))),
       renderAddCard(col));
 
@@ -372,11 +495,11 @@
       h('div', { class: 'card-title' }, t.title),
       h('div', { class: 'card-meta' },
         h('span', { class: 'pill ' + t.priority }, t.priority),
-        t.completed_at ? h('span', { class: 'pill done' }, '✓ Done')
-          : t.overdue ? h('span', { class: 'pill overdue' }, '⏰ ' + fmtDate(t.due_at))
+        t.completed_at ? h('span', { class: 'pill done' }, ...withIcon('check', 'Done', { size: 13 }))
+          : t.overdue ? h('span', { class: 'pill overdue' }, icon('clock', { size: 13 }), fmtDate(t.due_at))
           : t.due_at ? h('span', { class: 'pill due' }, fmtDate(t.due_at)) : null),
       t.resource ? h('div', { class: 'res-line' },
-        t.resource.image ? h('img', { src: t.resource.image, alt: '' }) : h('span', null, '🔗'),
+        t.resource.image ? h('img', { src: t.resource.image, alt: '' }) : h('span', { class: 'res-ic' }, icon('link', { size: 14 })),
         IS_STAFF
           ? h('span', { class: 'small', title: 'Opens in Shopify admin — ask your manager if you need it' }, t.resource.label + ' ' + (t.resource.title || ''))
           : h('a', { href: t.resource.url || '#', onclick: e => { e.preventDefault(); e.stopPropagation(); if (t.resource.url) openAdmin(t.resource.url); } },
@@ -384,8 +507,8 @@
       h('div', { class: 'card-foot' },
         (() => {
           const ck = checklistLines(t.description);
-          if (ck) return h('span', { class: 'muted small', title: 'Checklist progress' }, '☑ ' + ck.items.filter(i => i.done).length + '/' + ck.items.length);
-          return t.description ? h('span', { class: 'muted small' }, '☰') : null;
+          if (ck) return h('span', { class: 'muted small ck-count', title: 'Checklist progress' }, icon('check-circle', { size: 14 }), ck.items.filter(i => i.done).length + '/' + ck.items.length);
+          return t.description ? h('span', { class: 'muted small', title: 'Has a description' }, icon('text', { size: 14 })) : null;
         })(),
         t.assignee ? h('span', { class: 'avatar', title: t.assignee.name }, t.assignee.initials)
           : h('span', { class: 'avatar gray', title: 'Unassigned' }, '·')));
@@ -423,7 +546,7 @@
     try {
       const updated = await api('/tasks/' + taskId + '/move', { method: 'POST', body: { column_id: columnId, position } });
       task.completed_at = updated.completed_at; task.position = updated.position;
-      if (updated.completed_at) toast('Task completed 🎉');
+      if (updated.completed_at) toast('Task completed');
       render();
     } catch (e) { toast(e.message, true); await refreshBoard(); }
   }
@@ -526,7 +649,8 @@
 
     const assigneeSel = h('select', { class: 'input' },
       h('option', { value: '' }, 'Unassigned'),
-      activeMembers.map(m => h('option', { value: m.id, selected: t.assignee?.id === m.id }, m.name + (m.whatsapp_verified ? ' 🟢' : ''))));
+      activeMembers.map(m => h('option', { value: m.id, selected: t.assignee?.id === m.id },
+                       m.name + (m.whatsapp_verified ? ' · on WhatsApp' : ''))));
     assigneeSel.value = t.assignee?.id || '';
 
     const colSel = h('select', { class: 'input' },
@@ -580,18 +704,18 @@
             await refreshBoard();
             state.drawerTaskId = id; render();
           },
-        }, t.completed_at ? '↩ Reopen' : '✓ Mark done'),
+        }, ...(t.completed_at ? withIcon('reopen', 'Reopen', { size: 16 }) : withIcon('check', 'Mark done', { size: 16 }))),
         (t.assignee && !IS_STAFF) ? h('button', {
           class: 'btn', title: 'Send WhatsApp reminder to assignee',
           onclick: async e => {
             e.target.disabled = true;
             try {
               await api('/tasks/' + id + '/remind', { method: 'POST' });
-              toast('WhatsApp reminder queued 🔔');
+              toast('WhatsApp reminder queued');
             } catch (err) { toast(err.message, true); }
             e.target.disabled = false;
           },
-        }, '🔔 Nudge') : null,
+        }, ...withIcon('bell', 'Nudge', { size: 16 })) : null,
         h('span', { class: 'spacer' }),
         IS_STAFF ? null : h('button', {
           class: 'btn danger',
@@ -642,7 +766,7 @@
       case 'updated': return 'Details updated';
       case 'moved': return 'Moved to ' + (m.to || '');
       case 'assigned': return 'Assigned to ' + (m.to || '');
-      case 'completed': return 'Marked as done ✅';
+      case 'completed': return 'Marked as done';
       case 'reopened': return 'Reopened';
       default: return a.action;
     }
@@ -670,9 +794,9 @@
             await api('/tasks/' + t.id, { method: 'PATCH', body: { resource_type: null } });
             await refreshBoard(); state.drawerTaskId = t.id; render();
           },
-        }, '✕ Remove')));
+        }, ...withIcon('close', 'Remove', { size: 14 }))));
     } else {
-      wrap.append(h('button', { class: 'btn sm', onclick: () => openResourcePicker(t) }, '🔗 Link order, product, customer or blog post'));
+      wrap.append(h('button', { class: 'btn sm', onclick: () => openResourcePicker(t) }, ...withIcon('link', 'Link order, product, customer or blog post', { size: 16 })));
     }
     return wrap;
   }
@@ -776,7 +900,7 @@
     const doneCount = ck.items.filter(i => i.done).length;
 
     return h('div', { class: 'ck-list' },
-      h('div', { class: 'ck-progress' }, '📦 Checklist — ' + doneCount + '/' + ck.items.length + ' done'),
+      h('div', { class: 'ck-progress' }, icon('stack', { size: 15 }), 'Checklist — ' + doneCount + '/' + ck.items.length + ' done'),
       ck.items.map(item => h('button', {
         class: 'ck-item' + (item.done ? ' done' : ''),
         onclick: async () => {
@@ -788,7 +912,7 @@
           } catch (e) { toast(e.message, true); }
         },
       },
-        h('span', { class: 'ck-box' }, item.done ? '✓' : ''),
+        h('span', { class: 'ck-box' }, item.done ? icon('check', { size: 11, stroke: '2.6' }) : null),
         h('span', { class: 'ck-text' }, item.text))));
   }
 
@@ -809,7 +933,7 @@
     const s = state.board;
     const templates = Object.entries(s.task_templates || {});
     const body = h('div', null);
-    const close = openModalAuto('📦 Task templates — India COD / NDR pack', body);
+    const close = openModalAuto('Task templates — India COD / NDR pack', body);
 
     function renderGrid() {
       body.replaceChildren(
@@ -818,7 +942,7 @@
           class: 'tmpl-card',
           onclick: () => renderDetail(tpl),
         },
-          h('span', { class: 'tmpl-emoji' }, tpl.emoji || '📋'),
+          h('span', { class: 'tmpl-icon' }, icon(tpl.icon || 'box', { size: 22 })),
           h('span', { class: 'tmpl-name' }, tpl.name),
           h('span', { class: 'tmpl-tag' }, tpl.tagline || '')))));
     }
@@ -829,7 +953,7 @@
 
       const search = h('input', { class: 'input', placeholder: 'Search order… e.g. #1001' });
       const results = h('div', null, h('div', { class: 'res-empty' }, 'Type to search'));
-      const createBtn = h('button', { class: 'btn primary', disabled: needsResource }, '✨ Create task');
+      const createBtn = h('button', { class: 'btn primary', disabled: needsResource }, ...withIcon('plus', 'Create task', { size: 16 }));
 
       const doSearch = debounce(async () => {
         const q = search.value.trim();
@@ -874,17 +998,17 @@
           close();
           await refreshBoard();
           if (created?.id) { state.drawerTaskId = created.id; render(); }
-          toast((tpl.emoji || '✨') + ' Task created — checklist ready');
+          toast('Task created — checklist ready');
         } catch (e) {
           toast(e.message, true); createBtn.disabled = false;
         }
       });
 
       body.replaceChildren(
-        h('button', { class: 'btn plain sm', onclick: renderGrid }, '← All templates'),
+        h('button', { class: 'btn plain sm', onclick: renderGrid }, ...withIcon('arrow-left', 'All templates', { size: 15 })),
         h('div', { class: 'tmpl-detail' },
           h('div', { class: 'tmpl-dhead' },
-            h('span', { class: 'tmpl-emoji big' }, tpl.emoji || '📋'),
+            h('span', { class: 'tmpl-icon big' }, icon(tpl.icon || 'box', { size: 28 })),
             h('div', null,
               h('h3', null, tpl.name),
               h('div', { class: 'muted small' }, tpl.tagline || ''))),
@@ -894,7 +1018,7 @@
             needsResource ? h('span', { class: 'pill link' }, 'links an order') : h('span', { class: 'pill done' }, 'recurring chore')),
           h('div', { class: 'ck-preview' }, (tpl.checklist || []).map(it =>
             h('div', { class: 'ck-line' }, h('span', { class: 'ck-box' }), h('span', { class: 'ck-text' }, it)))),
-          needsResource ? h('div', { class: 'field' }, h('label', null, '🔗 Link the order'), search, h('div', { class: 'mt' }, results)) : null,
+          needsResource ? h('div', { class: 'field' }, h('label', null, ...withIcon('link', 'Link the order', { size: 14 })), search, h('div', { class: 'mt' }, results)) : null,
           h('div', { class: 'row-flex mt' }, createBtn)));
       if (needsResource) setTimeout(() => search.focus(), 50);
     }
@@ -1085,9 +1209,9 @@
         h('div', { class: 'm-name' }, m.name, ' ', m.role === 'owner' ? h('span', { class: 'pill medium' }, 'OWNER') : null, m.active ? null : h('span', { class: 'pill' }, ' disabled')),
         h('div', { class: 'm-sub' }, '+' + m.phone)),
       h('div', { class: 'm-actions' },
-        m.portal_active ? h('span', { class: 'verify-badge yes', title: 'Can use the web portal — no Shopify admin needed' }, '🌐 portal') : null,
+        m.portal_active ? h('span', { class: 'verify-badge yes', title: 'Can use the web portal — no Shopify admin needed' }, icon('globe', { size: 13 }), 'portal') : null,
         m.whatsapp_verified
-          ? h('span', { class: 'verify-badge yes' }, '✓ WhatsApp verified')
+          ? h('span', { class: 'verify-badge yes' }, icon('check-circle', { size: 13 }), 'WhatsApp verified')
           : h('span', { class: 'verify-badge no' }, 'Not verified'),
         h('button', {
           class: 'btn sm',
@@ -1100,7 +1224,7 @@
               await refreshBoard();
             } catch (e) { toast(e.message, true); }
           },
-        }, m.portal_active ? '↻ Portal link' : '🔗 Portal link'),
+        }, ...withIcon(m.portal_active ? 'refresh' : 'link', 'Portal link', { size: 15 })),
         m.portal_active ? h('button', {
           class: 'btn sm plain',
           title: 'Revoke this member\'s web portal access immediately',
@@ -1132,7 +1256,7 @@
             h('div', { class: 'p-head' }, h('h2', null, 'Team members'),
               h('span', { class: 'sub' }, `${s.members.filter(m => m.active).length} active`)),
             h('div', { class: 'p-body flush' },
-              s.members.length ? rows : h('div', { class: 'empty-state' }, h('div', { class: 'big' }, '👋'), 'Add your first team member — your VA, packer, or yourself.')))),
+              s.members.length ? rows : h('div', { class: 'empty-state' }, icon('people', { size: 34, class: 'big' }), 'Add your first team member — your VA, packer, or yourself.')))),
         h('div', null,
           h('div', { class: 'panel' },
             h('div', { class: 'p-head' }, h('h2', null, 'Add member')),
@@ -1165,13 +1289,13 @@
             h('div', { class: 'p-head' }, h('h2', null, 'No Shopify login for staff? Use the web portal')),
             h('div', { class: 'p-body small muted' },
               h('p', null, 'Shopify Basic gives you only ONE staff seat — your packer or VA usually can\'t open Shopify admin at all.'),
-              h('p', { class: 'mt' }, 'Tap 🔗 Portal link next to a member and send them the link: they get this SAME board (tasks, COD templates, checklists) in any phone browser. No Shopify account, no app install — just "Add to Home Screen".'),
+              h('p', { class: 'mt' }, 'Tap Portal link next to a member and send them the link: they get this SAME board (tasks, COD templates, checklists) in any phone browser. No Shopify account, no app install — just "Add to Home Screen".'),
               h('p', { class: 'mt' }, 'Staff can create, move and complete tasks — they can\'t delete tasks or touch settings, billing or the team list. Revoke a link anytime. Works on every plan, including Free.'))),
           h('div', { class: 'panel' },
             h('div', { class: 'p-head' }, h('h2', null, 'How WhatsApp verification works')),
             h('div', { class: 'p-body small muted' },
               h('p', null, '1. Add a member → we WhatsApp them a 6-digit code (from YOUR Whatify number).'),
-              h('p', { class: 'mt' }, '2. They share the code → enter it here → verified ✅'),
+              h('p', { class: 'mt' }, '2. They share the code → enter it here → verified'),
               h('p', { class: 'mt' }, '3. From then on, assigned tasks and reminders land on their WhatsApp instantly.'),
               h('p', { class: 'mt' }, 'Tip: ask staff to reply "hi" to your WhatsApp number once — it keeps instant messages flowing.'))))));
   }
@@ -1247,7 +1371,7 @@
                 const nowOn = checkbox.checked;
                 state.settings = null;
                 await loadBoard();
-                toast('WhatsApp alerts ' + (nowOn ? 'enabled ✅' : 'disabled'));
+                toast('WhatsApp alerts ' + (nowOn ? 'enabled' : 'disabled'));
                 render();
               } catch (err) { toast(err.message, true); e.target.disabled = false; }
             },
@@ -1317,18 +1441,18 @@
             masterPanel,
             h('div', { class: 'panel' },
               h('div', { class: 'p-body small muted' },
-                h('p', null, '📴 WhatsApp alerts are turned off. Your board, team and task linking work exactly the same — nothing is ever sent to WhatsApp.'),
+                h('p', null, '— WhatsApp alerts are turned off. Your board, team and task linking work exactly the same — nothing is ever sent to WhatsApp.'),
                 h('p', { class: 'mt' }, 'Turn the switch on when you want: instant task pings to staff, due reminders, and the owner\'s morning digest.')))),
           h('div', null,
             codPanel,
             h('div', { class: 'panel' },
               h('div', { class: 'p-head' }, h('h2', null, 'Setup guide')),
               h('div', { class: 'p-body small muted' },
-                h('p', null, '1️⃣ Turn the switch ON above.'),
-                h('p', { class: 'mt' }, '2️⃣ Create an account at ', h('b', null, 'whatify.in'), ' and connect your WhatsApp Business number.'),
-                h('p', { class: 'mt' }, '3️⃣ Generate an API key there and paste it here.'),
-                h('p', { class: 'mt' }, '4️⃣ Add yourself as an Owner in the Team tab and verify your number.'),
-                h('p', { class: 'mt' }, '5️⃣ (Recommended) Create message templates in Whatify so alerts also work outside the 24-hour window.'),
+                h('p', null, '1. Turn the switch ON above.'),
+                h('p', { class: 'mt' }, '2. Create an account at ', h('b', null, 'whatify.in'), ' and connect your WhatsApp Business number.'),
+                h('p', { class: 'mt' }, '3. Generate an API key there and paste it here.'),
+                h('p', { class: 'mt' }, '4. Add yourself as an Owner in the Team tab and verify your number.'),
+                h('p', { class: 'mt' }, '5. (Recommended) Create message templates in Whatify so alerts also work outside the 24-hour window.'),
                 h('p', { class: 'mt' }, h('button', { class: 'btn plain sm', onclick: openTour }, 'Replay the intro tour')))))));
     }
 
@@ -1353,7 +1477,7 @@
                 (() => {
                   const sel = h('select', { class: 'input', id: 'wf-account' },
                     wf.accounts.map(a => h('option', { value: a.id, selected: a.id === (s.whatsapp_account_id || wf.default_account_id) },
-                      `${a.display_name || 'Number'} (+${a.phone_number}) ${a.quality_rating === 'GREEN' ? '🟢' : ''}`)));
+                      `${a.display_name || 'Number'} (+${a.phone_number})` + (a.quality_rating === 'GREEN' ? ' · quality: healthy' : ''))));
                   return sel;
                 })()) : null,
               wf.wallet && wf.connected ? h('p', { class: 'small muted mb' }, `Whatify wallet: ₹${Number(wf.wallet.balance ?? 0).toFixed(2)} balance`) : null,
@@ -1377,7 +1501,7 @@
                   onclick: async () => {
                     try { state.settings = await api('/settings'); render(); toast('Refreshed'); } catch (e) { toast(e.message, true); }
                   },
-                }, '↻ Test / refresh') : null))),
+                }, ...withIcon('refresh', 'Test / refresh', { size: 15 })) : null))),
 
           // ---- templates
           wf.connected ? h('div', { class: 'panel' },
@@ -1439,7 +1563,7 @@
                       toast(r.message, !r.ok);
                     } catch (err) { toast(err.message, true); }
                   },
-                }, '📤 Send digest now'),
+                }, ...withIcon('send', 'Send digest now', { size: 16 })),
                 h('button', {
                   class: 'btn plain',
                   onclick: async () => {
@@ -1470,11 +1594,11 @@
           h('div', { class: 'panel' },
             h('div', { class: 'p-head' }, h('h2', null, 'Setup guide')),
             h('div', { class: 'p-body small muted' },
-              h('p', null, '1️⃣ Create an account at ', h('b', null, 'whatify.in'), ' and connect your WhatsApp Business number.'),
-              h('p', { class: 'mt' }, '2️⃣ Generate an API key and paste it on this page.'),
-              h('p', { class: 'mt' }, '3️⃣ Add yourself as an Owner in the Team tab and verify your number.'),
-              h('p', { class: 'mt' }, '4️⃣ (Recommended) Create the 4 templates below in your Whatify dashboard so messages work even outside the 24-hour window.'),
-              h('p', { class: 'mt' }, '💸 Cost: task alerts are "utility" messages — about ₹0.12 each on your Whatify wallet.'),
+              h('p', null, '1. Create an account at ', h('b', null, 'whatify.in'), ' and connect your WhatsApp Business number.'),
+              h('p', { class: 'mt' }, '2. Generate an API key and paste it on this page.'),
+              h('p', { class: 'mt' }, '3. Add yourself as an Owner in the Team tab and verify your number.'),
+              h('p', { class: 'mt' }, '4. (Recommended) Create the 4 templates below in your Whatify dashboard so messages work even outside the 24-hour window.'),
+              h('p', { class: 'mt' }, 'Cost: task alerts are "utility" messages — about ₹0.12 each on your Whatify wallet.'),
               h('p', { class: 'mt' }, h('button', { class: 'btn plain sm', onclick: openTour }, 'Replay the intro tour')))),
           h('div', { class: 'panel' },
             h('div', { class: 'p-head' }, h('h2', null, 'Copy-paste templates')),
@@ -1608,12 +1732,12 @@
         })),
       h('p', { class: 'muted small mt' },
         cur === 'INR'
-          ? '🇮🇳 Prices are shown and charged in Indian Rupees (₹) — your store\'s billing currency. Shopify bills your card/RuPay/UPI directly; no USD conversion and no forex fees on this subscription.'
+          ? 'Prices are shown and charged in Indian Rupees (₹) — your store\'s billing currency. Shopify bills your card/RuPay/UPI directly; no USD conversion and no forex fees on this subscription.'
           : 'Prices are shown in your store\'s billing currency (' + cur + '). Indian stores see plans directly in ₹ (INR). All charges run through Shopify Billing — nothing is charged outside Shopify.'));
   }
 
   function handleBillingFlag(flag) {
-    if (flag === 'active') { toast('🎉 Plan activated! WhatsApp features unlocked.'); void api('/billing/sync', { method: 'POST' }).then(refreshBoard).catch(() => {}); }
+    if (flag === 'active') { toast('Plan activated — WhatsApp features unlocked.'); void api('/billing/sync', { method: 'POST' }).then(refreshBoard).catch(() => {}); }
     else if (flag === 'declined') toast('Plan not approved — still on Free settings.', true);
     else if (flag === 'error') toast('Could not confirm the charge — hit "Sync" on Plan tab.', true);
   }
@@ -1637,7 +1761,7 @@
       }, 'Save')) : null;
 
     overlay.append(h('div', { class: 'modal' },
-      h('div', { class: 'modal-head' }, h('h2', null, title), h('button', { class: 'x', onclick: close }, '×')),
+      h('div', { class: 'modal-head' }, h('h2', null, title), iconButton('close', { title: 'Close', className: 'x', onClick: close })),
       h('div', { class: 'modal-body' }, bodyEl),
       foot));
 

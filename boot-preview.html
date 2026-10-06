@@ -32,8 +32,9 @@
   <div class="head">
     <h1>TaskPe — what each board-load state now says</h1>
     <p>
-      These four frames run the real <code>public/js/app.js</code> against stubbed responses, so you can read the
-      exact copy a merchant sees. Previously all four collapsed into “Something went wrong loading the board. Reload
+      Frames 1–4 run the real <code>public/js/app.js</code> against stubbed responses, so you read the exact copy and the exact
+      icons a merchant sees. The board frame shows the section nav (Board / Team / Settings / Plan) in Shopify’s own
+      tab style — no app header bar, and inline SVG instead of emoji everywhere. Previously all four collapsed into “Something went wrong loading the board. Reload
       the page.” Only the last one is a genuine server failure; the first three are states to explain.
     </p>
   </div>
@@ -44,6 +45,14 @@ const BOARD = {
   shop: { domain: 'demo.myshopify.com', name: 'Demo Store', plan: 'free',
           plan_cfg: { member_limit: 2, task_limit: 50 }, timezone: 'Asia/Kolkata',
           currency: 'INR', onboarded: true },
+  task_templates: {
+    cod_confirm: { icon: 'phone', name: 'COD confirmation', tagline: 'Verify a COD order before you ship.',
+                   resource_type: 'order', priority: 'high', due_in_hours: 24,
+                   title: 'Confirm COD order {order}', checklist: ['Call the buyer', 'Confirm address', 'Note in CRM'] },
+    ndr_rescue:  { icon: 'refresh', name: 'NDR follow-up', tagline: 'Courier could not deliver — rescue it.',
+                   resource_type: 'order', priority: 'urgent', due_in_hours: 12,
+                   title: 'NDR follow-up {order}', checklist: ['Read NDR reason', 'Call buyer', 'Book reattempt'] },
+  },
   plans: { free: { name: 'Free', prices: {}, trial_days: 0 },
            starter: { name: 'Starter', prices: { USD: 5.99, INR: 499 }, trial_days: 7 } },
   task_templates: {},

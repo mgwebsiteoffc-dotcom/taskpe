@@ -63,7 +63,7 @@ class DemoStoreCommand extends Command
         $shop->save();
 
         $this->newLine();
-        $this->info('✔ Demo board ready.');
+        $this->info('Demo board ready.');
         $this->table(['What', 'Count / detail'], [
             ['Members', 'Ravi Kumar (owner, verified), Sunita (staff, verified), Arjun (staff, unverified)'],
             ['Columns', '+ "Needs Attention" between To Do and In Progress'],
@@ -163,7 +163,7 @@ class DemoStoreCommand extends Command
         return [
             $mk('cod-confirm', 0, 'todo', 'Sunita', 2, 8),
             $mk('ndr-followup', 1, 'attention', 'Ravi Kumar', 1, -3, [
-                'pre' => "🚚 Courier NDR reason: Customer not available (2 attempts)\n📦 AWB: 1433210987654321\n\n",
+                'pre' => "Courier NDR reason: Customer not available (2 attempts)\nAWB: 1433210987654321\n\n",
                 'actor' => \App\Services\NdrAutoTask::ACTOR,
             ]),
             $mk('rto-high-risk', 2, 'attention', null, 0, 26),

@@ -51,24 +51,65 @@ input, select, textarea { font: inherit; }
 }
 .boot-text { color: var(--text-subdued); }
 
-/* ---------------- layout ---------------- */
-.topbar {
-  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-  padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border);
+/* ---------------- layout: section nav ----------------
+   Shopify admin shape: no app brand bar (the admin chrome already names the
+   app) and no pill-highlighted buttons — sections are a tab list with a
+   bottom-border active state, exactly like Orders / Customers / Analytics. */
+.appnav {
+  display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap;
+  padding: 0 20px; background: var(--surface); border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 40;
 }
-.topbar .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; }
+.appnav-tabs { display: flex; gap: 2px; }
+.appnav .tab {
+  display: inline-flex; align-items: center; gap: 8px;
+  border: 0; border-bottom: 3px solid transparent; background: transparent;
+  padding: 13px 14px 10px; margin-bottom: -1px;
+  color: var(--text-subdued); font-weight: 550; font-size: 14px; cursor: pointer;
+}
+.appnav .tab .tab-icon { color: var(--text-subdued); }
+.appnav .tab:hover { color: var(--text); background: var(--surface-hover); }
+.appnav .tab:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.appnav .tab.is-active { color: var(--text); font-weight: 650; border-bottom-color: var(--text); }
+.appnav .tab.is-active .tab-icon { color: var(--text); }
+.appnav-title {
+  display: inline-flex; align-items: center; gap: 9px; padding: 13px 0 10px;
+  font-weight: 650; font-size: 14.5px; color: var(--text);
+}
+.appnav-title .icon { color: var(--text-subdued); }
+.appnav-sub {
+  font-weight: 500; font-size: 12.5px; color: var(--text-subdued);
+  border-left: 1px solid var(--border-strong); padding-left: 9px; margin-left: 2px;
+}
+.appnav .me-chips { padding-bottom: 7px; }
+@media (max-width: 720px) {
+  .appnav { align-items: stretch; flex-direction: column; gap: 0; padding: 0 12px; }
+  .appnav .tab { padding: 12px 10px 9px; font-size: 13.5px; }
+  .appnav .me-chips { padding: 0 0 10px; margin-left: 0; }
+}
 .brand-badge {
   width: 30px; height: 30px; border-radius: 9px; background: var(--primary);
   color: #fff; display: grid; place-items: center; font-size: 15px; font-weight: 700;
 }
-.topbar nav { display: flex; gap: 4px; }
-.topbar nav button {
-  border: 0; background: transparent; padding: 7px 14px; border-radius: 8px;
-  color: var(--text-subdued); font-weight: 550;
+
+/* ---------------- icons ----------------
+   One rule keeps every glyph on the text baseline: icons are stroke-based and
+   inherit currentColor, so they recolour with the control they sit in. */
+.icon { flex: none; display: inline-block; vertical-align: -3px; }
+.btn .icon, .pill .icon, .verify-badge .icon, .me-chip .icon, .tab-icon,
+.ck-progress .icon, .card-foot .icon, .empty-state .icon, .lbl .icon { vertical-align: 0; }
+.btn, .pill, .verify-badge, .add-col-btn, .ck-progress, .add-card-toggle {
+  display: inline-flex; align-items: center; gap: 7px;
 }
-.topbar nav button.active { background: var(--info-bg); color: var(--text); }
-.topbar nav button:hover:not(.active) { background: var(--surface-hover); }
+.pill { gap: 4px; }
+.add-col-btn, .add-card-toggle { justify-content: center; }
+.icon-btn {
+  display: inline-grid; place-items: center; width: 26px; height: 26px; padding: 0;
+  border: 0; border-radius: 6px; background: transparent; color: var(--text-subdued); cursor: pointer;
+}
+.icon-btn:hover { background: rgba(0,0,0,.07); color: var(--text); }
+.icon-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.icon-btn.danger:hover { background: var(--critical-bg); color: var(--critical); }
 
 .me-chips { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; }
 .me-chips .lbl { font-size: 12px; color: var(--text-subdued); }
@@ -151,15 +192,14 @@ input, select, textarea { font: inherit; }
   font-size: 12px; font-weight: 600; padding: 1px 7px; color: var(--text-subdued);
 }
 .col-head .col-actions { margin-left: auto; display: flex; gap: 2px; }
-.col-head .col-actions button {
-  border: 0; background: transparent; border-radius: 6px; padding: 3px 6px; color: var(--text-subdued); font-size: 13px;
-}
+.col-head .col-actions button { color: var(--text-subdued); }
 .col-head .col-actions button:hover { background: rgba(0,0,0,.06); }
 
 .card {
   background: var(--surface); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px;
   box-shadow: var(--shadow-card); border: 1px solid transparent; cursor: grab;
 }
+.card.priority-urgent { border-color: #f3c8c1; }
 .card:active { cursor: grabbing; }
 .card.dragging { opacity: .45; }
 .card.is-done { opacity: .66; }
@@ -231,7 +271,7 @@ input, select, textarea { font: inherit; }
 .modal { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow-pop); width: 100%; max-width: 560px; max-height: 88vh; overflow: auto; }
 .modal-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); border-radius: var(--radius) var(--radius) 0 0; }
 .modal-head h2 { font-size: 16px; font-weight: 650; }
-.modal-head .x { margin-left: auto; border: 0; background: transparent; font-size: 20px; color: var(--text-subdued); border-radius: 8px; padding: 2px 8px; }
+.modal-head .x { margin-left: auto; width: 30px; height: 30px; }
 .modal-head .x:hover { background: var(--surface-hover); }
 .modal-body { padding: 18px; }
 .modal-foot { display: flex; gap: 10px; justify-content: flex-end; padding: 14px 18px; border-top: 1px solid var(--border); }
@@ -284,12 +324,17 @@ input, select, textarea { font: inherit; }
 .plan-card .price span { font-size: 13px; font-weight: 500; color: var(--text-subdued); }
 .plan-card ul { list-style: none; margin: 12px 0 16px; }
 .plan-card li { padding: 3px 0 3px 22px; position: relative; color: var(--text-subdued); font-size: 13.5px; }
-.plan-card li::before { content: "✓"; position: absolute; left: 0; color: var(--success); font-weight: 700; }
+.plan-card li::before {
+  content: ""; position: absolute; left: 2px; top: 6px; width: 4px; height: 8px;
+  border: solid var(--success); border-width: 0 2px 2px 0; transform: rotate(43deg);
+}
 .plan-card .cur-badge { position: absolute; top: 14px; right: 14px; font-size: 11px; font-weight: 700; background: var(--success-bg); color: var(--success); padding: 3px 10px; border-radius: 999px; }
 
 /* ---------------- misc ---------------- */
 .empty-state { text-align: center; padding: 60px 20px; color: var(--text-subdued); }
 .empty-state .big { font-size: 40px; margin-bottom: 10px; }
+.empty-state .icon { margin-bottom: 10px; color: var(--text-subdued); }
+.card-foot .ck-count { gap: 4px; }
 .row-flex { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .spacer { flex: 1; }
 .muted { color: var(--text-subdued); }
@@ -303,15 +348,19 @@ input, select, textarea { font: inherit; }
 .activity-item .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--primary); margin-top: 6px; flex: none; }
 .activity-item .a-sub { font-size: 12px; color: var(--text-subdued); }
 
-.priority-urgent .card-title::before { content: "🔥 "; }
+.card.priority-urgent { box-shadow: inset 3px 0 0 var(--critical), var(--shadow-card); }
+.card.priority-urgent .pill.urgent { font-weight: 650; }
 
 /* ---------------------------------------------------------------- COD/NDR pack */
 .board-tools { display: flex; align-items: center; gap: 12px; padding: 0 16px 10px; }
 .tmpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
 .tmpl-card { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; text-align: left; padding: 14px; border: 1px solid var(--border,#e3e3e3); border-radius: 10px; background: #fff; cursor: pointer; transition: box-shadow .12s, transform .12s; }
 .tmpl-card:hover { box-shadow: 0 4px 14px rgba(0,0,0,.08); transform: translateY(-1px); }
-.tmpl-emoji { font-size: 26px; line-height: 1; }
-.tmpl-emoji.big { font-size: 34px; }
+.tmpl-icon {
+  display: grid; place-items: center; width: 38px; height: 38px; border-radius: 10px;
+  background: #e4f5ef; color: var(--primary,#008060);
+}
+.tmpl-icon.big { width: 52px; height: 52px; border-radius: 13px; }
 .tmpl-name { font-weight: 650; font-size: 14px; color: var(--text,#1a1a1a); }
 .tmpl-tag { font-size: 12px; color: var(--muted,#6d7175); line-height: 1.35; }
 .tmpl-detail { margin-top: 12px; display: flex; flex-direction: column; gap: 12px; }
@@ -351,7 +400,7 @@ input, select, textarea { font: inherit; }
 .t-dot.on { width: 18px; background: var(--primary,#008060); }
 
 /* ---------------------------------------------------------- staff portal */
-.staff-chip { font-size: 13px; font-weight: 600; color: var(--text); background: #e4f5ef; border: 1px solid #b7e5d8; padding: 6px 12px; border-radius: 999px; white-space: nowrap; }
+.staff-chip { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text); background: #e4f5ef; border: 1px solid #b7e5d8; padding: 4px 12px 4px 5px; border-radius: 999px; white-space: nowrap; }
 .staff-shop { color: var(--muted,#6d7175); font-weight: 500; font-size: 13px; margin-left: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
 .fab-toast { position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 16px); background: #1a1a1a; color: #fff; font-size: 13.5px; padding: 10px 16px; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.25); opacity: 0; transition: opacity .2s, transform .2s; z-index: 5000; max-width: 88vw; text-align: center; }
 .fab-toast.err { background: var(--critical,#d72c0d); }

@@ -9,7 +9,7 @@ import { useEffect, useState } from "preact/hooks";
      taskpe-task-product       → admin.product-details.action.render
      taskpe-task-customer      → admin.customer-details.action.render
 
-   ⚠️  REQUIRED BEFORE DEPLOY: set APP_URL to your production app domain
+   REQUIRED BEFORE DEPLOY: set APP_URL to your production app domain
    (the same value as APP_URL in your Laravel .env), then `shopify app deploy`.
 
    Auth: the extension gets a Shopify session-token JWT via the Standard API

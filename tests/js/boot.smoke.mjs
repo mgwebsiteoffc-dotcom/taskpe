@@ -79,6 +79,7 @@ function makeEnv({ taskpe = {}, shopify, fetchImpl } = {}) {
     title: '',
     body,
     createElement: t => new El(t),
+    createElementNS: (ns, t) => new El(t),        // SVG nodes behave like the rest
     createTextNode: t => Object.assign(new El('#text', 3), { _text: String(t) }),
     // Real-ish: searches the live tree, so handlers that look up their
     // sibling nodes (gate-err, col-name…) behave like they do in a browser.
@@ -123,17 +124,66 @@ function makeEnv({ taskpe = {}, shopify, fetchImpl } = {}) {
   return sandbox;
 }
 
-const reply = (status, data) => async () => ({ status, ok: status >= 200 && status < 300, json: async () => data });
+/** status-for-every-path, or per-path payloads: reply({ '/api/settings': … }) */
+const reply = (status, data) => async (url) => {
+  const body = typeof status === 'object' ? (status[url.split('?')[0]] ?? okBoard) : data;
+  const code = typeof status === 'object' ? 200 : status;
+  return { status: code, ok: code >= 200 && code < 300, json: async () => body };
+};
+
+const okSettings = {
+  whatify: { connected: false },
+  settings: {
+    has_api_key: false, api_key_hint: null, whatsapp_account_id: null, templates: {},
+    notify: { whatsapp_on: false, on_assign: true },
+    digest: { enabled: true, time: '09:00' },
+    automation: { cod_auto: false, ndr_auto: false, weekly_remittance: false },
+    ndr_intake_url: null,
+  },
+  plan: { name: 'Free', cfg: { whatsapp: false, digest: false } },
+  logs: [],
+};
 
 const okBoard = {
   shop: { domain: 'demo.myshopify.com', name: 'Demo Store', plan: 'free', plan_cfg: {}, timezone: 'Asia/Kolkata', currency: 'INR', onboarded: true },
-  plans: {}, task_templates: {},
-  columns: [{ id: 1, name: 'To Do', position: 0, is_done_stage: false, tasks: [] }],
-  members: [], me: null,
+  plans: { free: { name: 'Free', prices: {}, trial_days: 0 },
+           starter: { name: 'Starter', prices: { USD: 5.99, INR: 499 }, trial_days: 7 } },
+  task_templates: {
+    cod_confirm: { icon: 'phone', name: 'COD confirmation', tagline: 'Verify before ship',
+                   resource_type: 'order', priority: 'high', due_in_hours: 24,
+                   title: 'Confirm COD order {order}', checklist: ['Call buyer', 'Confirm address'] },
+  },
+  columns: [{
+    id: 1, name: 'To Do', position: 0, is_done_stage: false,
+    tasks: [{
+      id: 11, column_id: 1, title: 'Confirm COD order #1042', priority: 'urgent',
+      description: '- [x] Call the buyer\n- [ ] Note the address', due_at: '2026-10-05T18:00:00+05:30',
+      overdue: true, position: 0, completed_at: null, created_at: '2026-10-04T09:00:00+05:30',
+      created_by: 'Ravi', assignee: { id: 1, name: 'Ravi Kumar', initials: 'RK' },
+      resource: { type: 'order', id: 1042, gid: null, label: 'Order', title: '#1042', url: '#' },
+    }, {
+      id: 12, column_id: 1, title: 'Done-ish task', priority: 'low', description: null,
+      due_at: null, overdue: false, position: 1, completed_at: '2026-10-03T10:00:00+05:30',
+      created_at: '2026-10-01T10:00:00+05:30', created_by: null, assignee: null, resource: null,
+    }],
+  }, { id: 2, name: 'Done', position: 1, is_done_stage: true, tasks: [] }],
+  members: [{ id: 1, name: 'Ravi Kumar', initials: 'RK', phone: '919876500001', role: 'owner',
+              active: true, whatsapp_verified: true, portal_active: true }],
+  me: 1,
   whatsapp: { plan_allowed: false, master_on: false, has_key: false, enabled: false },
 };
 
 const settle = (ms = 60) => new Promise(r => setTimeout(r, ms));
+
+// Anything in the emoji/pictograph blocks — the app uses inline SVG instead.
+const EMOJI = /[\u{1F000}-\u{1FAFF}\u{1F1E6}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE0F}\u{2B00}-\u{2BFF}]/u;
+/** modals/drawers append to <body>, so the board root alone is not enough */
+const uiText = env => [...collectStrings(env.root), ...collectStrings(env.document?.body || { children: [] })];
+const collectStrings = (node, acc = []) => {
+  if (node._text) acc.push(node._text);
+  for (const c of node.children || []) collectStrings(c, acc);
+  return acc;
+};
 
 /* ----------------------------------------------------------------- cases --- */
 
@@ -246,6 +296,76 @@ const check = (name, fn) => {
   check('non-board 200 is reported as a payload problem, not a TypeError', () => {
     assert.ok(env.root.text().includes('/api/board'), env.root.text().slice(0, 200));
   });
+}
+
+// 6b — the nav itself: Shopify-admin section tabs, icon+label, zero emoji.
+{
+  const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply(200, okBoard) });
+  await settle();
+  check('section nav is a tab list (no app brand bar)', () => {
+    const nav = env.root.find(n => n.attrs.class === 'appnav')[0];
+    assert.ok(nav, 'appnav row missing');
+    const tabs = env.root.find(n => n.attrs.class && String(n.attrs.class).split(' ').includes('tab'));
+    assert.deepEqual(tabs.map(t => t.text()), ['Board', 'Team', 'Settings', 'Plan'], 'wrong tab labels');
+    assert.ok(!env.root.find(n => n.attrs.class === 'brand-badge').length, 'app brand bar must be gone');
+  });
+  check('active tab is marked for AT (aria-selected)', () => {
+    const tabs = env.root.find(n => n.attrs.class && String(n.attrs.class).split(' ').includes('tab'));
+    assert.equal(tabs[0].attrs['aria-selected'], 'true');
+    assert.equal(tabs[1].attrs['aria-selected'], 'false');
+    assert.ok(String(tabs[0].attrs.class).includes('is-active'));
+  });
+  check('every tab carries an SVG icon, not a glyph', () => {
+    for (const t of env.root.find(n => n.attrs.class && String(n.attrs.class).split(' ').includes('tab'))) {
+      const svg = t.children.find(c => c.tagName === 'SVG');
+      assert.ok(svg, 'tab missing <svg>: ' + t.text());
+      assert.equal(svg.attrs.stroke, 'currentColor');
+      assert.equal(svg.attrs['stroke-width'], '1.7');
+    }
+  });
+  check('no emoji anywhere in the rendered UI (board view)', () => {
+    const bad = uiText(env).filter(t => EMOJI.test(t));
+    assert.deepEqual(bad, [], 'emoji found: ' + JSON.stringify(bad.slice(0, 4)));
+  });
+}
+
+// 6b2 — the task drawer and the template picker: every icon button in there.
+{
+  const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply(200, okBoard) });
+  await settle();
+  const card = env.root.find(n => n.attrs.class && String(n.attrs.class).includes('card'))[0];
+  card.click();
+  await settle();
+  check('task drawer renders with icons, no emoji', () => {
+    const bad = uiText(env).filter(t => EMOJI.test(t));
+    assert.deepEqual(bad, [], 'emoji in drawer: ' + JSON.stringify(bad.slice(0, 4)));
+    const labels = env.root.find(n => n.tagName === 'BUTTON').map(b => b.attrs['aria-label']).filter(Boolean);
+    assert.ok(labels.length, 'icon-only buttons need accessible names');
+  });
+  const tmpl = env.root.find(n => n.tagName === 'BUTTON' && n.text().includes('COD / NDR task templates'))[0];
+  tmpl.click();
+  await settle();
+  check('template picker renders with icons, no emoji', () => {
+    const bad = uiText(env).filter(t => EMOJI.test(t));
+    assert.deepEqual(bad, [], 'emoji in template picker: ' + JSON.stringify(bad.slice(0, 4)));
+    const icon = [...env.root.find(n => n.attrs.class === 'tmpl-icon'),
+                  ...env.document.body.find(n => n.attrs.class === 'tmpl-icon')][0];
+    assert.ok(icon && icon.children[0].tagName === 'SVG', 'template card should carry an SVG icon');
+  });
+}
+
+// 6c — the other views too (tabs are the only shared surface, so check bodies).
+{
+  for (const view of ['team', 'settings', 'plan']) {
+    const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply({ '/api/settings': okSettings }) });
+    await settle();
+    const tabs = env.root.find(n => n.attrs.class && String(n.attrs.class).split(' ').includes('tab'));
+    tabs.find(t => t.text() === view[0].toUpperCase() + view.slice(1)).click();
+    check(`no emoji in the ${view} view`, () => {
+      const bad = uiText(env).filter(t => EMOJI.test(t));
+      assert.deepEqual(bad, [], 'emoji found: ' + JSON.stringify(bad.slice(0, 4)));
+    });
+  }
 }
 
 // 7 — staff portal: cookie path, and an expired session bounces to sign-in.
