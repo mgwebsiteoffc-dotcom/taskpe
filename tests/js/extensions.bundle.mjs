@@ -64,6 +64,11 @@ for (const name of dirs) {
       bundle: true,
       format: 'esm',
       minify: true,
+      // Deliberately ask for React's automatic runtime: that is what "shopify app build"
+      // does to a .jsx file, and it is the failure it reports ("Could not resolve
+      // "react/jsx-runtime""). The @jsx pragmas must beat it, so the check has to try.
+      jsx: 'automatic',
+      jsxImportSource: 'react',
       target: 'es2020',
       write: false,
       metafile: true,
