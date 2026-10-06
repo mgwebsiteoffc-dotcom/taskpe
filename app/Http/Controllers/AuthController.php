@@ -73,6 +73,10 @@ class AuthController extends Controller
             'plan'           => $model->plan ?: config('shopify.default_plan'),
         ])->save();
 
+        // A fresh grant is the answer to a rejected one — drop the complaint so the
+        // gate, the log and taskpe:doctor stop reporting a problem that is gone.
+        $model->clearTokenRejection();
+
         $this->hydrateShopProfile($model);
         $this->seedBoard($model);
 

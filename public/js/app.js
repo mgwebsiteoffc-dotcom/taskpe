@@ -184,7 +184,13 @@
         api._redirecting = true;
         open(appUrl() + '/auth/shopify?shop=' + encodeURIComponent(shop), '_top');
       }
-      throw fail('reauth', 'reauth', { shop, reason: body401.error || 'unauthorized' });
+      throw fail('reauth', 'reauth', {
+        shop, reason: body401.error || 'unauthorized',
+        // The middleware's finer cause (`token_rejected`, `never_installed`) — without
+        // it a revoked grant and a never-installed store print the same sentence.
+        cause: body401.reason || null,
+        server: body401.message || null,
+      });
     }
 
     const data = await res.json().catch(() => ({}));
@@ -2066,8 +2072,13 @@
         + 'see DEPLOYMENT.md → “Authorization header never arrives”. The app.js twin header and '
         + 'public/.htaccess rules handle this; both must be deployed together.';
     } else if (err?.reason === 'not_installed') {
-      why = 'This store is not connected to TaskPe yet — approve the app scopes below and the '
-        + 'board will open on its own.';
+      why = err?.cause === 'token_rejected'
+        ? 'Shopify no longer accepts the access token this install is holding — the app was '
+          + 'uninstalled or reinstalled on the store, or this server started with a different '
+          + 'APP_KEY than the one that stored it. Reconnect below: approving the scopes issues '
+          + 'a fresh token and the board reloads by itself.'
+        : 'This store is not connected to TaskPe yet — approve the app scopes below and the '
+          + 'board will open on its own.';
     } else if (err?.code === 'reauth') {
       why = 'TaskPe could not verify your Shopify session for this store — connect a store to continue.';
     } else {

@@ -60,9 +60,39 @@ class ShopifyClient
                 continue;
             }
 
+            // A dead grant comes back 401 with {"errors":"[API] Invalid API key or access
+            // token (unrecognized login or wrong password)"} — a STRING, not a list. No
+            // retry and no GraphQL fix helps: only OAuth mints a new token, so flag the shop
+            // (which routes the merchant straight to reconnect), then say that.
+            $errorText = isset($json['errors'])
+                ? (is_array($json['errors']) ? json_encode($json['errors']) : (string) $json['errors'])
+                : '';
+
+            $rejected = preg_match('/Invalid API key or access token|unrecognized login/i', $errorText) === 1
+                // A 401 *with* a Shopify `errors` body is the dead grant. A 401 whose body is
+                // HTML (edge/proxy/WAF) must not flag a working install into a reconnect loop,
+                // so it falls through to the generic error below instead.
+                || ($response->status() === 401 && $errorText !== '');
+
+            if ($rejected) {
+                $why = 'Shopify rejected the stored access token ('.($errorText ?: 'HTTP 401').')';
+                $this->shop->markTokenRejected($why);
+
+                Log::warning('Shopify rejected this install\'s access token', [
+                    'shop'        => $this->shop->domain,
+                    'client_id'   => substr((string) config('shopify.api_key'), 0, 8).'…',
+                    'token'       => $this->shop->tokenFingerprint(),
+                    'api_version' => (string) config('shopify.api_version'),
+                    'reply'       => $errorText ?: 'HTTP '.$response->status(),
+                    'next_step'   => 'Open the app from Shopify admin to run OAuth again (or php artisan taskpe:doctor '.$this->shop->domain.' to verify).',
+                ]);
+
+                throw new \RuntimeException($why.'. Reconnect the store (Apps → TaskPe) so Shopify issues a new token.', 401);
+            }
+
             if (!empty($json['errors'])) {
-                Log::warning('Shopify GraphQL errors', ['shop' => $this->shop->domain, 'errors' => $json['errors']]);
-                throw new \RuntimeException('Shopify GraphQL error: '.json_encode($json['errors']));
+                Log::warning('Shopify GraphQL errors', ['shop' => $this->shop->domain, 'errors' => $errorText]);
+                throw new \RuntimeException('Shopify GraphQL error: '.$errorText);
             }
 
             // Surface mutation userErrors (validation, ALREADY_TAKEN, etc.)

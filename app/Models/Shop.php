@@ -99,7 +99,89 @@ class Shop extends Model
 
     public function isInstalled(): bool
     {
-        return is_null($this->uninstalled_at) && !empty($this->access_token);
+        return is_null($this->uninstalled_at) && $this->hasUsableToken();
+    }
+
+    /**
+     * A token that cannot be decrypted is as unusable as a missing one — and
+     * reading an `encrypted` column THROWS, so every gate would 500 instead of
+     * sending the merchant through OAuth. This happens for real when a store is
+     * moved between servers (new APP_KEY) or after `php artisan key:generate`.
+     */
+    public function hasUsableToken(): bool
+    {
+        try {
+            return !empty($this->access_token);
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Shopify has rejected this install's access token: the app was uninstalled
+     * or reinstalled (which revokes the old grant), the token was minted by a
+     * different app, or it was encrypted with another server's APP_KEY.
+     *
+     * Flipping uninstalled_at is deliberate — it is the one signal every gate
+     * already listens to. The SPA sees `not_installed` and restarts OAuth at top
+     * level, which mints a fresh token; the reason is parked in settings so the
+     * screen and the log can say WHY instead of "not connected yet".
+     */
+    public function markTokenRejected(string $why): void
+    {
+        if (!is_null($this->uninstalled_at) && (string) $this->setting('auth.rejected_reason', '') === $why) {
+            return;                                     // already flagged, don't churn rows
+        }
+
+        $this->uninstalled_at = now();
+        $this->setSetting('auth.rejected_at', now()->toIso8601String());
+        $this->setSetting('auth.rejected_reason', mb_substr($why, 0, 200));
+        $this->save();
+    }
+
+    public function tokenRejected(): bool
+    {
+        return !empty($this->setting('auth.rejected_at'));
+    }
+
+    public function tokenRejection(): ?string
+    {
+        $at = $this->setting('auth.rejected_at');
+
+        return $at ? $at.' — '.$this->setting('auth.rejected_reason', '') : null;
+    }
+
+    /** Called on a successful OAuth: the new grant is valid, forget the complaint. */
+    public function clearTokenRejection(): void
+    {
+        if (!$this->tokenRejected()) {
+            return;
+        }
+
+        $settings = $this->settings ?? [];
+        unset($settings['auth']['rejected_at'], $settings['auth']['rejected_reason']);
+
+        if (empty($settings['auth'])) {
+            unset($settings['auth']);
+        }
+
+        $this->settings = $settings;
+        $this->save();
+    }
+
+    /**
+     * 8 hex of sha256 + length — enough to tell two rows (or two servers) apart
+     * in a log line without ever writing the token itself.
+     */
+    public function tokenFingerprint(): string
+    {
+        try {
+            $token = (string) $this->access_token;
+        } catch (\Throwable $e) {
+            return 'undecryptable(APP_KEY changed)';
+        }
+
+        return $token === '' ? 'none' : substr(hash('sha256', $token), 0, 8).'/'.strlen($token).'ch';
     }
 
     public function adminBaseUrl(): string

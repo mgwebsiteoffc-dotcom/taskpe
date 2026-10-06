@@ -106,6 +106,7 @@ diagnosis.
 | "Open TaskPe from your Shopify admin" + store-domain field | URL opened outside `admin.shopify.com`, so there is no session token. Not a bug. | Open Apps → TaskPe in the admin, or type the store domain there to run OAuth. Teammates: `/staff`. |
 | same screen, mentioning **stripping the Authorization header** | App Bridge *did* produce a token; PHP never received it | § 3 |
 | same screen, "could not verify your Shopify session" | Token arrived but failed JWT checks | `SHOPIFY_API_KEY`/`SECRET`, and `APP_URL` must equal the origin the app is served from (tokens are origin-bound) |
+| "Shopify no longer accepts the access token this install is holding" | our stored grant was revoked or is undecryptable — see § 9 | `php artisan taskpe:doctor <domain>`, then reconnect (Apps → TaskPe) |
 | "The board could not be loaded" + an SQL message | DB not migrated or not reachable | `php artisan migrate:status`, `DB_*`, `php artisan config:clear` |
 | "The board could not be loaded" + HTTP 419 | CSRF on a POST | only `webhooks/*` and `staff/*` are exempt; API calls are bearer-authenticated and must not be proxied with cookies |
 | "The board could not be loaded" + *Cannot reach the TaskPe server* | Blocked mixed content (app served over http) or the domain does not resolve | force https, fix `APP_URL` |
@@ -127,6 +128,7 @@ curl -s https://taskpe.example.in/api/board                                     
 curl -s https://taskpe.example.in/privacy | head -5                                # HTML renders, views writable
 curl -s https://taskpe.example.in/api/task-templates?type=order  # 401 JSON = extension endpoints deployed; 404 = old routes/api.php
 curl -s -o /dev/null -w '%{http_code}\n' https://taskpe.example.in/team     # 200 = section paths serve the shell (the admin sidebar links to these)
+php artisan taskpe:doctor demo.myshopify.com   # install state, token, config, live API probe, webhooks
 php artisan taskpe:demo-store demo.myshopify.com --force   # fill a dev store's board
 php artisan test                     # PHP suite (auth boundary, tenancy, bulk creation, billing, …)
 node tests/js/boot.smoke.mjs         # SPA boot screens for each failure mode
@@ -168,3 +170,42 @@ shell (`/`, `/team`, `/settings`, `/plan` — see `AppController::SECTIONS`).
 * If Shopify ever shows the section list twice, the culprit is a stale cached
   `app.js` still mounting the old in-app tab strip: hard-reload the app frame
   (or bump the asset version) before touching anything else.
+
+
+## 9. `Invalid API key or access token (unrecognized login or wrong password)`
+
+The one log line that looks like a credential bug and is almost never one. `X-Shopify-Access-Token`
+is sent from `shops.access_token`, so Shopify is rejecting **the token stored for that row** —
+and all four causes need a different fix:
+
+| Cause | How it happens | Fix |
+|---|---|---|
+| token revoked | the app was uninstalled, or reinstalled/accepted again on the store | reconnect once: **Apps → TaskPe**, or `https://APP_URL/auth/shopify?shop=<domain>` in the browser (top level, not in the admin tab) |
+| wrong `APP_KEY` | the store's row was created on another server (hosting move), or `php artisan key:generate` was re-run — `access_token` is **encrypted with APP_KEY** | restore the old `APP_KEY`, or reconnect to mint a fresh one. Never rotate `APP_KEY` without telling merchants to reinstall |
+| different app | `.env` `SHOPIFY_API_KEY`/`SECRET` belong to app A while the store installed app B (common after `shopify app deploy` from a copied `shopify.app.toml`), or a stale `config:cache` is serving the old values | set the pair from the app the merchant installed, then `php artisan config:clear` |
+| OAuth never finished | the row exists (an old install, a copy) with an empty token | reconnect |
+
+```bash
+php artisan taskpe:doctor                      # every shop
+php artisan taskpe:doctor house-of-indha.myshopify.com
+php artisan taskpe:doctor myshop.myshopify.com --register   # re-subscribe webhooks too
+```
+
+The doctor prints the config actually in use (`client_id` prefix, `APP_URL`, `api_version`), the
+row's state, the token as `sha256:xxxxxxxx/50ch` — **never the value** — then asks Shopify itself
+with `{ shop { name myshopify_domain } }`. That last probe catches the sneaky variant: a token
+that decrypts fine but answers for *another store* (copied `shops` row). `undecryptable(APP_KEY
+changed)` as the fingerprint is the second row of the table above, diagnosed without a stack trace.
+
+What the app does on its own: the first rejection marks the shop (`uninstalled_at` + a reason in
+`settings.auth.rejected_*`), so
+
+* the board shows the **reconnect** sentence instead of a spinner, and the SPA's existing
+  `not_installed` handling restarts OAuth at top level — usually one click, no SSH needed;
+* webhook registration **skips** that shop instead of logging one 401 per topic (that spam was
+  the old symptom of exactly this state);
+* `taskpe:send-digests` and `taskpe:recurring-chores` pass it over, because both filter on
+  `uninstalled_at` — no point queueing WhatsApp for a store we cannot read.
+
+A successful OAuth callback clears the flag (`Shop::clearTokenRejection()`), so after reconnecting,
+`php artisan taskpe:doctor` should be all green with no extra step.

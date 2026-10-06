@@ -47,7 +47,19 @@ class VerifyShopifySessionToken
         $shop = Shop::where('domain', $payload['_shop_domain'])->first();
         if (!$shop || !$shop->isInstalled()) {
             // Front-end listens for this code and restarts OAuth at top level.
-            return response()->json(['error' => 'not_installed', 'shop' => $payload['_shop_domain'], 'code' => 'reauth'], 401);
+            // `reason` decides which sentence the gate prints: "not connected yet"
+            // and "Shopify revoked our token" need different answers.
+            $reason = !$shop ? 'never_installed' : ($shop->tokenRejected() ? 'token_rejected' : 'uninstalled');
+
+            return response()->json([
+                'error'   => 'not_installed',
+                'shop'    => $payload['_shop_domain'],
+                'code'    => 'reauth',
+                'reason'  => $reason,
+                'message' => $reason === 'token_rejected'
+                    ? 'Shopify no longer accepts the access token stored for this shop (uninstalled, reinstalled, or the token was encrypted with another server\'s APP_KEY). Reconnecting issues a new one.'
+                    : 'This store has no live TaskPe install.',
+            ], 401);
         }
 
         // Optional "who is acting" chip (Indian teams often share a device) —

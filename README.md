@@ -36,6 +36,7 @@ Built to the **2026 public-app requirements** — see the compliance map below.
 | Iconography | Inline SVG from the `ICONS` map in `public/js/app.js` (`icon(name)`) | No emoji: OS-dependent glyphs, untintable, wrong at 13px — and `boot.smoke.mjs` fails the build if one appears |
 | Navigation | Shopify's own app menu: App Bridge `<ui-nav-menu>` + one path per section (`/team`, `/settings`, `/plan`) | The admin sidebar (and the mobile title-bar menu) is the menu — nothing inside the app duplicates it, and there is no app header |
 | Admin surface | 6 UI extensions: 4 actions + 1 bulk selection action + 1 order-page block, sharing `extensions/shared/api.js` | Shopify has no per-row list button; these are the three real affordances, and one shared file keeps APP_URL/auth from drifting |
+| Dead grant | `Shop::markTokenRejected()` + `php artisan taskpe:doctor` | When Shopify refuses a stored access token the shop is flagged, so the board asks to reconnect, webhook registration stops hammering a 401, and digests skip that store — one reconnect (or `APP_KEY` restored) clears all of it |
 | Bulk creation | `POST /api/tasks/bulk` via `App\Services\TaskTemplates` | One materialisation path for board, block, bulk and the COD webhook: same title format, same checklist, same plan ceiling |
 
 ## Local development
