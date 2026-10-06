@@ -49,6 +49,7 @@ php artisan test        # PHP suite: session-token boundary, tenant isolation, p
 php artisan serve                  # or: composer dev
 node tests/js/boot.smoke.mjs       # SPA boot screens — no framework, plain node
                                    # or: composer test:js   /   npm run test:js
+node tests/js/extensions.static.mjs # Admin extensions: build-config sanity (npm run test:extensions)
 ```
 
 **No `npm install`, no `npm run dev`, no `npm run build` — this app has no bundler.**
@@ -57,8 +58,12 @@ which is what makes "upload the files" a complete deploy. `npm run build` prints
 sentence and exits non-zero on purpose, so the wrong command can't fail as a cryptic
 Rollup/Vite error ("Could not resolve entry module index.html" — that was Laravel's
 default `composer dev` script still calling `npm run dev`; it is gone now). The one place
-Node is used is **building the Shopify Admin extensions**, and Shopify CLI does that from
-`extensions/*/` on your own machine — see `extensions/README.md`.
+Node appears is **building the Shopify Admin extensions**, and even there nothing
+compiles the app: `npm install` once at the repo root (it is the npm *workspace root*
+for `extensions/taskpe-*`, so `extensions/shared/*.jsx` can resolve `preact`), then
+`shopify app build` bundles each extension. `npm run test:extensions` static-checks
+those folders (tsconfig, entry imports, targets, locale keys) without needing the CLI.
+See `extensions/README.md`.
 
 To test against real Shopify, point a tunnel (cloudflared/ngrok) at the app and install it on a dev store via the Partner Dashboard.
 

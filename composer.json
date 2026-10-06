@@ -45,6 +45,9 @@
         "test:js": [
             "node tests/js/boot.smoke.mjs"
         ],
+        "test:extensions": [
+            "node tests/js/extensions.static.mjs"
+        ],
         "test": [
             "@php artisan config:clear --ansi",
             "@php artisan test"

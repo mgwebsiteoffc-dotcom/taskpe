@@ -17,10 +17,12 @@ php artisan config:cache                  # cPanel often hides .env from PHP oth
 php artisan migrate:status                # every 2026_09_29_* row must be "Ran"
 ```
 
-**Do not look for a frontend build step — there is none.** No `npm install`, no
-`npm run build`, nothing in `public/build` or `public/hot` is read: `app.blade.php`
-loads `asset('js/app.js')` + `asset('css/app.css')` directly, so uploading those two
-files *is* the deploy. A leftover `node_modules/` (from Laravel's default
+**Do not look for a frontend build step on the server — there is none.** No
+`npm install`, no `npm run build`, nothing in `public/build` or `public/hot` is read
+there: `app.blade.php` loads `asset('js/app.js')` + `asset('css/app.css')` directly, so
+uploading those two files *is* the deploy, and Node need not exist on the host at all.
+(The one `npm install` in this project runs on **your** machine, at the repo root, and
+only to build the Admin extensions — see `extensions/README.md`.) A leftover `node_modules/` (from Laravel's default
 `composer dev`, which used to start Vite) is dead weight — safe to delete, and the
 `public/build` / `public/hot` entries in `.gitignore` are only there in case one is
 ever added.

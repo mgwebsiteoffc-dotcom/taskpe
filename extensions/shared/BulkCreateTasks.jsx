@@ -35,7 +35,10 @@ export function createBulkTaskExtension(defaultTemplate) {
 
 function tr(i18n, key, fallback) {
   try {
-    return i18n?.translate ? i18n.translate(key) : fallback;
+    // A missing key comes back AS the key, so compare before trusting it —
+    // otherwise every untranslated string renders "collapsed-empty" to the merchant.
+    const t = i18n?.translate ? String(i18n.translate(key) ?? '') : '';
+    return t && t !== key ? t : fallback;
   } catch (e) {
     return fallback;
   }

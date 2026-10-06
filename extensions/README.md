@@ -37,6 +37,11 @@ app instead: search, or paste the article URL.)
 
 ## Files
 
+Every extension folder holds exactly four things: `shopify.extension.toml`,
+`package.json`, `tsconfig.json` (JSX runtime = preact; **required**, see the table
+under Notes) and `src/<Entry>.jsx`, which is a two-line wrapper around the shared
+implementation. `locales/en.default.json` supplies the merchant-visible name.
+
 ```
 extensions/shared/api.js                 APP_URL + session token + api() + GID→type
 extensions/shared/CreateTaskAction.jsx   the modal (4 action extensions)
@@ -108,15 +113,23 @@ extension trusts it:
    `config/task_templates.php`, then `php artisan config:clear`. The extensions
    call endpoints that live there; deploying extensions against an old backend
    shows up as 404s inside the modal.
-5. **Install extension deps:**
+5. **Install the extension deps — once, at the repo root:**
    ```bash
-   for d in extensions/taskpe-*/; do (cd "$d" && npm install --omit=dev); done
+   npm install                      # root = npm workspace root (extensions/taskpe-*)
    ```
+   Not per folder. `extensions/shared/*.jsx` lives *outside* every extension, so an
+   import inside it resolves upward from `extensions/shared/` — only a hoisted
+   `node_modules` at the repo root can answer `preact`. A workspace install also
+   guarantees all six extensions share ONE preact copy; two copies in one bundle
+   means dead hooks. If `extensions/*/node_modules` exist from an older per-folder
+   install, delete them.
 6. **Build/verify locally** (this is the real syntax check for the JSX — the app
    itself has no build step, the extensions do):
    ```bash
-   shopify app build      # or `shopify app dev` to click through on a dev store
+   shopify app build        # or `shopify app dev` to click through on a dev store
+   npm run test:extensions  # repo root: static build-config sanity, no network needed
    ```
+
 7. **Set `include_config_on_deploy = true`** under `[build]` in `shopify.app.toml`
    if you want Dashboard config managed from the file.
 8. **Deploy:** `shopify app deploy` → creates a version. Partner Dashboard → your
@@ -141,9 +154,17 @@ extensions into your dev store's admin, including the block.
   template a `resource_type` if it should appear for that object type; generic
   chores (no `resource_type`) are deliberately *not* offered next to a bulk
   selection, so a weekly task can't be filed 30 times in one click.
-- If the CLI build ever complains about a `../../shared/…` import, copy that
-  shared file next to the extension's `src/*.jsx` and change the import to
-  `./File.jsx` (per-extension vendoring; keep the copy in the folder README).
+- **Build error → cause.** All three are the same bug — a file the bundler needs
+  is missing, not a bug in the JSX:
+  | `shopify app build` says | fix |
+  | --- | --- |
+  | `Could not resolve "preact"` / `"preact/hooks"` from `extensions/shared/…` | no root `npm install` (step 5), or a stale per-folder `node_modules` shadowing it |
+  | `Could not resolve "react/jsx-runtime"` | the extension's `tsconfig.json` is missing or lost `jsxImportSource: "preact"` — that file is what tells esbuild the automatic JSX runtime is preact's. The entry also needs `import "@shopify/ui-extensions/preact"` as its first line |
+  | `Network access is not enabled` / fetch refused at runtime | `[extensions.capabilities] network_access = true` in that TOML, and `APP_URL` in `shared/api.js` must be the https domain from `.env` |
+  Last resort if a CLI version refuses files outside the extension folder: copy
+  `shared/CreateTaskAction.jsx` + `shared/api.js` next to that extension's
+  `src/ActionExtension.jsx`, change the import to `./CreateTaskAction.jsx`, and note
+  the vendored copy here so the next change is made in both places.
 - `t:name` / `t:description` in each TOML resolve through that extension's
   `locales/*.json`, so new UI strings go there, not into the JSX. Unknown keys
   fall back to the literals in `shared/*.jsx`.

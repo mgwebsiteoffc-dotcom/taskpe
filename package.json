@@ -1,10 +1,20 @@
 {
     "name": "taskpe",
     "private": true,
-    "description": "TaskPe has no JavaScript build step: public/js/app.js and public/css/app.css are the sources and are served as written. This file exists so `npm run test:js` works, and so `npm run dev` / `npm run build` say that out loud instead of failing inside a bundler that was never configured. The only npm users here are the Shopify Admin extensions, and Shopify CLI builds those (shopify app build) from the extensions/ folders.",
+    "version": "1.0.0",
+    "description": "TaskPe's PHP app has no JavaScript build step (public/js/app.js and public/css/app.css are the sources, served as written), so `npm run build` here would be a lie and it exits non-zero on purpose. This file has two real jobs: (1) `npm run test:js` runs the SPA smoke checks; (2) it is the npm WORKSPACE ROOT for the Shopify Admin extensions in extensions/, because extensions/shared/*.jsx sits outside every extension folder and can only resolve `preact` by walking up to this node_modules. `npm install` once here - not per extension folder - so all six extensions share one hoisted copy of preact (two copies in one bundle means broken hooks).",
+    "workspaces": [
+        "extensions/taskpe-*"
+    ],
+    "devDependencies": {
+        "preact": "^10.10.x",
+        "@shopify/ui-extensions": "2026.7.x"
+    },
     "scripts": {
         "test:js": "node tests/js/boot.smoke.mjs",
-        "dev": "node -e \"console.error('No bundler in this project. App dev: php artisan serve (or composer dev). Admin extensions: shopify app dev, which builds them itself.')\" && exit 1",
-        "build": "node -e \"console.error('Nothing to build. public/js/app.js + public/css/app.css are committed as-is; extensions are built by Shopify CLI (shopify app build).')\" && exit 1"
+        "test:extensions": "node tests/js/extensions.static.mjs",
+        "test:all": "node tests/js/boot.smoke.mjs && node tests/js/extensions.static.mjs",
+        "dev": "node -e \"console.error('No bundler for the app. It is php artisan serve. The Admin extensions are bundled by Shopify CLI: shopify app build (after running npm install here once, so extensions/shared can resolve preact).')\" && exit 1",
+        "build": "node -e \"console.error('Nothing to build. public/js/app.js + public/css/app.css are committed as-is. Extensions are bundled by Shopify CLI (shopify app build), not by vite.')\" && exit 1"
     }
 }
