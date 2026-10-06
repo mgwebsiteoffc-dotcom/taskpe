@@ -5,14 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#008060">
     <title>{{ config('app.name') }} — Staff board</title>
-@php
-    {{-- Cache-busted by file mtime, max of the two assets. An FTP upload must never
-         leave a merchant running last week's app.js: the admin app menu, the board
-         layout and the fetch layer all live in that one file, and "I deployed it but
-         nothing changed" is otherwise indistinguishable from "the code is wrong". --}}
-    $taskpeVer = (string) (max(@filemtime(public_path('js/app.js')) ?: 0, @filemtime(public_path('css/app.css')) ?: 0)
-        ?: config('app.asset_version', '1'));
-@endphp
+    {{-- Cache-busted by file mtime: an FTP upload must never leave a merchant running
+         last week's app.js — the admin app menu, the board layout and the fetch layer
+         all live in that one file, so "deployed but nothing changed" and "the code is
+         wrong" used to look identical. One version string covers both assets. --}}
+    @php $taskpeVer = (string) (max((int) @filemtime(public_path('js/app.js')), (int) @filemtime(public_path('css/app.css'))) ?: 1); @endphp
     <link rel="stylesheet" href="{{ asset('css/app.css') }}?v={{ $taskpeVer }}">
     <style>
         .staff-brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:18px; }
