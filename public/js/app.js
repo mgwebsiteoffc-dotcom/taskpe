@@ -44,6 +44,7 @@
     me: Number(localStorage.getItem('taskpe_me') || 0),
     drawerTaskId: null,
     quickAdd: null,      // column id whose "add task" editor should auto-open
+    filter: null,        // stat cell the board is currently narrowed to (see STAT_FILTERS)
     loading: false,
   };
 
@@ -333,12 +334,21 @@
   // rules: the first link is the app's home route and is NOT shown as an item
   // (it needs rel="home" + href="/") — which suits us exactly, because the app
   // name in the sidebar already opens the board.
+  // App Bridge 4 — what the unversioned cdn.shopify.com/shopifycloud/app-bridge.js in
+  // app.blade.php serves — reads <s-app-nav> with <s-link> children. The older
+  // <ui-nav-menu>/<a> pair is gone from the docs and is ignored by that script, so an
+  // app that still emits it gets NO menu in the sidebar: the declaration is simply never
+  // read. That is why this element is <s-app-nav> and its children are <s-link>.
+  //
+  // It is declarative configuration, not UI: Shopify paints the left sidebar (and the
+  // mobile title-bar dropdown) from these links, so the element itself is display:none —
+  // otherwise the app would render a duplicate nav inside the frame.
   function mountAdminNav() {
     if (IS_STAFF || !appBridge()) return null;
 
     let nav = document.getElementById('taskpe-app-nav');
     if (!nav) {
-      nav = document.createElement('ui-nav-menu');
+      nav = document.createElement('s-app-nav');
       nav.setAttribute('id', 'taskpe-app-nav');
       nav.style.display = 'none';        // consumed by App Bridge, never painted
       document.body.append(nav);
@@ -357,10 +367,12 @@
     }
 
     nav.replaceChildren(...SECTIONS.map(sec => {
-      const link = document.createElement('a');
+      const link = document.createElement('s-link');      // not <a>: s-app-nav takes s-link children
       link.setAttribute('href', sectionPath(sec.view));
       link.textContent = sec.label;
       link.dataset.view = sec.view;
+      // rel="home" hides that entry from the menu and makes the admin's app name
+      // open it — which is exactly right for the board, so it is not listed twice.
       if (sec.view === 'board') link.setAttribute('rel', 'home');
       if (sec.view === state.view) link.setAttribute('aria-current', 'page');
       return link;
@@ -476,7 +488,7 @@
       wrap.append(h('div', { class: 'banner warn' },
         h('div', null,
           h('div', { class: 'b-title' }, 'You are on the Free plan'),
-          h('div', { class: 'b-body' }, 'Upgrade to Starter (≈ ₹499/mo) to enable WhatsApp alerts for your team, unlimited tasks and the daily owner digest.')),
+          h('div', { class: 'b-body' }, 'Starter (₹499/mo) adds WhatsApp alerts, unlimited tasks and the daily digest.')),
         h('button', { class: 'btn primary sm', onclick: () => goView('plan') }, 'View plans')));
       return wrap;
     }
@@ -507,8 +519,9 @@
     const s = state.board;
     if (IS_STAFF || !s || !s.members.length) return h('div', { class: 'me-chips' });
 
-    return h('div', { class: 'me-chips' },
-      h('span', { class: 'lbl' }, 'Working as:'),
+    // No "Working as:" label any more: the avatar row is short, the tooltip says
+    // the rest, and every word removed here is a word less competing with the tasks.
+    return h('div', { class: 'me-chips', title: 'Working as — click to attribute a task to someone else' },
       s.members.filter(m => m.active).map(m =>
         h('button', {
           class: 'me-chip' + (state.me === m.id ? ' on' : ''),
@@ -523,33 +536,141 @@
 
   /* ------------------------------------------------------------- kanban UI */
 
+  // The five numbers a Shopify ops team actually scans for. Each cell is also a
+  // filter, so the board needs no separate controls for the same questions —
+  // that duplication (plus a pill on every card) is what read as clutter.
+  const STAT_FILTERS = [
+    { key: 'open', label: 'Open', test: t => !t.completed_at },
+    { key: 'overdue', label: 'Overdue', test: t => !t.completed_at && !!t.overdue, tone: 'crit' },
+    { key: 'due', label: 'Due today', test: t => !t.completed_at && !t.overdue && isToday(t.due_at), tone: 'warn' },
+    { key: 'unassigned', label: 'Unclaimed', test: t => !t.completed_at && !t.assignee },
+    { key: 'closed', label: 'Closed today', test: t => !!t.completed_at && isToday(t.completed_at), tone: 'ok' },
+  ];
+
+  function isToday(value) {
+    if (!value) return false;
+    const d = new Date(value);
+    if (isNaN(d.getTime ? d.getTime() : NaN)) return false;
+    const now = new Date();
+    return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  }
+
+  const allTasks = () => (state.board?.columns || []).reduce((acc, c) => acc.concat(c.tasks || []), []);
+
+  function boardStats() {
+    const all = allTasks();
+    const out = { total: all.length, open: all.filter(t => !t.completed_at).length };
+    for (const f of STAT_FILTERS) out[f.key] = all.filter(f.test).length;
+    return out;
+  }
+
+  function setFilter(key) {
+    state.filter = state.filter === key ? null : key;
+    render();
+  }
+
+  // Polaris page shape: heading, one subdued context line, actions right-aligned.
+  // The picker row, the "working as" chips and the help button all used to live in
+  // their own strip under the header; there is now one row of chrome, not three.
+  function renderPageHead() {
+    const shop = state.board.shop;
+    const st = boardStats();
+
+    return h('header', { class: 'page-head' },
+      h('div', { class: 'page-id' },
+        h('h1', null, IS_STAFF ? (state.board.shop.name || 'Your board') : 'Tasks'),
+        // One line of context, every part optional: a board that says "3 open ·
+        // Free plan" needs no banner explaining that the other numbers are zero.
+        h('div', { class: 'page-sub' },
+          [st.open + ' open',
+           st.overdue ? st.overdue + ' overdue' : null,
+           st.closed ? st.closed + ' closed today' : null,
+           shop.plan === 'free' ? 'Free plan' : shop.plan + ' plan',
+           limitLine(st)].filter(Boolean).join(' · '))),
+      h('div', { class: 'page-actions' },
+        IS_STAFF ? null : renderMeChips(),
+        IS_STAFF ? null : iconButton('info-circle', { title: 'Keyboard shortcuts (?)', onClick: openShortcutsHelp }),
+        h('button', { class: 'btn sm', onclick: openTemplatesModal, title: 'One-click checklists for COD confirmation, NDR rescue and RTO — pick one and it is filed with its steps' },
+          ...withIcon('stack', 'Task templates')),
+        h('button', { class: 'btn primary sm', onclick: startQuickAdd }, ...withIcon('plus', 'Add task', { size: 15 }))));
+  }
+
+  function limitLine(st) {
+    const cap = state.board.shop.plan_cfg?.task_limit;
+    return cap ? st.open + ' of ' + cap + ' allowed open' : null;
+  }
+
+  function startQuickAdd() {
+    const first = (state.board.columns || [])[0];
+    if (!first) { toast('Add a column first'); return; }
+    state.filter = null;          // the editor is in an unfiltered column
+    state.quickAdd = first.id;
+    render();
+  }
+
+  function renderStats(st) {
+    return h('div', { class: 'stats', role: 'group', 'aria-label': 'Task counts — click a number to filter' },
+      STAT_FILTERS.map(f => {
+        const n = st[f.key] || 0;
+        // Colour only when it means something: red for overdue, amber for due today,
+        // green for closed; and a zero greys out instead of shouting in black.
+        const cls = 'stat'
+          + (f.tone && n ? ' ' + f.tone : '')
+          + (!n && state.filter !== f.key ? ' empty' : '')
+          + (state.filter === f.key ? ' on' : '');
+
+        return h('button', {
+          class: cls,
+          onclick: () => setFilter(f.key),
+          title: state.filter === f.key ? 'Show every task again' : 'Show only ' + f.label.toLowerCase() + ' tasks',
+          'aria-pressed': String(state.filter === f.key),
+        },
+          h('span', { class: 'stat-n' }, String(n)),
+          h('span', { class: 'stat-l' }, f.label));
+      }));
+  }
+
+  function renderFilterBar(st) {
+    const f = STAT_FILTERS.find(x => x.key === state.filter);
+    if (!f) return null;
+    const shown = st[f.key] || 0;
+
+    return h('div', { class: 'filter-bar' },
+      h('span', { class: 'muted small' },
+        'Filtered: ' + shown + ' ' + f.label.toLowerCase() + ' of ' + st.total + ' task' + (st.total === 1 ? '' : 's')),
+      h('button', { class: 'btn plain sm', onclick: () => setFilter(f.key) }, 'Show all'));
+  }
+
   function renderBoard() {
     const s = state.board;
+    const st = boardStats();
     const board = h('div', { class: 'board' });
 
     for (const col of s.columns) board.append(renderColumn(col));
     board.append(h('button', { class: 'add-col-btn', onclick: promptAddColumn }, ...withIcon('plus', 'Add column', { size: 16 })));
 
-    return h('div', null,
-      h('div', { class: 'board-tools' },
-        h('button', { class: 'btn sm', onclick: openTemplatesModal }, ...withIcon('stack', 'COD / NDR task templates')),
-        h('span', { class: 'muted small' }, 'One-click checklists built for Indian D2C: COD confirm, NDR rescue, RTO checks…'),
-        IS_STAFF ? null : h('span', { class: 'spacer' }),
-        IS_STAFF ? null : renderMeChips(),
-        IS_STAFF ? null : iconButton('info-circle', { title: 'Keyboard shortcuts (?)', onClick: openShortcutsHelp })),
+    return h('div', { class: 'board-page' },
+      renderPageHead(),
+      renderStats(st),
+      renderFilterBar(st),
       board);
   }
 
   function renderColumn(col) {
+    const active = STAT_FILTERS.find(x => x.key === state.filter);
+    const tasks = active ? (col.tasks || []).filter(active.test) : (col.tasks || []);
+    const hidden = (col.tasks || []).length - tasks.length;
+
     const el = h('div', { class: 'board-col', dataset: { colId: col.id } },
       h('div', { class: 'col-head' },
         h('h3', null, col.name),
-        h('span', { class: 'col-count' }, col.tasks.length),
+        h('span', { class: 'col-count' }, tasks.length + (active && hidden ? '/' + col.tasks.length : '')),
         h('div', { class: 'col-actions' },
           iconButton('edit', { title: 'Rename column', onClick: () => promptRenameColumn(col) }),
           state.board.columns.length > 1
             ? iconButton('delete', { title: 'Delete column', onClick: () => deleteColumn(col) }) : null)),
-      h('div', { class: 'col-cards' }, col.tasks.map(t => renderCard(t, col))),
+      h('div', { class: 'col-cards' }, tasks.map(t => renderCard(t, col))),
+      active && !tasks.length && hidden ? h('div', { class: 'col-quiet' }, 'no ' + active.label.toLowerCase() + ' here') : null,
       renderAddCard(col));
 
     // HTML5 drag & drop targets
@@ -587,11 +708,17 @@
       onclick: () => { if (!dragState.moved) openTaskDrawer(t.id); },
     },
       h('div', { class: 'card-title' }, t.title),
+      // Only the priorities that change what you do next get a coloured pill; the
+      // date is plain text, and "closed" is a tick — three badges per card read as
+      // noise when the board is the thing you are trying to scan.
       h('div', { class: 'card-meta' },
-        h('span', { class: 'pill ' + t.priority }, t.priority),
-        t.completed_at ? h('span', { class: 'pill done' }, ...withIcon('check', 'Done', { size: 13 }))
-          : t.overdue ? h('span', { class: 'pill overdue' }, icon('clock', { size: 13 }), fmtDate(t.due_at))
-          : t.due_at ? h('span', { class: 'pill due' }, fmtDate(t.due_at)) : null),
+        (t.priority === 'urgent' || t.priority === 'high') && !t.completed_at
+          ? h('span', { class: 'pill ' + t.priority }, t.priority) : null,
+        t.completed_at
+          ? h('span', { class: 'mark done' }, icon('check', { size: 13 }), 'Closed' + (t.completed_at ? ' ' + fmtDate(t.completed_at) : ''))
+          : t.overdue
+            ? h('span', { class: 'mark late' }, icon('clock', { size: 13 }), 'Overdue' + (t.due_at ? ' · ' + fmtDate(t.due_at) : ''))
+            : t.due_at ? h('span', { class: 'mark' }, icon('clock', { size: 13 }), fmtDate(t.due_at)) : null),
       t.resource ? h('div', { class: 'res-line' },
         t.resource.image ? h('img', { src: t.resource.image, alt: '' }) : h('span', { class: 'res-ic' }, icon('link', { size: 14 })),
         IS_STAFF
@@ -2016,6 +2143,11 @@
   /* ------------------------------------------------------------------- init */
 
   async function boot() {
+    // Before anything is awaited: App Bridge reads <ui-nav-menu> while the frame
+    // initialises, so mounting it only after the board answered raced that snapshot —
+    // which is why the sidebar sometimes showed no menu items at all. It is idempotent,
+    // so it is called again after loadBoard() to refresh the highlight.
+    mountAdminNav();
     try {
       await loadBoard();
       mountAdminNav();

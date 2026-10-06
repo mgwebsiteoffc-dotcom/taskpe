@@ -152,9 +152,20 @@ that Shopify rejected the extension.
 ## 8. Section paths (the app menu in Shopify's sidebar)
 
 TaskPe has no in-app nav strip: **Board · Team · Settings · Plan** are menu items
-in the admin's own left sidebar. App Bridge reads a `<ui-nav-menu>` element that
-`public/js/app.js` mounts, and each entry is a path Laravel serves from the same
-shell (`/`, `/team`, `/settings`, `/plan` — see `AppController::SECTIONS`).
+in the admin's own left sidebar. App Bridge v4 reads an `<s-app-nav>` element whose
+`<s-link>` children `public/js/app.js` mounts, and each entry is a path Laravel serves
+from the same shell (`/`, `/team`, `/settings`, `/plan` — see `AppController::SECTIONS`).
+
+* **No menu in the sidebar at all?** Two causes, in this order:
+  1. *Stale `app.js`.* The assets are cache-busted by file mtime (`app.css?v=…`,
+     `app.js?v=…` from `app.blade.php`), so an upload changes the URL and the frame
+     re-fetches. If someone pinned a version instead, hard-reload the app frame.
+  2. *Wrong element.* `cdn.shopify.com/shopifycloud/app-bridge.js` is App Bridge v4,
+     which **ignores the retired `<ui-nav-menu>`/`<a>` pair** — no console error, just
+     an empty sidebar. Declare `<s-app-nav>` with `<s-link href rel="home">`. Check from
+     inside the frame: `document.getElementById('taskpe-app-nav')?.outerHTML` should
+     show `S-APP-NAV` with four `S-LINK` children, and `display: none` (it is
+     configuration; the admin paints the real menu).
 
 * **No new `.env` keys and nothing to deploy to Shopify.** This is routing plus a
   web component, not an extension — `php artisan config:clear` and the updated
@@ -168,8 +179,8 @@ shell (`/`, `/team`, `/settings`, `/plan` — see `AppController::SECTIONS`).
   App Bridge to read the menu, which is why `/` still renders the "open this from
   your Shopify admin" gate, and staff keep using `/staff`.
 * If Shopify ever shows the section list twice, the culprit is a stale cached
-  `app.js` still mounting the old in-app tab strip: hard-reload the app frame
-  (or bump the asset version) before touching anything else.
+  `app.js` still mounting the old in-app tab strip. The mtime cache-buster above is
+  what prevents that class of confusion — do not replace it with a fixed `?v=`.
 
 
 ## 9. `Invalid API key or access token (unrecognized login or wrong password)`

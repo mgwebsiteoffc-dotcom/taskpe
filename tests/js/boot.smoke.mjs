@@ -108,7 +108,7 @@ function makeEnv({ taskpe = {}, shopify, fetchImpl, pathname = '/' } = {}) {
     assign: u => navigations.push(u),
     replace: u => navigations.push(u),
     reload: () => navigations.push('#reload'),
-    // ui-nav-menu links are paths; App Bridge keeps the admin URL in sync with
+    // s-app-nav links are paths; App Bridge keeps the admin URL in sync with
     // ours, so the harness has to model both halves or the nav is untestable.
     pushState: (state, title, url) => {
       pushes.push(url);
@@ -327,8 +327,9 @@ const check = (name, fn) => {
   });
 }
 
-// 6b — navigation: it belongs to the Shopify admin (ui-nav-menu → the admin's
-// own left sidebar), NOT to a strip we paint inside the app.
+// 6b — navigation: it belongs to the Shopify admin (s-app-nav → the admin's own
+// left sidebar), NOT to a strip we paint inside the app. The element name matters:
+// App Bridge 4 ignores the retired <ui-nav-menu>, so a wrong tag means no menu.
 {
   const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply(200, okBoard) });
   await settle();
@@ -339,10 +340,12 @@ const check = (name, fn) => {
     assert.equal(env.root.find(n => n.attrs.class === 'appnav').length, 0, 'admin must not paint an app header row');
     assert.equal(env.root.find(n => n.attrs.class === 'brand-badge').length, 0, 'no app brand bar either');
   });
-  check('the app menu is handed to App Bridge as ui-nav-menu', () => {
+  check('the app menu is handed to App Bridge as s-app-nav', () => {
     const menu = nav();
-    assert.ok(menu, 'ui-nav-menu not mounted');
-    assert.equal(menu.tagName, 'UI-NAV-MENU');
+    assert.ok(menu, 's-app-nav not mounted');
+    assert.equal(menu.tagName, 'S-APP-NAV');
+    assert.deepEqual(menu.children.map(c => c.tagName), Array(4).fill('S-LINK'),
+      's-app-nav takes <s-link> children; <a> is the retired ui-nav-menu contract');
     assert.equal(menu.style.display, 'none', 'the element is data for App Bridge, never painted');
     const links = menu.children;
     // Docs rule: the first link is the home route, rel="home", and is hidden
@@ -422,7 +425,7 @@ const check = (name, fn) => {
     const labels = env.root.find(n => n.tagName === 'BUTTON').map(b => b.attrs['aria-label']).filter(Boolean);
     assert.ok(labels.length, 'icon-only buttons need accessible names');
   });
-  const tmpl = env.root.find(n => n.tagName === 'BUTTON' && n.text().includes('COD / NDR task templates'))[0];
+  const tmpl = env.root.find(n => n.tagName === 'BUTTON' && n.text().includes('Task templates'))[0];
   tmpl.click();
   await settle();
   check('template picker renders with icons, no emoji', () => {

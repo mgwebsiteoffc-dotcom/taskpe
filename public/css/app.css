@@ -71,7 +71,14 @@ input, select, textarea { font: inherit; }
   font-weight: 500; font-size: 12.5px; color: var(--text-subdued);
   border-left: 1px solid var(--border-strong); padding-left: 9px; margin-left: 2px;
 }
-.board-tools .me-chips { gap: 5px; }
+/* Compact inside .page-actions: no border ring per person, no label sentence —
+   the selected one gets the tint, which is the only thing the row has to say. */
+.page-actions .me-chips { gap: 3px; margin-left: 0; }
+.page-actions .me-chip { border: 0; background: transparent; padding: 3px 8px 3px 3px; font-size: 12.5px; color: var(--text-subdued); }
+.page-actions .me-chip .avatar { width: 20px; height: 20px; font-size: 9.5px; }
+.page-actions .me-chip.on { background: var(--info-bg); color: #2c2f4a; }
+.page-actions .me-chip.on .avatar { background: var(--primary); }
+.page-actions .me-chip:hover { background: rgba(0,0,0,.05); }
 @media (max-width: 720px) {
   .appnav { align-items: stretch; flex-direction: column; gap: 0; padding: 0 12px; }
 }
@@ -112,19 +119,22 @@ input, select, textarea { font: inherit; }
 }
 .avatar.gray { background: var(--text-disabled); }
 
-.page { padding: 20px; }
+.page { padding: 16px 20px 24px; }   /* same top line as .page-head on the board */
 
 /* ---------------- banner ---------------- */
+/* Polaris s-banner, not a notice box: a tint and one line of text, no outline,
+   no two paragraphs before you can see the board. */
 .banner {
-  display: flex; gap: 10px; align-items: flex-start;
-  border-radius: var(--radius-sm); padding: 12px 14px; margin: 14px 20px 0;
-  border: 1px solid var(--border); background: var(--surface);
+  display: flex; gap: 10px; align-items: center;
+  border-radius: var(--radius-sm); padding: 8px 12px; margin: 12px 20px 0;
+  border: 1px solid transparent; background: var(--info-bg); font-size: 13px;
 }
-.banner.warn { background: var(--warning-bg); border-color: #e5d191; }
-.banner.crit { background: var(--critical-bg); border-color: #f0b3a7; }
-.banner.ok { background: var(--success-bg); border-color: #9adbc6; }
-.banner .b-title { font-weight: 650; }
-.banner .b-body { color: var(--text-subdued); font-size: 13px; }
+.banner > div { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.banner.warn { background: var(--warning-bg); }
+.banner.crit { background: var(--critical-bg); }
+.banner.ok { background: var(--success-bg); }
+.banner .b-title { font-weight: 600; }
+.banner .b-body { color: var(--text-subdued); font-size: 12.5px; }
 .banner button { margin-left: auto; flex: none; }
 
 /* ---------------- buttons / inputs ---------------- */
@@ -154,8 +164,8 @@ input, select, textarea { font: inherit; }
 
 /* ---------------- pills & badges ---------------- */
 .pill {
-  display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px;
-  font-size: 12px; font-weight: 600;
+  display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 600;
 }
 .pill.low { background: var(--info-bg); color: #2c2f4a; }
 .pill.medium { background: #dbf5e5; color: #0c5132; }
@@ -168,10 +178,11 @@ input, select, textarea { font: inherit; }
 .pill.link img { width: 16px; height: 16px; border-radius: 4px; object-fit: cover; }
 
 /* ---------------- kanban board ---------------- */
-.board { display: flex; gap: 16px; align-items: flex-start; overflow-x: auto; padding: 20px; min-height: 60vh; }
+.board { display: flex; gap: 14px; align-items: flex-start; overflow-x: auto; padding: 14px 20px 22px; min-height: 56vh; }
 .board-col {
-  width: 300px; flex: none; background: #ebebeb; border-radius: var(--radius); padding: 10px;
+  width: 296px; flex: none; background: #f1f1f2; border-radius: var(--radius); padding: 8px 8px 4px;
 }
+.col-quiet { font-size: 12px; color: var(--text-disabled); padding: 2px 4px 8px; }
 .board-col.drag-over { outline: 2px dashed var(--primary); outline-offset: -2px; }
 .col-head { display: flex; align-items: center; gap: 8px; padding: 4px 6px 10px; }
 .col-head h3 { font-size: 13px; font-weight: 700; letter-spacing: .01em; }
@@ -182,18 +193,30 @@ input, select, textarea { font: inherit; }
 .col-head .col-actions { margin-left: auto; display: flex; gap: 2px; }
 .col-head .col-actions button { color: var(--text-subdued); }
 .col-head .col-actions button:hover { background: rgba(0,0,0,.06); }
+/* Rename/delete are per-column maintenance, not column content: on a hover device
+   they wait for the pointer, so each header is just a name and a count. Touch keeps
+   them visible — hiding controls nobody can hover would be a regression, not a
+   cleanup — and :focus-within keeps the keyboard path honest. */
+@media (hover: hover) {
+  .col-head .col-actions { opacity: 0; transition: opacity .12s; }
+  .board-col:hover .col-head .col-actions, .col-head .col-actions:focus-within { opacity: 1; }
+}
 
 .card {
-  background: var(--surface); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px;
+  background: var(--surface); border-radius: var(--radius-sm); padding: 9px 11px; margin-bottom: 6px;
   box-shadow: var(--shadow-card); border: 1px solid transparent; cursor: grab;
 }
 .card.priority-urgent { border-color: #f3c8c1; }
 .card:active { cursor: grabbing; }
 .card.dragging { opacity: .45; }
-.card.is-done { opacity: .66; }
-.card.is-done .card-title { text-decoration: line-through; }
-.card-title { font-weight: 600; margin-bottom: 6px; word-break: break-word; }
-.card-meta { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.card.is-done { opacity: .72; }
+.card-title { font-weight: 600; font-size: 13.5px; line-height: 1.35; margin-bottom: 5px; word-break: break-word; }
+.card-meta { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
+/* Due date / overdue / closed as text with a glyph, not as a third pill. */
+.card .mark { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-subdued); }
+.card .mark .icon { vertical-align: 0; }
+.card .mark.late { color: var(--critical); font-weight: 600; }
+.card .mark.done { color: var(--success); }
 .card-foot { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
 .card-foot .avatar { margin-left: auto; }
 .card .res-line { font-size: 12px; color: var(--primary); margin-top: 7px; display: flex; gap: 5px; align-items: center; }
@@ -219,11 +242,11 @@ input, select, textarea { font: inherit; }
 .add-col-btn:hover { background: var(--surface-hover); color: var(--text); }
 
 /* ---------------- cards / settings layout ---------------- */
-.panel { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow-card); border: 1px solid var(--border); margin-bottom: 18px; }
-.panel > .p-head { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
-.panel > .p-head h2 { font-size: 15px; font-weight: 650; }
+.panel { background: var(--surface); border-radius: var(--radius-sm); box-shadow: var(--shadow-card); border: 1px solid transparent; margin-bottom: 16px; }
+.panel > .p-head { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
+.panel > .p-head h2 { font-size: 14.5px; font-weight: 600; }
 .panel > .p-head .sub { font-size: 12.5px; color: var(--text-subdued); font-weight: 400; margin-top: 2px; }
-.panel > .p-body { padding: 18px; }
+.panel > .p-body { padding: 16px; }
 .panel > .p-body.flush { padding: 0; }
 
 .two-col { display: grid; grid-template-columns: 1fr 380px; gap: 18px; align-items: start; }
@@ -339,8 +362,46 @@ input, select, textarea { font: inherit; }
 .card.priority-urgent { box-shadow: inset 3px 0 0 var(--critical), var(--shadow-card); }
 .card.priority-urgent .pill.urgent { font-weight: 650; }
 
+/* ---------------------------------------------------------------- board chrome
+   Polaris page shape, one row: heading + a single subdued context line on the
+   left, actions on the right. Below it a hairline-divided stat strip — which is
+   also the filter control, so the board needs no toolbar of its own. */
+.page-head {
+  display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap;
+  padding: 16px 20px 12px;
+}
+.page-id h1 { font-size: 20px; font-weight: 600; letter-spacing: -.01em; line-height: 1.2; }
+.page-sub { font-size: 12.5px; color: var(--text-subdued); margin-top: 3px; font-variant-numeric: tabular-nums; }
+.page-actions { margin-left: auto; display: flex; align-items: center; gap: 7px; }
+
+.stats {
+  display: flex; margin: 0 20px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card); overflow: hidden;
+}
+.stat {
+  flex: 1 1 0; min-width: 88px; display: flex; flex-direction: column; align-items: flex-start;
+  gap: 1px; padding: 9px 12px 8px; border: 0; border-right: 1px solid var(--border);
+  background: transparent; text-align: left; transition: background .12s;
+}
+.stat:last-child { border-right: 0; }
+.stat:hover { background: var(--surface-hover); }
+.stat:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.stat-n { font-size: 18px; font-weight: 600; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.stat-l { font-size: 10.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--text-subdued); }
+.stat.empty .stat-n { color: var(--text-disabled); }
+.stat.crit .stat-n { color: var(--critical); }
+.stat.warn .stat-n { color: var(--warning); }
+.stat.ok .stat-n { color: var(--success); }
+.stat.on { background: #eaf4ff; box-shadow: inset 0 -2px 0 var(--primary); }
+.stat.on .stat-l { color: var(--primary-hover); }
+
+.filter-bar {
+  display: flex; align-items: center; gap: 10px; margin: 8px 20px -6px;
+  font-size: 12.5px; color: var(--text-subdued);
+}
+
 /* ---------------------------------------------------------------- COD/NDR pack */
-.board-tools { display: flex; align-items: center; gap: 12px; padding: 12px 16px 10px; }
 .tmpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
 .tmpl-card { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; text-align: left; padding: 14px; border: 1px solid var(--border,#e3e3e3); border-radius: 10px; background: #fff; cursor: pointer; transition: box-shadow .12s, transform .12s; }
 .tmpl-card:hover { box-shadow: 0 4px 14px rgba(0,0,0,.08); transform: translateY(-1px); }
@@ -434,10 +495,16 @@ input, select, textarea { font: inherit; }
 .how-row p { line-height: 1.5; }
 .how-row code { background: var(--bg); border-radius: 5px; padding: 1px 5px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
-/* Mobile: the tools row carries the template button, the "who am I" chips and
-   the shortcut help — let it wrap rather than squeeze them. Placed after the
-   .board-tools rule on purpose, so it is the one that wins. */
+/* Mobile: the header stacks, its actions go full-width under the title, and the
+   stats strip becomes 3×2 cells instead of five squeezed ones. Placed last so it
+   wins over the rules above without !important anywhere. */
 @media (max-width: 720px) {
-  .board-tools { flex-wrap: wrap; gap: 8px; padding: 10px 12px 10px; }
-  .board-tools .me-chips { margin-left: 0; }
+  .page-head { align-items: flex-start; padding: 14px 14px 10px; }
+  .page-actions { margin-left: 0; width: 100%; flex-wrap: wrap; }
+  .stats { margin: 0 14px; flex-wrap: wrap; }
+  .stat { flex: 1 1 33%; min-width: 0; border-bottom: 1px solid var(--border); }
+  .stat:nth-child(3n) { border-right: 0; }
+  .stat:nth-last-child(-n+2) { border-bottom: 0; }
+  .board { padding: 12px 14px 18px; }
+  .filter-bar { margin: 8px 14px -6px; flex-wrap: wrap; }
 }

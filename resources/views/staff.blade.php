@@ -5,7 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#008060">
     <title>{{ config('app.name') }} — Staff board</title>
-    <link rel="stylesheet" href="{{ asset('css/app.css') }}">
+@php
+    {{-- Cache-busted by file mtime, max of the two assets. An FTP upload must never
+         leave a merchant running last week's app.js: the admin app menu, the board
+         layout and the fetch layer all live in that one file, and "I deployed it but
+         nothing changed" is otherwise indistinguishable from "the code is wrong". --}}
+    $taskpeVer = (string) (max(@filemtime(public_path('js/app.js')) ?: 0, @filemtime(public_path('css/app.css')) ?: 0)
+        ?: config('app.asset_version', '1'));
+@endphp
+    <link rel="stylesheet" href="{{ asset('css/app.css') }}?v={{ $taskpeVer }}">
     <style>
         .staff-brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:18px; }
         .login-wrap { min-height: 100dvh; display:flex; align-items:center; justify-content:center; padding:20px; background:#f6f6f7; }
@@ -37,7 +45,7 @@
             },
         };
     </script>
-    <script src="{{ asset('js/app.js') }}" defer></script>
+    <script src="{{ asset('js/app.js') }}?v={{ $taskpeVer }}" defer></script>
 @else
     {{-- Signed-out: phone + WhatsApp OTP, or manager-sent invite link. --}}
     <div class="login-wrap">

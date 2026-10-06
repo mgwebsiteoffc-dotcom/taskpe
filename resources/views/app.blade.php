@@ -8,12 +8,25 @@
          key meta tag is its one required input. Nothing else belongs in the
          head: App Bridge reads ?shop= / ?host= from the embedded URL. Adding a
          hand-rolled shop/host meta tag is a common copy-paste that silently
-         overrides the real admin context. -->
+         overrides the real admin context.
+
+         v4 also means the section menu must be declared as <s-app-nav> with
+         <s-link> children (mounted by public/js/app.js). The retired
+         <ui-nav-menu>/<a> pair from v3 is ignored by this script, which looks
+         like "the app menu never appears" rather than like an error. -->
     <meta name="shopify-api-key" content="{{ $apiKey }}">
     <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
 
     <title>{{ config('app.name') }} — Team tasks</title>
-    <link rel="stylesheet" href="{{ asset('css/app.css') }}">
+@php
+    {{-- Cache-busted by file mtime, max of the two assets. An FTP upload must never
+         leave a merchant running last week's app.js: the admin app menu, the board
+         layout and the fetch layer all live in that one file, and "I deployed it but
+         nothing changed" is otherwise indistinguishable from "the code is wrong". --}}
+    $taskpeVer = (string) (max(@filemtime(public_path('js/app.js')) ?: 0, @filemtime(public_path('css/app.css')) ?: 0)
+        ?: config('app.asset_version', '1'));
+@endphp
+    <link rel="stylesheet" href="{{ asset('css/app.css') }}?v={{ $taskpeVer }}">
 </head>
 <body>
     <main id="root">
@@ -67,12 +80,12 @@
             billingFlag: new URLSearchParams(location.search).get('billing') || null,
             openTask: new URLSearchParams(location.search).get('task') || null,
             // Which section this path/param asks for. The app menu in Shopify's
-            // sidebar (ui-nav-menu, mounted by app.js) is what moves between
+            // sidebar (<s-app-nav>, mounted by app.js) is what moves between
             // them — there is deliberately no in-app tab strip.
             view: @json($section ?? 'board'),
         };
     </script>
-    <script src="{{ asset('js/app.js') }}" defer></script>
+    <script src="{{ asset('js/app.js') }}?v={{ $taskpeVer }}" defer></script>
     @endunless
 </body>
 </html>
