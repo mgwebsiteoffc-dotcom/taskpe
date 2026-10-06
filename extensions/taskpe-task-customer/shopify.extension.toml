@@ -1,0 +1,17 @@
+# TaskPe "customer" admin action — appears in "More actions" on the customer page.
+# Bump api_version together with SHOPIFY_API_VERSION in your Laravel .env.
+api_version = "2026-07"
+
+[[extensions]]
+name = "t:name"
+handle = "taskpe-task-customer"
+type = "ui_extension"
+# uid is injected automatically by Shopify CLI on first deploy — do not add one.
+
+[[extensions.targeting]]
+module = "./src/ActionExtension.jsx"
+target = "admin.customer-details.action.render"
+
+# Needed so the extension may call the TaskPe Laravel backend (session-token JWT).
+[extensions.capabilities]
+network_access = true

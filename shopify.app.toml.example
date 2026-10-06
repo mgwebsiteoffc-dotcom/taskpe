@@ -1,0 +1,45 @@
+# ==========================================================================
+# OPTIONAL: Shopify CLI config (shopify.app.toml)
+# --------------------------------------------------------------------------
+# You do NOT need the CLI to run TaskPe — the app manages webhooks itself on
+# install. But if you prefer the CLI for config push/dev, rename this file to
+# shopify.app.toml, fill client_id, and run: shopify app config push
+# The values here MUST mirror .env exactly.
+# ==========================================================================
+
+name = "TaskPe"
+handle = "taskpe"
+client_id = "YOUR_CLIENT_ID_FROM_PARTNER_DASHBOARD"
+application_url = "https://app.yourdomain.com/"
+embedded = true
+
+[access_scopes]
+scopes = "read_orders,read_products,read_customers,read_content"
+
+[auth]
+redirect_urls = [
+  "https://app.yourdomain.com/auth/shopify/callback",
+  "https://app.yourdomain.com/billing/callback",
+]
+
+[webhooks]
+api_version = "2026-07"
+
+  # Mandatory GDPR compliance topics (app also self-registers these via API,
+  # but declaring them keeps the Partner Dashboard review section satisfied).
+  [[webhooks.subscriptions]]
+  compliance_topics = ["customers/redact", "customers/data_request", "shop/redact"]
+  uri = "https://app.yourdomain.com/webhooks/shopify"
+
+  [[webhooks.subscriptions]]
+  topics = ["app/uninstalled"]
+  uri = "https://app.yourdomain.com/webhooks/shopify"
+
+[build]
+# No build step for the app itself: classic server-rendered + vanilla JS.
+automatically_update_urls_on_dev = false
+# Set true if you want `shopify app deploy` to also push this file's config
+# (URLs, scopes, compliance webhooks) to the Partner Dashboard. Required when
+# deploying the Admin "Create task" extensions from this project (see
+# extensions/README.md). Keep these values in sync with your .env!
+include_config_on_deploy = true

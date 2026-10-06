@@ -1,0 +1,10 @@
+{
+  "name": "Create task",
+  "create": "Create task",
+  "cancel": "Cancel",
+  "title-label": "Task title",
+  "description-label": "Details for your team (optional)",
+  "assignee-label": "Assign to",
+  "priority-label": "Priority",
+  "due-label": "Due date"
+}

@@ -1,0 +1,1598 @@
+/* ==========================================================================
+   TaskPe — embedded Shopify app SPA (vanilla JS, no build step)
+   - Auth: App Bridge v4 session tokens on every XHR (2026 requirement)
+   - UI: Polaris-styled, rendered from /api/board payloads
+   ========================================================================== */
+'use strict';
+
+(() => {
+  const cfg = window.__TASKPE__ || {};
+  const root = document.getElementById('root');
+  const IS_STAFF = !!cfg.staff;   // staff web portal (cookie auth, no App Bridge)
+
+  const state = {
+    board: null,          // /api/board payload
+    view: 'board',        // board | team | settings | plan
+    settings: null,       // /api/settings payload (lazy)
+    me: Number(localStorage.getItem('taskpe_me') || 0),
+    drawerTaskId: null,
+    loading: false,
+  };
+
+  /* ---------------------------------------------------------------- helpers */
+
+  // Tiny DOM builder — never injects HTML, so user content is XSS-safe.
+  function h(tag, attrs, ...children) {
+    const node = document.createElement(tag);
+    if (attrs) {
+      for (const [k, v] of Object.entries(attrs)) {
+        if (v === null || v === undefined || v === false) continue;
+        if (k === 'class') node.className = v;
+        else if (k === 'dataset') Object.assign(node.dataset, v);
+        else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
+        else if (k in node && k !== 'for' && k !== 'list' && typeof v !== 'string') node[k] = v;
+        else node.setAttribute(k, v);
+      }
+    }
+    for (const c of children.flat(9)) {
+      if (c === null || c === undefined || c === false) continue;
+      node.append(c.nodeType ? c : document.createTextNode(String(c)));
+    }
+    return node;
+  }
+
+  function toast(msg, isError = false) {
+    if (window.shopify && window.shopify.toast) {
+      try { window.shopify.toast.show(msg, { isError }); return; } catch { /* older bridge — fall through */ }
+    }
+    // Staff portal (no App Bridge): lightweight floating toast.
+    const t = h('div', { class: 'fab-toast' + (isError ? ' err' : '') }, msg);
+    document.body.append(t);
+    setTimeout(() => t.classList.add('show'), 10);
+    setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 2600);
+  }
+
+  async function token() {
+    return await window.shopify.idToken();
+  }
+
+  async function api(path, { method = 'GET', body } = {}) {
+    const init = {
+      method,
+      headers: { ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    };
+
+    let url;
+    if (IS_STAFF) {
+      url = cfg.appUrl + '/staff/api' + path;   // cookie-authed (SameSite=Lax cookie)
+    } else {
+      url = cfg.appUrl + '/api' + path;
+      init.headers.Authorization = 'Bearer ' + (await token());
+      init.headers['X-TaskPe-Member'] = state.me || '';
+    }
+
+    const res = await fetch(url, init);
+
+    if (res.status === 401) {
+      if (IS_STAFF) { location.assign('/staff'); throw new Error('staff_auth'); }
+      // Not installed / token rejected → restart OAuth at top level.
+      let shop = '';
+      try { shop = (await res.json()).shop || ''; } catch { /* noop */ }
+      shop = shop || new URLSearchParams(location.search).get('shop') || '';
+      if (shop && !api._redirecting) {
+        api._redirecting = true;
+        open(cfg.appUrl + '/auth/shopify?shop=' + encodeURIComponent(shop), '_top');
+      }
+      throw new Error('reauth');
+    }
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(data.message || data.error || 'Request failed');
+      err.code = data.error;
+      err.status = res.status;
+      throw err;
+    }
+    return data;
+  }
+
+  function fmtDate(iso, opts) {
+    if (!iso) return '';
+    try {
+      return new Intl.DateTimeFormat('en-IN', {
+        day: 'numeric', month: 'short',
+        ...(opts?.time ? { hour: 'numeric', minute: '2-digit', hour12: true } : {}),
+        timeZone: state.board?.shop?.timezone || 'Asia/Kolkata',
+        ...opts?.intl,
+      }).format(new Date(iso));
+    } catch { return iso; }
+  }
+
+  function openAdmin(url) { open(url, '_top'); }
+
+  function debounce(fn, ms) {
+    let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+  }
+
+  function esc(s) { return s === null || s === undefined ? '' : String(s); }
+
+  /* ---------------------------------------------------------------- board */
+
+  async function loadBoard() {
+    state.board = await api('/board');
+    document.title = (state.board.shop.name || '') + ' · TaskPe';
+  }
+
+  function render() {
+    root.replaceChildren(renderShell());
+    if (cfg.billingFlag) { handleBillingFlag(cfg.billingFlag); cfg.billingFlag = null; }
+    if (cfg.openTask && state.board) { openTaskDrawer(Number(cfg.openTask)); cfg.openTask = null; }
+  }
+
+  function renderShell() {
+    const s = state.board;
+    if (!s) return h('div', { class: 'boot' }, h('div', { class: 'boot-text' }, 'Loading…'));
+
+    // Staff portal: board-only surface, own topbar, no admin tabs.
+    if (IS_STAFF) {
+      return h('div', null,
+        h('div', { class: 'topbar' },
+          h('div', { class: 'brand' }, h('div', { class: 'brand-badge' }, 'T'), 'TaskPe',
+            s.shop.name ? h('span', { class: 'staff-shop' }, '· ' + s.shop.name) : null),
+          h('span', { class: 'spacer' }),
+          h('span', { class: 'staff-chip', title: 'Signed in via staff portal' }, cfg.staff.initials ? cfg.staff.initials + ' · ' + cfg.staff.name : cfg.staff.name),
+          h('button', { class: 'btn plain sm', onclick: staffLogout }, 'Log out')),
+        renderBoard(),
+        state.drawerTaskId ? renderTaskDrawer(state.drawerTaskId) : null,
+      );
+    }
+
+    const tabs = [['board', '📋 Board'], ['team', '👥 Team'], ['settings', '⚙️ Settings'], ['plan', '⭐ Plan']];
+
+    return h('div', null,
+      h('div', { class: 'topbar' },
+        h('div', { class: 'brand' }, h('div', { class: 'brand-badge' }, 'T'), 'TaskPe',
+          s.shop.plan !== 'free' ? h('span', { class: 'pill medium' }, s.shop.plan.toUpperCase()) : null),
+        h('nav', null, tabs.map(([v, label]) =>
+          h('button', { class: state.view === v ? 'active' : '', onclick: () => { state.view = v; render(); } }, label))),
+        renderMeChips()),
+      renderBanners(),
+      state.view === 'board' ? renderBoard() :
+      state.view === 'team' ? renderTeam() :
+      state.view === 'settings' ? renderSettings() : renderPlan(),
+      state.drawerTaskId ? renderTaskDrawer(state.drawerTaskId) : null,
+    );
+  }
+
+  async function staffLogout() {
+    try { await fetch(cfg.appUrl + '/staff/logout', { method: 'POST' }); } catch { /* still navigate */ }
+    location.assign('/staff');
+  }
+
+  function renderBanners() {
+    const s = state.board;
+    const wrap = h('div', null);
+    if (IS_STAFF) return wrap;   // admin-only nag banners never reach the portal
+
+    if (s.shop.plan === 'free') {
+      wrap.append(h('div', { class: 'banner warn' },
+        h('div', null,
+          h('div', { class: 'b-title' }, 'You are on the Free plan'),
+          h('div', { class: 'b-body' }, 'Upgrade to Starter (≈ ₹499/mo) to enable WhatsApp alerts for your team, unlimited tasks and the daily owner digest.')),
+        h('button', { class: 'btn primary sm', onclick: () => { state.view = 'plan'; render(); } }, 'View plans')));
+      return wrap;
+    }
+
+    // Only nag when the merchant has explicitly switched WhatsApp ON but
+    // hasn't finished connecting Whatify. When the master switch is off
+    // (default), we stay silent — feature is opt-in.
+    if (s.whatsapp.plan_allowed && s.whatsapp.master_on && !s.whatsapp.has_key) {
+      wrap.append(h('div', { class: 'banner warn' },
+        h('div', null,
+          h('div', { class: 'b-title' }, 'WhatsApp is ON — connect your Whatify account to finish'),
+          h('div', { class: 'b-body' }, 'Paste your Whatify API key in Settings — takes 2 minutes. Task alerts then land directly on your staff\'s WhatsApp.')),
+        h('button', { class: 'btn primary sm', onclick: () => { state.view = 'settings'; render(); } }, 'Connect')));
+    }
+
+    const anyMember = s.members.some(m => m.role === 'owner' && m.whatsapp_verified);
+    if (s.whatsapp.has_key && !anyMember && s.view === 'board') {
+      wrap.append(h('div', { class: 'banner' },
+        h('div', null,
+          h('div', { class: 'b-title' }, 'Verify your own number'),
+          h('div', { class: 'b-body' }, 'Add yourself in the Team tab with the Owner role so the morning digest reaches you.')),
+        h('button', { class: 'btn sm', onclick: () => { state.view = 'team'; render(); } }, 'Add me')));
+    }
+    return wrap;
+  }
+
+  function renderMeChips() {
+    const s = state.board;
+    if (IS_STAFF || !s || !s.members.length) return h('div', { class: 'me-chips' });
+
+    return h('div', { class: 'me-chips' },
+      h('span', { class: 'lbl' }, 'Working as:'),
+      s.members.filter(m => m.active).map(m =>
+        h('button', {
+          class: 'me-chip' + (state.me === m.id ? ' on' : ''),
+          onclick: () => {
+            state.me = state.me === m.id ? 0 : m.id;
+            localStorage.setItem('taskpe_me', state.me || '');
+            render();
+          },
+          title: m.role + (m.whatsapp_verified ? ' · WhatsApp verified' : ''),
+        }, h('span', { class: 'avatar' + (state.me === m.id ? '' : ' gray') }, m.initials), m.name.split(' ')[0])));
+  }
+
+  /* ------------------------------------------------------------- kanban UI */
+
+  function renderBoard() {
+    const s = state.board;
+    const board = h('div', { class: 'board' });
+
+    for (const col of s.columns) board.append(renderColumn(col));
+    board.append(h('button', { class: 'add-col-btn', onclick: promptAddColumn }, '+ Add column'));
+
+    return h('div', null,
+      h('div', { class: 'board-tools' },
+        h('button', { class: 'btn sm', onclick: openTemplatesModal }, '📦 COD / NDR task templates'),
+        h('span', { class: 'muted small' }, 'One-click checklists built for Indian D2C: COD confirm, NDR rescue, RTO checks…')),
+      board);
+  }
+
+  function renderColumn(col) {
+    const el = h('div', { class: 'board-col', dataset: { colId: col.id } },
+      h('div', { class: 'col-head' },
+        h('h3', null, col.name),
+        h('span', { class: 'col-count' }, col.tasks.length),
+        h('div', { class: 'col-actions' },
+          h('button', { title: 'Rename', onclick: () => promptRenameColumn(col) }, '✏️'),
+          state.board.columns.length > 1
+            ? h('button', { title: 'Delete column', onclick: () => deleteColumn(col) }, '🗑') : null)),
+      h('div', { class: 'col-cards' }, col.tasks.map(t => renderCard(t, col))),
+      renderAddCard(col));
+
+    // HTML5 drag & drop targets
+    el.addEventListener('dragover', e => {
+      if (!dragState.taskId) return;
+      e.preventDefault();
+      el.classList.add('drag-over');
+    });
+    el.addEventListener('dragleave', () => el.classList.remove('drag-over'));
+    el.addEventListener('drop', e => {
+      e.preventDefault();
+      el.classList.remove('drag-over');
+      if (!dragState.taskId) return;
+      const pos = dropPosition(el, e.clientY);
+      void moveTask(dragState.taskId, col.id, pos);
+    });
+
+    return el;
+  }
+
+  function dropPosition(colEl, y) {
+    // Index = how many card midpoints are above the cursor.
+    const cards = [...colEl.querySelectorAll('.card:not(.dragging)')];
+    return cards.filter(c => {
+      const r = c.getBoundingClientRect();
+      return y > r.top + r.height / 2;
+    }).length;
+  }
+
+  function renderCard(t, col) {
+    const card = h('div', {
+      class: 'card' + (t.completed_at ? ' is-done' : '') + (t.priority === 'urgent' ? ' priority-urgent' : ''),
+      draggable: true,
+      dataset: { taskId: t.id },
+      onclick: () => { if (!dragState.moved) openTaskDrawer(t.id); },
+    },
+      h('div', { class: 'card-title' }, t.title),
+      h('div', { class: 'card-meta' },
+        h('span', { class: 'pill ' + t.priority }, t.priority),
+        t.completed_at ? h('span', { class: 'pill done' }, '✓ Done')
+          : t.overdue ? h('span', { class: 'pill overdue' }, '⏰ ' + fmtDate(t.due_at))
+          : t.due_at ? h('span', { class: 'pill due' }, fmtDate(t.due_at)) : null),
+      t.resource ? h('div', { class: 'res-line' },
+        t.resource.image ? h('img', { src: t.resource.image, alt: '' }) : h('span', null, '🔗'),
+        IS_STAFF
+          ? h('span', { class: 'small', title: 'Opens in Shopify admin — ask your manager if you need it' }, t.resource.label + ' ' + (t.resource.title || ''))
+          : h('a', { href: t.resource.url || '#', onclick: e => { e.preventDefault(); e.stopPropagation(); if (t.resource.url) openAdmin(t.resource.url); } },
+              h('span', null, t.resource.label + ' ' + (t.resource.title || '')))) : null,
+      h('div', { class: 'card-foot' },
+        (() => {
+          const ck = checklistLines(t.description);
+          if (ck) return h('span', { class: 'muted small', title: 'Checklist progress' }, '☑ ' + ck.items.filter(i => i.done).length + '/' + ck.items.length);
+          return t.description ? h('span', { class: 'muted small' }, '☰') : null;
+        })(),
+        t.assignee ? h('span', { class: 'avatar', title: t.assignee.name }, t.assignee.initials)
+          : h('span', { class: 'avatar gray', title: 'Unassigned' }, '·')));
+
+    card.addEventListener('dragstart', e => {
+      dragState = { taskId: t.id, moved: false };
+      card.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    card.addEventListener('dragend', () => {
+      card.classList.remove('dragging');
+      setTimeout(() => { dragState = { taskId: null, moved: false }; }, 50);
+    });
+
+    return card;
+  }
+
+  let dragState = { taskId: null, moved: false };
+
+  async function moveTask(taskId, columnId, position) {
+    // Optimistic render
+    const cols = state.board.columns;
+    let task = null;
+    for (const c of cols) {
+      const i = c.tasks.findIndex(t => t.id === taskId);
+      if (i >= 0) { task = c.tasks.splice(i, 1)[0]; break; }
+    }
+    if (!task) return;
+    const target = cols.find(c => c.id === columnId);
+    target.tasks.splice(Math.min(position, target.tasks.length), 0, task);
+    task.column_id = columnId;
+    dragState.moved = true;
+    render();
+
+    try {
+      const updated = await api('/tasks/' + taskId + '/move', { method: 'POST', body: { column_id: columnId, position } });
+      task.completed_at = updated.completed_at; task.position = updated.position;
+      if (updated.completed_at) toast('Task completed 🎉');
+      render();
+    } catch (e) { toast(e.message, true); await refreshBoard(); }
+  }
+
+  function renderAddCard(col) {
+    const box = h('div', { class: 'add-card' });
+    const toggle = h('button', { class: 'add-card-toggle' }, '+ Add task');
+
+    function openEditor() {
+      const ta = h('textarea', { placeholder: 'e.g. Refund this customer and send ₹500 gift card…', rows: 2 });
+      ta.focus();
+      const save = h('button', {
+        class: 'btn primary sm',
+        onclick: async () => {
+          const title = ta.value.trim();
+          if (!title) return;
+          save.disabled = true;
+          try {
+            await api('/tasks', { method: 'POST', body: { title, column_id: col.id } });
+            await refreshBoard();
+            toast('Task added');
+          } catch (e) { toast(e.message, e.code === 'plan_limit'); save.disabled = false; }
+        },
+      }, 'Add');
+      const cancel = h('button', { class: 'btn sm', onclick: closeEditor }, 'Cancel');
+      ta.addEventListener('keydown', ev => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); save.click(); } });
+
+      box.replaceChildren(h('div', null, ta, h('div', { class: 'row' }, save, cancel)));
+      setTimeout(() => ta.focus(), 0);
+    }
+    function closeEditor() { box.replaceChildren(toggle); }
+
+    toggle.addEventListener('click', openEditor);
+    box.append(toggle);
+    return box;
+  }
+
+  async function refreshBoard() {
+    await loadBoard();
+    render();
+  }
+
+  function promptAddColumn() {
+    openModal('Add column', h('div', null,
+      h('div', { class: 'field' }, h('label', null, 'Column name'), h('input', { class: 'input', id: 'col-name', placeholder: 'e.g. Waiting for courier', maxlength: 60 })),
+      h('label', { class: 'switch' },
+        h('input', { type: 'checkbox', id: 'col-done' }), h('span', { class: 'track' }),
+        h('span', null, h('span', { class: 'sw-label' }, 'Tasks dropped here are "Done"')))),
+      async () => {
+        const name = document.getElementById('col-name').value.trim();
+        if (!name) return false;
+        await api('/columns', { method: 'POST', body: { name, is_done_stage: document.getElementById('col-done').checked } });
+        await refreshBoard();
+        return true;
+      });
+  }
+
+  function promptRenameColumn(col) {
+    openModal('Rename column', h('div', null,
+      h('div', { class: 'field' }, h('label', null, 'Column name'), h('input', { class: 'input', id: 'col-name', value: col.name, maxlength: 60 }))),
+      async () => {
+        const name = document.getElementById('col-name').value.trim();
+        if (!name) return false;
+        await api('/columns/' + col.id, { method: 'PATCH', body: { name } });
+        await refreshBoard();
+        return true;
+      });
+  }
+
+  async function deleteColumn(col) {
+    if (!confirm(`Delete "${col.name}"? Its ${col.tasks.length} task(s) move to the first remaining column.`)) return;
+    await api('/columns/' + col.id, { method: 'DELETE' });
+    await refreshBoard();
+    toast('Column deleted');
+  }
+
+  /* ------------------------------------------------------------ task drawer */
+
+  function findTask(id) {
+    for (const c of state.board.columns) {
+      const t = c.tasks.find(x => x.id === id);
+      if (t) return t;
+    }
+    return null;
+  }
+
+  function openTaskDrawer(id) {
+    if (findTask(id)) { state.drawerTaskId = id; render(); }
+  }
+
+  function closeDrawer() { state.drawerTaskId = null; render(); }
+
+  function renderTaskDrawer(id) {
+    const t = findTask(id);
+    if (!t) return null;
+    const s = state.board;
+    const activeMembers = s.members.filter(m => m.active);
+
+    const overlay = h('div', { class: 'overlay right', onclick: e => { if (e.target === overlay) closeDrawer(); } });
+
+    const assigneeSel = h('select', { class: 'input' },
+      h('option', { value: '' }, 'Unassigned'),
+      activeMembers.map(m => h('option', { value: m.id, selected: t.assignee?.id === m.id }, m.name + (m.whatsapp_verified ? ' 🟢' : ''))));
+    assigneeSel.value = t.assignee?.id || '';
+
+    const colSel = h('select', { class: 'input' },
+      s.columns.map(c => h('option', { value: c.id, selected: c.id === t.column_id }, c.name)));
+
+    const prioSel = h('select', { class: 'input' },
+      ['low', 'medium', 'high', 'urgent'].map(p => h('option', { value: p, selected: p === t.priority }, p)));
+
+    const dueInput = h('input', {
+      class: 'input', type: 'datetime-local',
+      value: t.due_at ? toLocalInput(t.due_at) : '',
+    });
+
+    const titleInput = h('input', { class: 'input', value: t.title, maxlength: 190 });
+    const descInput = h('textarea', { class: 'input', rows: 3, placeholder: 'Add details for your team…' }, t.description || '');
+
+    const activityBox = h('div', null, h('div', { class: 'muted small' }, 'Loading activity…'));
+    void api('/tasks/' + id + '/activity').then(rows => {
+      activityBox.replaceChildren(...(rows.length ? rows.map(a => h('div', { class: 'activity-item' },
+        h('span', { class: 'dot' }),
+        h('div', null,
+          h('div', null, activityText(a)),
+          h('div', { class: 'a-sub' }, (a.actor || 'Store team') + ' · ' + fmtDate(a.created_at, { time: true }))))
+      ) : [h('div', { class: 'muted small' }, 'No activity yet.')]));
+    }).catch(() => activityBox.replaceChildren(h('div', { class: 'muted small' }, 'Could not load activity.')));
+
+    overlay.append(h('div', { class: 'drawer' },
+      h('div', { class: 'modal-head' },
+        h('h2', null, 'Task'),
+        h('span', { class: 'pill ' + t.priority }, t.priority),
+        h('button', { class: 'x', onclick: closeDrawer }, '×')),
+      h('div', { class: 'd-body' },
+        h('div', { class: 'field' }, h('label', null, 'Title'), titleInput),
+        h('div', { class: 'field' }, h('label', null, 'Description'), descInput, renderChecklistBlock(t)),
+        h('div', { class: 'field-row' },
+          h('div', { class: 'field' }, h('label', null, 'Assignee'), assigneeSel),
+          h('div', { class: 'field' }, h('label', null, 'Priority'), prioSel)),
+        h('div', { class: 'field-row' },
+          h('div', { class: 'field' }, h('label', null, 'Column'), colSel),
+          h('div', { class: 'field' }, h('label', null, 'Due'), dueInput)),
+        h('div', { class: 'field' },
+          h('label', null, 'Linked Shopify object'),
+          renderLinkedResource(t)),
+        h('div', { class: 'divider' }),
+        h('div', { class: 'field' }, h('label', null, 'Activity'), activityBox)),
+      h('div', { class: 'd-foot' },
+        h('button', {
+          class: 'btn ' + (t.completed_at ? '' : 'primary'),
+          onclick: async () => {
+            await api('/tasks/' + id + '/complete', { method: 'POST' });
+            await refreshBoard();
+            state.drawerTaskId = id; render();
+          },
+        }, t.completed_at ? '↩ Reopen' : '✓ Mark done'),
+        (t.assignee && !IS_STAFF) ? h('button', {
+          class: 'btn', title: 'Send WhatsApp reminder to assignee',
+          onclick: async e => {
+            e.target.disabled = true;
+            try {
+              await api('/tasks/' + id + '/remind', { method: 'POST' });
+              toast('WhatsApp reminder queued 🔔');
+            } catch (err) { toast(err.message, true); }
+            e.target.disabled = false;
+          },
+        }, '🔔 Nudge') : null,
+        h('span', { class: 'spacer' }),
+        IS_STAFF ? null : h('button', {
+          class: 'btn danger',
+          onclick: async () => {
+            if (!confirm('Delete this task permanently?')) return;
+            await api('/tasks/' + id, { method: 'DELETE' });
+            closeDrawer();
+            await refreshBoard();
+          },
+        }, 'Delete'),
+        h('button', {
+          class: 'btn primary',
+          onclick: async () => {
+            const body = {
+              title: titleInput.value.trim(),
+              description: descInput.value || null,
+              priority: prioSel.value,
+              due_at: dueInput.value ? new Date(dueInput.value).toISOString() : null,
+              assignee_id: assigneeSel.value ? Number(assigneeSel.value) : null,
+              column_id: Number(colSel.value),
+              resource_type: t.resource?.type || null,
+              resource_id: t.resource?.id || null,
+              resource_gid: null,
+              resource_title: t.resource?.title || null,
+              resource_url: t.resource?.url || null,
+            };
+            if (!body.title) { toast('Title is required', true); return; }
+            try {
+              const prevCol = t.column_id;
+              await api('/tasks/' + id, { method: 'PATCH', body });
+              if (Number(body.column_id) !== prevCol) {
+                await api('/tasks/' + id + '/move', { method: 'POST', body: { column_id: Number(body.column_id), position: 999999 } });
+              }
+              await refreshBoard();
+              state.drawerTaskId = id; render();
+              toast('Saved');
+            } catch (e2) { toast(e2.message, true); }
+          },
+        }, 'Save changes'))));
+
+    return overlay;
+  }
+
+  function activityText(a) {
+    const m = a.meta || {};
+    switch (a.action) {
+      case 'created': return 'Task created in ' + (m.column || 'board');
+      case 'updated': return 'Details updated';
+      case 'moved': return 'Moved to ' + (m.to || '');
+      case 'assigned': return 'Assigned to ' + (m.to || '');
+      case 'completed': return 'Marked as done ✅';
+      case 'reopened': return 'Reopened';
+      default: return a.action;
+    }
+  }
+
+  function toLocalInput(iso) {
+    const d = new Date(iso);
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function renderLinkedResource(t) {
+    const wrap = h('div', null);
+    if (t.resource) {
+      wrap.append(h('div', { class: 'res-current' },
+        h('span', { class: 'pill link' }, t.resource.label),
+        IS_STAFF
+          ? h('span', { class: 'small' }, t.resource.title || 'Linked object')
+          : h('a', { href: t.resource.url || '#', class: 'small', onclick: e => { e.preventDefault(); if (t.resource.url) openAdmin(t.resource.url); } }, t.resource.title || 'Open'),
+        h('span', { class: 'spacer' }),
+        h('button', { class: 'btn plain sm', onclick: () => openResourcePicker(t) }, 'Change'),
+        h('button', {
+          class: 'btn plain sm', title: 'Remove link',
+          onclick: async () => {
+            await api('/tasks/' + t.id, { method: 'PATCH', body: { resource_type: null } });
+            await refreshBoard(); state.drawerTaskId = t.id; render();
+          },
+        }, '✕ Remove')));
+    } else {
+      wrap.append(h('button', { class: 'btn sm', onclick: () => openResourcePicker(t) }, '🔗 Link order, product, customer or blog post'));
+    }
+    return wrap;
+  }
+
+  /* -------------------------------------------------------- resource picker */
+
+  function openResourcePicker(task) {
+    const types = [['order', 'Orders'], ['draft_order', 'Draft orders'], ['product', 'Products'], ['customer', 'Customers'], ['article', 'Blog posts']];
+    let activeType = 'order';
+    let selected = null;
+
+    const searchInput = h('input', { class: 'input', placeholder: 'Search… e.g. #1001 or product name' });
+    const results = h('div', null, h('div', { class: 'res-empty' }, 'Type to search'));
+    const tabs = h('div', { class: 'res-tabs' });
+
+    const doSearch = debounce(async () => {
+      const q = searchInput.value.trim();
+      // Smart paste: full Shopify admin URL → resolve directly.
+      const paste = q.match(/admin\.shopify\.com\/store\/[^/]+\/(orders|draft_orders|products|customers|articles)\/(\d+)/);
+      let params;
+      if (paste) {
+        activeType = { orders: 'order', draft_orders: 'draft_order', products: 'product', customers: 'customer', articles: 'article' }[paste[1]];
+        params = 'type=' + activeType + '&id=' + paste[2];
+      } else {
+        if (!q) { results.replaceChildren(h('div', { class: 'res-empty' }, 'Type to search')); return; }
+        params = 'type=' + activeType + '&q=' + encodeURIComponent(q.replace(/^#/, ''));
+      }
+      renderTabs();
+      results.replaceChildren(h('div', { class: 'res-empty' }, 'Searching…'));
+      try {
+        const data = await api('/resources/search?' + params);
+        results.replaceChildren(...(data.items.length ? data.items.map(item => h('div', {
+          class: 'res-item',
+          onclick: ev => {
+            selected = item;
+            [...results.children].forEach(c2 => (c2.style.background = ''));
+            ev.currentTarget.style.background = 'var(--info-bg)';
+          },
+        },
+          item.image ? h('img', { src: item.image, alt: '' }) : h('img', { alt: '' }),
+          h('div', null,
+            h('div', { class: 'ri-title' }, item.title || '(no title)'),
+            h('div', { class: 'ri-sub' }, types.find(([k]) => k === item.type)?.[1] + (item.subtitle ? ' · ' + item.subtitle : '')),
+          ),
+        )) : [h('div', { class: 'res-empty' }, 'No matches found')]));
+      } catch (e) {
+        results.replaceChildren(h('div', { class: 'res-empty' }, e.message || 'Search failed'));
+      }
+    }, 350);
+
+    function renderTabs() {
+      tabs.replaceChildren(...types.map(([k, label]) => h('button', {
+        class: k === activeType ? 'active' : '',
+        onclick: () => { activeType = k; selected = null; renderTabs(); doSearch(); },
+      }, label)));
+    }
+    renderTabs();
+    searchInput.addEventListener('input', doSearch);
+
+    openModal('Link a Shopify object', h('div', null, tabs, searchInput, h('div', { class: 'mt' }, results)),
+      async () => {
+        if (!selected) { toast('Pick a result first', true); return false; }
+        await api('/tasks/' + task.id, {
+          method: 'PATCH',
+          body: {
+            resource_type: selected.type,
+            resource_id: selected.id,
+            resource_gid: selected.gid,
+            resource_title: selected.title,
+            resource_url: selected.url,
+          },
+        });
+        await refreshBoard();
+        state.drawerTaskId = task.id; render();
+        toast('Linked ' + selected.title);
+        return true;
+      });
+    setTimeout(() => searchInput.focus(), 50);
+  }
+
+  /* ------------------------------------------- checklist parsing (templates) */
+
+  const CK_RE = /^- \[( |x|X)\] (.*)$/;
+
+  // "- [ ] step" lines inside a description → clickable checklist metadata.
+  function checklistLines(desc) {
+    if (!desc) return null;
+    const lines = String(desc).split('\n');
+    const items = [];
+    lines.forEach((line, idx) => {
+      const m = line.match(CK_RE);
+      if (m) items.push({ idx, done: m[1].toLowerCase() === 'x', text: m[2] });
+    });
+    return items.length ? { lines, items } : null;
+  }
+
+  // Interactive checklist shown in the task drawer (saves on each toggle).
+  function renderChecklistBlock(t) {
+    const ck = checklistLines(t.description);
+    if (!ck) return null;
+    const doneCount = ck.items.filter(i => i.done).length;
+
+    return h('div', { class: 'ck-list' },
+      h('div', { class: 'ck-progress' }, '📦 Checklist — ' + doneCount + '/' + ck.items.length + ' done'),
+      ck.items.map(item => h('button', {
+        class: 'ck-item' + (item.done ? ' done' : ''),
+        onclick: async () => {
+          ck.lines[item.idx] = '- [' + (item.done ? ' ' : 'x') + '] ' + item.text;
+          try {
+            await api('/tasks/' + t.id, { method: 'PATCH', body: { description: ck.lines.join('\n') } });
+            await refreshBoard();
+            state.drawerTaskId = t.id; render();
+          } catch (e) { toast(e.message, true); }
+        },
+      },
+        h('span', { class: 'ck-box' }, item.done ? '✓' : ''),
+        h('span', { class: 'ck-text' }, item.text))));
+  }
+
+  /* ------------------------------------------- COD / NDR template pack modal */
+
+  function fillTemplateTitle(tpl, orderTitle) {
+    const today = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+    return (tpl.title || tpl.name).replace('{order}', orderTitle || '').replace('{date}', today).replace(/\s+/g, ' ').trim();
+  }
+
+  function humanHours(hours) {
+    if (hours % 168 === 0) return (hours / 168) + ' week';
+    if (hours % 24 === 0) return (hours / 24) + (hours / 24 > 1 ? ' days' : ' day');
+    return hours + ' hours';
+  }
+
+  function openTemplatesModal() {
+    const s = state.board;
+    const templates = Object.entries(s.task_templates || {});
+    const body = h('div', null);
+    const close = openModalAuto('📦 Task templates — India COD / NDR pack', body);
+
+    function renderGrid() {
+      body.replaceChildren(
+        h('p', { class: 'muted small', style: 'margin-top:0' }, 'One click builds a task pre-filled with the exact checklist your team should follow. Tap a template:'),
+        h('div', { class: 'tmpl-grid' }, templates.map(([key, tpl]) => h('button', {
+          class: 'tmpl-card',
+          onclick: () => renderDetail(tpl),
+        },
+          h('span', { class: 'tmpl-emoji' }, tpl.emoji || '📋'),
+          h('span', { class: 'tmpl-name' }, tpl.name),
+          h('span', { class: 'tmpl-tag' }, tpl.tagline || '')))));
+    }
+
+    function renderDetail(tpl) {
+      let selected = null;
+      const needsResource = !!tpl.resource_type;
+
+      const search = h('input', { class: 'input', placeholder: 'Search order… e.g. #1001' });
+      const results = h('div', null, h('div', { class: 'res-empty' }, 'Type to search'));
+      const createBtn = h('button', { class: 'btn primary', disabled: needsResource }, '✨ Create task');
+
+      const doSearch = debounce(async () => {
+        const q = search.value.trim();
+        if (!q) { results.replaceChildren(h('div', { class: 'res-empty' }, 'Type to search')); return; }
+        results.replaceChildren(h('div', { class: 'res-empty' }, 'Searching…'));
+        try {
+          const data = await api('/resources/search?type=' + tpl.resource_type + '&q=' + encodeURIComponent(q.replace(/^#/, '')));
+          results.replaceChildren(...(data.items.length ? data.items.map(item => h('div', {
+            class: 'res-item',
+            onclick: ev => {
+              selected = item;
+              createBtn.disabled = false;
+              [...results.children].forEach(c2 => c2.classList.remove('sel'));
+              ev.currentTarget.classList.add('sel');
+            },
+          },
+            item.image ? h('img', { src: item.image, alt: '' }) : h('img', { alt: '' }),
+            h('div', null,
+              h('div', { class: 'ri-title' }, item.title || '(no title)'),
+              h('div', { class: 'ri-sub' }, item.subtitle || '')))) : [h('div', { class: 'res-empty' }, 'No matches found')]));
+        } catch (e) { results.replaceChildren(h('div', { class: 'res-empty' }, e.message || 'Search failed')); }
+      }, 350);
+      search.addEventListener('input', doSearch);
+
+      createBtn.addEventListener('click', async () => {
+        createBtn.disabled = true;
+        const firstCol = s.columns.find(c => !c.is_done_stage) || s.columns[0];
+        const payload = {
+          column_id: firstCol.id,
+          title: fillTemplateTitle(tpl, selected?.title || ''),
+          description: (tpl.checklist || []).map(it => '- [ ] ' + it).join('\n'),
+          priority: tpl.priority || 'medium',
+          due_at: tpl.due_in_hours ? new Date(Date.now() + tpl.due_in_hours * 3600e3).toISOString() : null,
+          resource_type: selected?.type || null,
+          resource_id: selected?.id || null,
+          resource_gid: selected?.gid || null,
+          resource_title: selected?.title || null,
+          resource_url: selected?.url || null,
+        };
+        try {
+          const created = await api('/tasks', { method: 'POST', body: payload });
+          close();
+          await refreshBoard();
+          if (created?.id) { state.drawerTaskId = created.id; render(); }
+          toast((tpl.emoji || '✨') + ' Task created — checklist ready');
+        } catch (e) {
+          toast(e.message, true); createBtn.disabled = false;
+        }
+      });
+
+      body.replaceChildren(
+        h('button', { class: 'btn plain sm', onclick: renderGrid }, '← All templates'),
+        h('div', { class: 'tmpl-detail' },
+          h('div', { class: 'tmpl-dhead' },
+            h('span', { class: 'tmpl-emoji big' }, tpl.emoji || '📋'),
+            h('div', null,
+              h('h3', null, tpl.name),
+              h('div', { class: 'muted small' }, tpl.tagline || ''))),
+          h('div', { class: 'tmpl-meta' },
+            h('span', { class: 'pill ' + (tpl.priority || 'medium') }, tpl.priority || 'medium'),
+            tpl.due_in_hours ? h('span', { class: 'pill due' }, 'due in ' + humanHours(tpl.due_in_hours)) : null,
+            needsResource ? h('span', { class: 'pill link' }, 'links an order') : h('span', { class: 'pill done' }, 'recurring chore')),
+          h('div', { class: 'ck-preview' }, (tpl.checklist || []).map(it =>
+            h('div', { class: 'ck-line' }, h('span', { class: 'ck-box' }), h('span', { class: 'ck-text' }, it)))),
+          needsResource ? h('div', { class: 'field' }, h('label', null, '🔗 Link the order'), search, h('div', { class: 'mt' }, results)) : null,
+          h('div', { class: 'row-flex mt' }, createBtn)));
+      if (needsResource) setTimeout(() => search.focus(), 50);
+    }
+
+    renderGrid();
+  }
+
+  /* ------------------------------------------------- first-run onboarding */
+
+  // Shown once after install (per shop). Inline SVG art only — no emojis,
+  // no external images, works in any sandboxed/embedded context.
+  const TOUR_STEPS = [
+    {
+      art: `<svg viewBox="0 0 260 150" class="tour-svg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Kanban board inside Shopify admin">
+<rect x="8" y="8" width="244" height="134" rx="10" fill="#f6f6f7" stroke="#dfe3e6"/>
+<path d="M8 18 a10 10 0 0 1 10 -10 h224 a10 10 0 0 1 10 10 v12 h-244 z" fill="#ffffff" stroke="#dfe3e6"/>
+<circle cx="24" cy="19" r="3.2" fill="#e0e0e0"/><circle cx="35" cy="19" r="3.2" fill="#e0e0e0"/><circle cx="46" cy="19" r="3.2" fill="#e0e0e0"/>
+<rect x="72" y="13.5" width="118" height="11" rx="5.5" fill="#eef0f1"/>
+<rect x="22" y="40" width="66" height="94" rx="6" fill="#ffffff" stroke="#e3e3e3"/>
+<rect x="30" y="48" width="40" height="7" rx="3.5" fill="#8a919a"/>
+<rect x="30" y="62" width="50" height="20" rx="4" fill="#e4f5ef" stroke="#b7e5d8"/>
+<rect x="30" y="88" width="46" height="20" rx="4" fill="#ffffff" stroke="#dfe3e6"/>
+<rect x="30" y="112" width="50" height="16" rx="4" fill="#ffffff" stroke="#dfe3e6"/>
+<rect x="97" y="40" width="66" height="94" rx="6" fill="#ffffff" stroke="#e3e3e3"/>
+<rect x="105" y="48" width="46" height="7" rx="3.5" fill="#8a919a"/>
+<rect x="105" y="62" width="50" height="20" rx="4" fill="#fff4e5" stroke="#ffd79d"/>
+<rect x="105" y="88" width="44" height="20" rx="4" fill="#ffffff" stroke="#dfe3e6"/>
+<rect x="172" y="40" width="66" height="94" rx="6" fill="#ffffff" stroke="#e3e3e3"/>
+<rect x="180" y="48" width="34" height="7" rx="3.5" fill="#8a919a"/>
+<rect x="180" y="62" width="50" height="20" rx="4" fill="#e6f4ea" stroke="#b7dfc4"/>
+<path d="M189 72 l4 4 l7 -7" stroke="#008060" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="180" y="88" width="47" height="20" rx="4" fill="#e6f4ea" stroke="#b7dfc4"/>
+<path d="M189 98 l4 4 l7 -7" stroke="#008060" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`,
+      title: 'Welcome to TaskPe',
+      body: 'A fast task board that lives inside your Shopify admin — no separate site, no new tab.',
+      points: [
+        'Create tasks in seconds and drag them across your own columns',
+        'Assign work, set due dates and priorities, track everything',
+        'Your team works right here — the same place your orders live',
+      ],
+    },
+    {
+      art: `<svg viewBox="0 0 260 150" class="tour-svg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Task linked to a Shopify order">
+<rect x="18" y="42" width="108" height="66" rx="8" fill="#ffffff" stroke="#dfe3e6"/>
+<rect x="28" y="52" width="72" height="8" rx="4" fill="#1a1a1a" opacity="0.85"/>
+<rect x="28" y="66" width="48" height="6" rx="3" fill="#8a919a"/>
+<rect x="28" y="82" width="40" height="14" rx="7" fill="#e4f5ef" stroke="#b7e5d8"/>
+<line x1="126" y1="75" x2="136" y2="75" stroke="#008060" stroke-width="3"/>
+<g transform="translate(136 66)">
+<rect x="-2" y="6" width="16" height="9" rx="4.5" fill="none" stroke="#008060" stroke-width="3"/>
+<rect x="8" y="-1" width="16" height="9" rx="4.5" fill="none" stroke="#008060" stroke-width="3"/>
+</g>
+<line x1="160" y1="75" x2="170" y2="75" stroke="#008060" stroke-width="3"/>
+<rect x="170" y="42" width="74" height="66" rx="8" fill="#f6f6f7" stroke="#dfe3e6"/>
+<text x="207" y="66" font-size="11" fill="#8a919a" text-anchor="middle">Order</text>
+<text x="207" y="90" font-size="16" font-weight="700" fill="#1a1a1a" text-anchor="middle">#1002</text>
+<path d="M60 118 h140" stroke="#dfe3e6" stroke-width="2" stroke-dasharray="2 6" stroke-linecap="round"/>
+<text x="130" y="136" font-size="11" fill="#6d7175" text-anchor="middle">orders - draft orders - products - customers - blog posts</text>
+</svg>`,
+      title: 'Link tasks to the real thing',
+      body: 'Every task can point at the exact Shopify object it is about — one click takes you to it.',
+      points: [
+        'Search by order number, product name or customer — or just paste an admin URL',
+        'The card shows a live link back into Shopify admin at all times',
+        'The order page also gets a "Create task" button via the app action',
+      ],
+    },
+    {
+      art: `<svg viewBox="0 0 260 150" class="tour-svg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="COD and NDR workflows for Indian stores">
+<circle cx="62" cy="75" r="30" fill="#fff8ec" stroke="#ffd79d" stroke-width="2"/>
+<text x="62" y="86" text-anchor="middle" font-size="28" font-weight="700" fill="#b98900">₹</text>
+<path d="M150 42 l26 10 v22 c0 18 -12 27 -26 33 c-14 -6 -26 -15 -26 -33 v-22 z" fill="#e4f5ef" stroke="#008060" stroke-width="3"/>
+<path d="M139 74 l8 8 l15 -15" stroke="#008060" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M212 56 a22 22 0 1 1 -7 16" fill="none" stroke="#8a919a" stroke-width="3" stroke-linecap="round"/>
+<path d="M201 64 l5 9 l9 -5" fill="none" stroke="#8a919a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="130" y="132" font-size="11" fill="#6d7175" text-anchor="middle">confirm before you ship - rescue what fails - reconcile the cash</text>
+</svg>`,
+      title: 'Built for COD-first Indian stores',
+      body: 'RTO is the silent profit-killer. TaskPe ships the workflows that fight it, ready-made.',
+      points: [
+        'One-click COD / NDR templates — confirmation, rescue, prepaid conversion, address fixes',
+        'Optional automations: auto-task on new COD orders, courier NDR pushes, weekly remittance chore',
+        'Everything is off by default — turn on only what you need in Settings',
+      ],
+    },
+    {
+      art: `<svg viewBox="0 0 260 150" class="tour-svg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Team assignment">
+<circle cx="50" cy="52" r="19" fill="#008060"/>
+<text x="50" y="57" font-size="12" fill="#ffffff" text-anchor="middle" font-weight="700">RK</text>
+<circle cx="50" cy="104" r="16" fill="#95c9b4"/>
+<text x="50" y="108.5" font-size="11" fill="#0c3b2e" text-anchor="middle" font-weight="700">SA</text>
+<path d="M78 52 C 102 52 104 70 126 70" stroke="#dfe3e6" stroke-width="3" fill="none" stroke-linecap="round"/>
+<path d="M74 104 C 100 104 102 82 126 78" stroke="#dfe3e6" stroke-width="3" fill="none" stroke-linecap="round"/>
+<rect x="126" y="44" width="112" height="62" rx="8" fill="#ffffff" stroke="#dfe3e6"/>
+<rect x="136" y="54" width="70" height="8" rx="4" fill="#1a1a1a" opacity="0.85"/>
+<rect x="136" y="68" width="46" height="6" rx="3" fill="#8a919a"/>
+<circle cx="222" cy="88" r="11" fill="#008060"/>
+<text x="222" y="92" font-size="8.5" fill="#ffffff" text-anchor="middle" font-weight="700">RK</text>
+<text x="130" y="128" font-size="11" fill="#6d7175">assign - due dates - priorities - activity timeline</text>
+</svg>`,
+      title: 'Bring your team on board',
+      body: 'Add teammates in the Team tab and hand out work with a tap.',
+      points: [
+        'Staff and owner roles — owners can get a morning board digest',
+        'Optional WhatsApp alerts through your own Whatify account (about ₹0.12/message)',
+        'Also off by default: skip it entirely and every screen works the same',
+      ],
+    },
+    {
+      art: `<svg viewBox="0 0 260 150" class="tour-svg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Ready to start">
+<rect x="30" y="32" width="76" height="96" rx="10" fill="#ffffff" stroke="#dfe3e6"/>
+<rect x="40" y="46" width="56" height="24" rx="8" fill="#e4f5ef"/>
+<rect x="47" y="53" width="34" height="5" rx="2.5" fill="#5ea48e"/>
+<rect x="47" y="62" width="24" height="5" rx="2.5" fill="#8fc7b4"/>
+<rect x="40" y="78" width="44" height="20" rx="8" fill="#f6f6f7" stroke="#e3e3e3"/>
+<rect x="47" y="85" width="26" height="5" rx="2.5" fill="#8a919a"/>
+<rect x="120" y="52" width="44" height="22" rx="11" fill="#dfe3e6"/>
+<circle cx="131" cy="63" r="8" fill="#ffffff"/>
+<text x="142" y="92" font-size="11" fill="#6d7175" text-anchor="middle">all optional</text>
+<circle cx="203" cy="100" r="26" fill="#008060"/>
+<path d="M191 100 l9 9 l16 -17" stroke="#ffffff" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`,
+      title: 'You are all set',
+      body: 'Three quick things and your store is running on TaskPe.',
+      points: [
+        'Open "COD / NDR task templates" on the board and try one',
+        'Add yourself (and your team) in the Team tab',
+        'Visit Settings whenever you want automation or WhatsApp — nothing runs without you switching it on',
+      ],
+    },
+  ];
+
+  function openTour() {
+    let step = 0;
+    const overlay = h('div', { class: 'tour-overlay' });
+    const artBox = h('div', { class: 'tour-art' });
+    const titleEl = h('h2', null);
+    const bodyEl = h('p', { class: 'tour-body' });
+    const pointsEl = h('ul', { class: 'tour-points' });
+    const dotsEl = h('div', { class: 'tour-dots' });
+    const backBtn = h('button', { class: 'btn' }, 'Back');
+    const nextBtn = h('button', { class: 'btn primary' }, 'Next');
+    const skipBtn = h('button', { class: 'tour-skip' }, 'Skip intro');
+
+    function renderStep() {
+      const s = TOUR_STEPS[step];
+      artBox.innerHTML = s.art;   // static, app-owned SVG strings
+      titleEl.textContent = s.title;
+      bodyEl.textContent = s.body;
+      pointsEl.replaceChildren(...s.points.map(p => h('li', null, p)));
+      dotsEl.replaceChildren(...TOUR_STEPS.map((_, i) => h('span', { class: 't-dot' + (i === step ? ' on' : '') })));
+      backBtn.style.visibility = step === 0 ? 'hidden' : 'visible';
+      nextBtn.textContent = step === TOUR_STEPS.length - 1 ? 'Get started' : 'Next';
+    }
+
+    async function finish() {
+      overlay.remove();
+      try { await api('/onboarding/complete', { method: 'POST' }); }
+      catch { /* board works regardless; tour may reappear next load — harmless */ }
+    }
+
+    backBtn.addEventListener('click', () => { if (step > 0) { step--; renderStep(); } });
+    nextBtn.addEventListener('click', () => {
+      if (step === TOUR_STEPS.length - 1) void finish();
+      else { step++; renderStep(); }
+    });
+    skipBtn.addEventListener('click', () => void finish());
+
+    overlay.append(h('div', { class: 'tour-card' },
+      h('div', { class: 'tour-top' },
+        h('span', { class: 'tour-badge' }, 'Quick intro'),
+        skipBtn),
+      artBox, titleEl, bodyEl, pointsEl,
+      h('div', { class: 'tour-foot' }, backBtn, dotsEl, nextBtn)));
+
+    document.body.append(overlay);
+    renderStep();
+  }
+
+  /* -------------------------------------------------------------- team view */
+
+  function renderTeam() {
+    const s = state.board;
+    const rows = s.members.map(m => h('div', { class: 'mem-row' },
+      h('span', { class: 'avatar' + (m.active ? '' : ' gray') }, m.initials),
+      h('div', null,
+        h('div', { class: 'm-name' }, m.name, ' ', m.role === 'owner' ? h('span', { class: 'pill medium' }, 'OWNER') : null, m.active ? null : h('span', { class: 'pill' }, ' disabled')),
+        h('div', { class: 'm-sub' }, '+' + m.phone)),
+      h('div', { class: 'm-actions' },
+        m.portal_active ? h('span', { class: 'verify-badge yes', title: 'Can use the web portal — no Shopify admin needed' }, '🌐 portal') : null,
+        m.whatsapp_verified
+          ? h('span', { class: 'verify-badge yes' }, '✓ WhatsApp verified')
+          : h('span', { class: 'verify-badge no' }, 'Not verified'),
+        h('button', {
+          class: 'btn sm',
+          title: 'Staff portal link — this member gets the full board on any phone browser, no Shopify account needed. Regenerating disables the older link.',
+          onclick: async () => {
+            try {
+              const r = await api(`/members/${m.id}/portal-link`, { method: 'POST' });
+              try { await navigator.clipboard.writeText(r.url); } catch { prompt('Copy this staff portal link:', r.url); }
+              toast('Portal link for ' + m.name + ' copied — send it on WhatsApp/SMS. Any older link is now disabled.');
+              await refreshBoard();
+            } catch (e) { toast(e.message, true); }
+          },
+        }, m.portal_active ? '↻ Portal link' : '🔗 Portal link'),
+        m.portal_active ? h('button', {
+          class: 'btn sm plain',
+          title: 'Revoke this member\'s web portal access immediately',
+          onclick: async () => {
+            if (!confirm(`Revoke ${m.name}'s web portal access?`)) return;
+            try { await api(`/members/${m.id}/portal-link`, { method: 'DELETE' }); await refreshBoard(); toast('Portal access revoked'); }
+            catch (e) { toast(e.message, true); }
+          },
+        }, 'Revoke') : null,
+        !m.whatsapp_verified ? h('button', { class: 'btn sm', onclick: () => sendOtp(m) }, 'Send code') : null,
+        !m.whatsapp_verified ? h('button', { class: 'btn sm primary', onclick: () => promptVerify(m) }, 'Enter code') : null,
+        h('button', {
+          class: 'btn sm', title: m.active ? 'Deactivate' : 'Activate',
+          onclick: async () => { await api('/members/' + m.id, { method: 'PATCH', body: { active: !m.active } }); await refreshBoard(); },
+        }, m.active ? 'Disable' : 'Enable'),
+        h('button', {
+          class: 'btn sm danger',
+          onclick: async () => {
+            if (!confirm(`Remove ${m.name}? Their tasks become unassigned.`)) return;
+            try { await api('/members/' + m.id, { method: 'DELETE' }); await refreshBoard(); }
+            catch (e) { toast(e.message, true); }
+          },
+        }, 'Remove'))));
+
+    return h('div', { class: 'page' },
+      h('div', { class: 'two-col' },
+        h('div', null,
+          h('div', { class: 'panel' },
+            h('div', { class: 'p-head' }, h('h2', null, 'Team members'),
+              h('span', { class: 'sub' }, `${s.members.filter(m => m.active).length} active`)),
+            h('div', { class: 'p-body flush' },
+              s.members.length ? rows : h('div', { class: 'empty-state' }, h('div', { class: 'big' }, '👋'), 'Add your first team member — your VA, packer, or yourself.')))),
+        h('div', null,
+          h('div', { class: 'panel' },
+            h('div', { class: 'p-head' }, h('h2', null, 'Add member')),
+            h('div', { class: 'p-body' },
+              h('div', { class: 'field' }, h('label', null, 'Name'), h('input', { class: 'input', id: 'nm-name', placeholder: 'e.g. Sarah' })),
+              h('div', { class: 'field' }, h('label', null, 'WhatsApp number'), h('input', { class: 'input', id: 'nm-phone', placeholder: '98765 43210' }),
+                h('div', { class: 'help' }, 'Indian numbers: plain 10 digits is fine — we add +91.')),
+              h('div', { class: 'field' }, h('label', null, 'Role'), h('select', { class: 'input', id: 'nm-role' },
+                h('option', { value: 'staff' }, 'Staff — sees own tasks'),
+                h('option', { value: 'owner' }, 'Owner — gets the daily digest'))),
+              h('button', {
+                class: 'btn primary',
+                onclick: async e => {
+                  const btn = e.target;
+                  const name = document.getElementById('nm-name').value.trim();
+                  const phone = document.getElementById('nm-phone').value.trim();
+                  if (!name || !phone) { toast('Name and phone are required', true); return; }
+                  btn.disabled = true;
+                  try {
+                    const r = await api('/members', { method: 'POST', body: { name, phone, role: document.getElementById('nm-role').value } });
+                    toast(r.message);
+                    await refreshBoard();
+                    const added = state.board.members.find(x => x.id === r.id);
+                    if (r.otp_queued && added) promptVerify(added);
+                  } catch (err) { toast(err.message, true); }
+                  btn.disabled = false;
+                },
+              }, 'Add member'))),
+          h('div', { class: 'panel' },
+            h('div', { class: 'p-head' }, h('h2', null, 'No Shopify login for staff? Use the web portal')),
+            h('div', { class: 'p-body small muted' },
+              h('p', null, 'Shopify Basic gives you only ONE staff seat — your packer or VA usually can\'t open Shopify admin at all.'),
+              h('p', { class: 'mt' }, 'Tap 🔗 Portal link next to a member and send them the link: they get this SAME board (tasks, COD templates, checklists) in any phone browser. No Shopify account, no app install — just "Add to Home Screen".'),
+              h('p', { class: 'mt' }, 'Staff can create, move and complete tasks — they can\'t delete tasks or touch settings, billing or the team list. Revoke a link anytime. Works on every plan, including Free.'))),
+          h('div', { class: 'panel' },
+            h('div', { class: 'p-head' }, h('h2', null, 'How WhatsApp verification works')),
+            h('div', { class: 'p-body small muted' },
+              h('p', null, '1. Add a member → we WhatsApp them a 6-digit code (from YOUR Whatify number).'),
+              h('p', { class: 'mt' }, '2. They share the code → enter it here → verified ✅'),
+              h('p', { class: 'mt' }, '3. From then on, assigned tasks and reminders land on their WhatsApp instantly.'),
+              h('p', { class: 'mt' }, 'Tip: ask staff to reply "hi" to your WhatsApp number once — it keeps instant messages flowing.'))))));
+  }
+
+  async function sendOtp(m) {
+    try {
+      const r = await api(`/members/${m.id}/send-otp`, { method: 'POST' });
+      toast(r.message);
+    } catch (e) { toast(e.message, true); }
+  }
+
+  function promptVerify(m) {
+    openModal(`Verify ${m.name}`, h('div', null,
+      h('p', { class: 'muted small mb' }, `Enter the 6-digit code sent to +${m.phone} on WhatsApp.`),
+      h('input', { class: 'input', id: 'otp-code', inputmode: 'numeric', maxlength: 6, placeholder: '• • • • • •', style: 'text-align:center;font-size:22px;letter-spacing:8px' })),
+      async () => {
+        const code = document.getElementById('otp-code').value.trim();
+        if (code.length !== 6) { toast('Enter the 6-digit code', true); return false; }
+        try {
+          const r = await api(`/members/${m.id}/verify`, { method: 'POST', body: { code } });
+          toast(r.message);
+          await refreshBoard();
+          return true;
+        } catch (e) { toast(e.message, true); return false; }
+      });
+  }
+
+  /* ---------------------------------------------------------- settings view */
+
+  async function renderSettingsAsync() {
+    if (!state.settings) {
+      state.settings = 'loading';
+      try { state.settings = await api('/settings'); } catch (e) { state.settings = { error: e.message }; }
+      render();
+    }
+  }
+
+  function renderSettings() {
+    if (!state.settings || state.settings === 'loading') {
+      void renderSettingsAsync();
+      return h('div', { class: 'page' }, h('div', { class: 'boot' }, h('div', { class: 'boot-text' }, 'Loading settings…')));
+    }
+    const st = state.settings;
+    if (st.error) return h('div', { class: 'page' }, h('div', { class: 'banner crit' }, 'Failed to load settings: ' + st.error));
+
+    const s = st.settings;
+    const wf = st.whatify;
+    const waOn = !!s.notify.whatsapp_on;
+    const planAllowsWA = !!st.plan?.cfg?.whatsapp;
+
+    // Master enable/disable card — always visible at the top of Settings.
+    const masterPanel = h('div', { class: 'panel' },
+      h('div', { class: 'p-head' },
+        h('h2', null, 'WhatsApp alerts'),
+        waOn ? h('span', { class: 'pill done' }, 'ENABLED') : h('span', { class: 'pill' }, 'DISABLED')),
+      h('div', { class: 'p-body' },
+        h('label', { class: 'switch' },
+          (() => { const i = h('input', { type: 'checkbox', id: 'ms-wa-on' }); i.checked = waOn; return i; })(),
+          h('span', { class: 'track' }),
+          h('span', null,
+            h('span', { class: 'sw-label' }, 'Enable WhatsApp notifications for your team'),
+            h('span', { class: 'sw-sub' }, planAllowsWA
+              ? 'Assignment pings, nudges and the owner digest — sent via YOUR Whatify account (about ₹0.12 per message).'
+              : 'Available on Starter plan and above — switch to the Plan tab to upgrade.'))),
+        h('div', { class: 'row-flex mt' },
+          h('button', {
+            class: 'btn primary sm',
+            onclick: async e => {
+              const checkbox = document.getElementById('ms-wa-on');
+              e.target.disabled = true;
+              try {
+                await saveSettings();
+                const nowOn = checkbox.checked;
+                state.settings = null;
+                await loadBoard();
+                toast('WhatsApp alerts ' + (nowOn ? 'enabled ✅' : 'disabled'));
+                render();
+              } catch (err) { toast(err.message, true); e.target.disabled = false; }
+            },
+          }, waOn ? 'Save' : 'Enable WhatsApp'),
+          !planAllowsWA ? h('button', { class: 'btn plain sm', onclick: () => { state.view = 'plan'; render(); } }, 'View plans →') : null)));
+
+    // COD / NDR automation hub — independent of WhatsApp, always visible
+    // (every sub-feature OFF by default; merchants enable what they need).
+    const auto = s.automation || {};
+    const codPanel = (() => {
+      const sw = (id, label, sub) => h('label', { class: 'switch', style: 'margin-bottom:10px' },
+        (() => { const i = h('input', { type: 'checkbox', id }); i.checked = !!auto[id === 'cod-auto' ? 'cod_auto' : id === 'ndr-auto' ? 'ndr_auto' : 'weekly_remittance']; return i; })(),
+        h('span', { class: 'track' }),
+        h('span', null,
+          h('span', { class: 'sw-label' }, label),
+          h('span', { class: 'sw-sub' }, sub)));
+
+      const onCount = ['cod_auto', 'ndr_auto', 'weekly_remittance'].filter(k => auto[k]).length;
+
+      return h('div', { class: 'panel' },
+        h('div', { class: 'p-head' },
+          h('h2', null, 'COD / NDR automation'),
+          onCount ? h('span', { class: 'pill done' }, onCount + ' of 3 ON') : h('span', { class: 'pill' }, 'ALL OFF')),
+        h('div', { class: 'p-body' },
+          sw('cod-auto',
+            'Auto-create a confirmation task for every new COD order',
+            'RTO saver: every Cash-on-Delivery order instantly lands on the board with the COD checklist, due in 24h. (Registers the orders/create webhook — no reinstall needed.)'),
+          sw('ndr-auto',
+            'Turn courier NDR pushes into urgent rescue tasks',
+            'Paste the intake URL below into Shiprocket / Delhivery / XpressBees webhook settings. Each NDR event becomes an urgent 12-hour rescue task.'),
+          auto.ndr_intake_url ? h('div', { class: 'field' },
+            h('label', null, 'Your NDR intake URL (secret — do not share)'),
+            h('div', { class: 'row-flex' },
+              h('input', { class: 'input', readonly: true, value: auto.ndr_intake_url, onclick: e => e.target.select() }),
+              h('button', {
+                class: 'btn sm',
+                onclick: e => {
+                  navigator.clipboard.writeText(auto.ndr_intake_url).then(() => toast('Copied — paste in your courier panel'));
+                },
+              }, 'Copy'))) : null,
+          sw('weekly-remit',
+            'Weekly COD remittance chore, every week automatically',
+            'Creates the "COD remittance check" task every week until you complete it — chase the courier before unclaimed cash piles up.'),
+          h('div', { class: 'row-flex mt' },
+            h('button', {
+              class: 'btn primary sm',
+              onclick: async e => {
+                e.target.disabled = true;
+                try {
+                  await saveSettings();
+                  const nowOn = ['cod-auto', 'ndr-auto', 'weekly-remit'].filter(id => document.getElementById(id)?.checked);
+                  state.settings = null;
+                  toast('Automation saved' + (nowOn.length ? ' — ' + nowOn.length + ' feature(s) active' : ''));
+                  render();
+                } catch (err) { toast(err.message, true); }
+                e.target.disabled = false;
+              },
+            }, 'Save'))));
+    })();
+
+    // DISABLED state: show only the master card + explanation. Zero WhatsApp
+    // UI otherwise — feature stays invisible until the merchant turns it on.
+    if (!waOn) {
+      return h('div', { class: 'page' },
+        h('div', { class: 'two-col' },
+          h('div', null,
+            masterPanel,
+            h('div', { class: 'panel' },
+              h('div', { class: 'p-body small muted' },
+                h('p', null, '📴 WhatsApp alerts are turned off. Your board, team and task linking work exactly the same — nothing is ever sent to WhatsApp.'),
+                h('p', { class: 'mt' }, 'Turn the switch on when you want: instant task pings to staff, due reminders, and the owner\'s morning digest.')))),
+          h('div', null,
+            codPanel,
+            h('div', { class: 'panel' },
+              h('div', { class: 'p-head' }, h('h2', null, 'Setup guide')),
+              h('div', { class: 'p-body small muted' },
+                h('p', null, '1️⃣ Turn the switch ON above.'),
+                h('p', { class: 'mt' }, '2️⃣ Create an account at ', h('b', null, 'whatify.in'), ' and connect your WhatsApp Business number.'),
+                h('p', { class: 'mt' }, '3️⃣ Generate an API key there and paste it here.'),
+                h('p', { class: 'mt' }, '4️⃣ Add yourself as an Owner in the Team tab and verify your number.'),
+                h('p', { class: 'mt' }, '5️⃣ (Recommended) Create message templates in Whatify so alerts also work outside the 24-hour window.'),
+                h('p', { class: 'mt' }, h('button', { class: 'btn plain sm', onclick: openTour }, 'Replay the intro tour')))))));
+    }
+
+    // ENABLED state — full wiring below.
+    return h('div', { class: 'page' },
+      h('div', { class: 'two-col' },
+        h('div', null,
+          masterPanel,
+          // ---- Whatify connection
+          h('div', { class: 'panel' },
+            h('div', { class: 'p-head' },
+              h('h2', null, 'Whatify (WhatsApp) connection'),
+              wf.connected ? h('span', { class: 'pill done' }, 'Connected') : h('span', { class: 'pill overdue' }, s.has_api_key ? 'Key problem' : 'Not connected')),
+            h('div', { class: 'p-body' },
+              h('div', { class: 'field' },
+                h('label', null, 'Whatify API key'),
+                h('input', { class: 'input', id: 'wf-key', type: 'password', placeholder: s.has_api_key ? s.api_key_hint + ' (saved — paste to replace)' : 'wfy_xxxxxxxxxxxx' }),
+                h('div', { class: 'help' }, 'Get it from whatify.in dashboard → Developers/API keys. '),
+                ),
+              wf.accounts?.length ? h('div', { class: 'field' },
+                h('label', null, 'Send from number'),
+                (() => {
+                  const sel = h('select', { class: 'input', id: 'wf-account' },
+                    wf.accounts.map(a => h('option', { value: a.id, selected: a.id === (s.whatsapp_account_id || wf.default_account_id) },
+                      `${a.display_name || 'Number'} (+${a.phone_number}) ${a.quality_rating === 'GREEN' ? '🟢' : ''}`)));
+                  return sel;
+                })()) : null,
+              wf.wallet && wf.connected ? h('p', { class: 'small muted mb' }, `Whatify wallet: ₹${Number(wf.wallet.balance ?? 0).toFixed(2)} balance`) : null,
+              wf.error ? h('p', { class: 'small mb', style: 'color:var(--critical)' }, wf.error) : null,
+              h('div', { class: 'row-flex' },
+                h('button', {
+                  class: 'btn primary',
+                  onclick: async e => {
+                    const btn = e.target; btn.disabled = true;
+                    try {
+                      await saveSettings({});
+                      state.settings = null;
+                      toast('Saved & verified');
+                      await loadBoard(); render();
+                    } catch (err) { toast(err.message, true); }
+                    btn.disabled = false;
+                  },
+                }, 'Save connection'),
+                s.has_api_key ? h('button', {
+                  class: 'btn',
+                  onclick: async () => {
+                    try { state.settings = await api('/settings'); render(); toast('Refreshed'); } catch (e) { toast(e.message, true); }
+                  },
+                }, '↻ Test / refresh') : null))),
+
+          // ---- templates
+          wf.connected ? h('div', { class: 'panel' },
+            h('div', { class: 'p-head' }, h('h2', null, 'Message templates'),
+              h('span', { class: 'sub' }, 'Map each event to an approved template from your Whatify account')),
+            h('div', { class: 'p-body' },
+              ['otp', 'task_assigned', 'task_reminder', 'digest'].map(key => h('div', { class: 'field' },
+                h('label', null, { otp: 'OTP verification', task_assigned: 'Task assigned', task_reminder: 'Reminder / nudge', digest: 'Daily digest' }[key]),
+                (() => {
+                  const sel = h('select', { class: 'input', id: 'tpl-' + key },
+                    h('option', { value: '' }, '— plain text fallback (24h window only) —'),
+                    (wf.templates || []).map(t => h('option', { value: t.name, selected: (st.settings.templates || {})[key] === t.name }, `${t.name} (${t.category || '?'})`)));
+                  sel.value = (st.settings.templates || {})[key] || '';
+                  return sel;
+                })(),
+                h('div', { class: 'help' }, { otp: 'Needed for staff verification.', task_assigned: 'Instant alert on assignment.', task_reminder: 'Manual + due reminders.', digest: 'Owner morning summary.' }[key]))),
+              h('button', {
+                class: 'btn primary',
+                onclick: async e => {
+                  e.target.disabled = true;
+                  try { await saveSettings({}); state.settings = null; toast('Templates saved'); render(); }
+                  catch (err) { toast(err.message, true); }
+                  e.target.disabled = false;
+                },
+              }, 'Save templates'))
+          ) : null,
+
+          // ---- notifications & digest
+          h('div', { class: 'panel' },
+            h('div', { class: 'p-head' }, h('h2', null, 'Notifications & digest')),
+            h('div', { class: 'p-body' },
+              h('label', { class: 'switch' },
+                (() => { const i = h('input', { type: 'checkbox', id: 'nt-assign' }); i.checked = s.notify.on_assign; return i; })(),
+                h('span', { class: 'track' }),
+                h('span', null, h('span', { class: 'sw-label' }, 'Ping when a task is assigned'))),
+              h('label', { class: 'switch' },
+                (() => { const i = h('input', { type: 'checkbox', id: 'dg-on' }); i.checked = s.digest.enabled; return i; })(),
+                h('span', { class: 'track' }),
+                h('span', null, h('span', { class: 'sw-label' }, "Owner's daily digest"), h('span', { class: 'sw-sub' }, 'The Bird\'s-Eye-View, every morning on WhatsApp'))),
+              h('div', { class: 'field-row' },
+                h('div', { class: 'field' },
+                  h('label', null, 'Digest time (' + (state.board.shop.timezone) + ')'),
+                  h('input', { class: 'input', id: 'dg-time', type: 'time', value: s.digest.time }))),
+              h('div', { class: 'row-flex' },
+                h('button', {
+                  class: 'btn primary',
+                  onclick: async e => {
+                    e.target.disabled = true;
+                    try { await saveSettings({}); state.settings = null; toast('Saved'); render(); }
+                    catch (err) { toast(err.message, true); }
+                    e.target.disabled = false;
+                  },
+                }, 'Save notification settings'),
+                h('button', {
+                  class: 'btn',
+                  onclick: async () => {
+                    try {
+                      const r = await api('/digest/send', { method: 'POST' });
+                      toast(r.message, !r.ok);
+                    } catch (err) { toast(err.message, true); }
+                  },
+                }, '📤 Send digest now'),
+                h('button', {
+                  class: 'btn plain',
+                  onclick: async () => {
+                    try {
+                      const r = await api('/digest/preview');
+                      openModal('Digest preview', h('pre', { style: 'white-space:pre-wrap;font:inherit' }, r.summary), null);
+                    } catch (err) { toast(err.message, true); }
+                  },
+                }, 'Preview')))),
+
+          // ---- logs
+          h('div', { class: 'panel' },
+            h('div', { class: 'p-head' }, h('h2', null, 'WhatsApp delivery log'), h('span', { class: 'sub' }, 'last 30 attempts')),
+            h('div', { class: 'p-body flush' },
+              st.logs.length ? h('table', { class: 'log-table' },
+                h('thead', null, h('tr', null, h('th', null, 'When'), h('th', null, 'Kind'), h('th', null, 'To'), h('th', null, 'Status'), h('th', null, 'Detail'))),
+                h('tbody', null, st.logs.map(l => h('tr', null,
+                  h('td', null, fmtDate(l.created_at, { time: true })),
+                  h('td', null, l.kind),
+                  h('td', null, '+' + l.phone),
+                  h('td', null, h('span', { class: 'log-status ' + l.status }, l.status), h('span', { class: 'muted small' }, ' · ' + l.channel)),
+                  h('td', { class: 'log-err' }, l.error || '—')))))
+                : h('div', { class: 'empty-state' }, 'No messages yet.')))),
+
+        // ---- right rail: setup guide
+        h('div', null,
+          codPanel,
+          h('div', { class: 'panel' },
+            h('div', { class: 'p-head' }, h('h2', null, 'Setup guide')),
+            h('div', { class: 'p-body small muted' },
+              h('p', null, '1️⃣ Create an account at ', h('b', null, 'whatify.in'), ' and connect your WhatsApp Business number.'),
+              h('p', { class: 'mt' }, '2️⃣ Generate an API key and paste it on this page.'),
+              h('p', { class: 'mt' }, '3️⃣ Add yourself as an Owner in the Team tab and verify your number.'),
+              h('p', { class: 'mt' }, '4️⃣ (Recommended) Create the 4 templates below in your Whatify dashboard so messages work even outside the 24-hour window.'),
+              h('p', { class: 'mt' }, '💸 Cost: task alerts are "utility" messages — about ₹0.12 each on your Whatify wallet.'),
+              h('p', { class: 'mt' }, h('button', { class: 'btn plain sm', onclick: openTour }, 'Replay the intro tour')))),
+          h('div', { class: 'panel' },
+            h('div', { class: 'p-head' }, h('h2', null, 'Copy-paste templates')),
+            h('div', { class: 'p-body' },
+              (st.suggested_templates || []).map(t => h('div', { class: 'tpl-card' },
+                h('div', { class: 't-key' }, t.name, ' ', h('span', { class: 'pill link' }, t.category)),
+                h('pre', null, t.body),
+                h('div', { class: 't-note' }, t.note),
+                h('button', {
+                  class: 'btn sm mt',
+                  onclick: e => {
+                    navigator.clipboard.writeText('Name: ' + t.name + '\nCategory: ' + t.category + '\nBody:\n' + t.body)
+                      .then(() => toast('Copied — paste in Whatify dashboard'));
+                  },
+                }, 'Copy'))))))));
+  }
+
+  // Partial-safe settings save: only sections whose inputs are actually on
+  // screen are included — hidden panels never overwrite saved values.
+  async function saveSettings(overrides = {}) {
+    const body = {};
+
+    const key = document.getElementById('wf-key')?.value.trim();
+    if (key) body.whatify_api_key = key;
+
+    const acct = document.getElementById('wf-account');
+    if (acct) body.whatsapp_account_id = Number(acct.value) || null;
+
+    const templates = {};
+    for (const k of ['otp', 'task_assigned', 'task_reminder', 'digest']) {
+      const el = document.getElementById('tpl-' + k);
+      if (el) templates[k] = el.value || '';
+    }
+    if (Object.keys(templates).length) body.templates = templates;
+
+    const notify = {};
+    const ms = document.getElementById('ms-wa-on');   // master WhatsApp switch
+    if (ms) notify.whatsapp_on = ms.checked;
+    const na = document.getElementById('nt-assign');
+    if (na) notify.on_assign = na.checked;
+    if (Object.keys(notify).length) body.notify = notify;
+
+    const digest = {};
+    const dg = document.getElementById('dg-on');
+    if (dg) digest.enabled = dg.checked;
+    const dt = document.getElementById('dg-time');
+    if (dt?.value) digest.time = dt.value;
+    if (Object.keys(digest).length) body.digest = digest;
+
+    const automation = {};
+    const ca = document.getElementById('cod-auto');   // COD auto-task switch
+    if (ca) automation.cod_auto = ca.checked;
+    const nd = document.getElementById('ndr-auto');   // NDR watcher switch
+    if (nd) automation.ndr_auto = nd.checked;
+    const wr = document.getElementById('weekly-remit'); // weekly remittance chore
+    if (wr) automation.weekly_remittance = wr.checked;
+    if (Object.keys(automation).length) body.automation = automation;
+
+    await api('/settings', { method: 'PUT', body: { ...body, ...overrides } });
+  }
+
+  /* -------------------------------------------------------------- plan view */
+
+  // Price displayed in the merchant's billing currency: exact entry when the
+  // plan defines it (INR for Indian stores), USD fallback otherwise — same
+  // logic as BillingService::resolvePrice on the backend.
+  function planPrice(key) {
+    const cur = state.board.shop?.currency || 'USD';
+    const prices = state.board.plans?.[key]?.prices || {};
+    const code = prices[cur] !== undefined ? cur : 'USD';
+    return { amount: Number(prices[code] ?? 0), code };
+  }
+
+  function fmtMoney(amount, code) {
+    try {
+      return new Intl.NumberFormat(window.navigator.language || 'en', {
+        style: 'currency',
+        currency: code,
+        maximumFractionDigits: code === 'INR' ? 0 : 2,
+      }).format(amount);
+    } catch { return code + ' ' + amount; }
+  }
+
+  function renderPlan() {
+    const s = state.board;
+    const cur = s.shop.currency || 'USD';
+    const features = {
+      free: ['2 team members', '50 open tasks', 'Board + activity timeline', 'In-app only (no WhatsApp)'],
+      starter: ['5 team members', 'Unlimited tasks', 'WhatsApp alerts to staff', 'Daily owner digest', '7-day free trial'],
+      growth: ['Everything in Starter', 'Unlimited team members', 'Priority support', '7-day free trial'],
+    };
+
+    return h('div', { class: 'page' },
+      h('div', { class: 'plans' },
+        Object.entries(s.plans || {}).map(([key, cfg]) => {
+          const p = planPrice(key);
+          const paid = p.amount > 0;
+
+          const cta = (() => {
+            if (s.shop.plan === key) {
+              return paid ? h('button', {
+                class: 'btn danger',
+                onclick: async () => {
+                  if (!confirm('Cancel the paid plan and go back to Free?')) return;
+                  try { await api('/billing/cancel', { method: 'POST' }); await refreshBoard(); toast('Plan cancelled'); }
+                  catch (e) { toast(e.message, true); }
+                },
+              }, 'Cancel plan') : null;
+            }
+            if (!paid) return null;
+            return h('button', {
+              class: 'btn primary',
+              onclick: async e => {
+                e.target.disabled = true;
+                try {
+                  const r = await api('/billing/subscribe', { method: 'POST', body: { plan: key } });
+                  open(r.confirmation_url, '_top');   // Shopify-hosted approve page
+                } catch (err) { toast(err.message, true); e.target.disabled = false; }
+              },
+            }, 'Choose ' + cfg.name);
+          })();
+
+          return h('div', { class: 'plan-card' + (s.shop.plan === key ? ' current' : '') },
+            s.shop.plan === key ? h('span', { class: 'cur-badge' }, 'CURRENT') : null,
+            h('h3', null, cfg.name),
+            h('div', { class: 'price' },
+              paid ? fmtMoney(p.amount, p.code) : 'Free',
+              paid ? h('span', null, ' /month (' + p.code + ')') : null),
+            h('ul', null, (features[key] || []).map(f => h('li', null, f))),
+            cta);
+        })),
+      h('p', { class: 'muted small mt' },
+        cur === 'INR'
+          ? '🇮🇳 Prices are shown and charged in Indian Rupees (₹) — your store\'s billing currency. Shopify bills your card/RuPay/UPI directly; no USD conversion and no forex fees on this subscription.'
+          : 'Prices are shown in your store\'s billing currency (' + cur + '). Indian stores see plans directly in ₹ (INR). All charges run through Shopify Billing — nothing is charged outside Shopify.'));
+  }
+
+  function handleBillingFlag(flag) {
+    if (flag === 'active') { toast('🎉 Plan activated! WhatsApp features unlocked.'); void api('/billing/sync', { method: 'POST' }).then(refreshBoard).catch(() => {}); }
+    else if (flag === 'declined') toast('Plan not approved — still on Free settings.', true);
+    else if (flag === 'error') toast('Could not confirm the charge — hit "Sync" on Plan tab.', true);
+  }
+
+  /* ----------------------------------------------------------------- modal */
+
+  function openModal(title, bodyEl, onSave) {
+    const overlay = h('div', { class: 'overlay' });
+    const close = () => overlay.remove();
+
+    const foot = onSave ? h('div', { class: 'modal-foot' },
+      h('button', { class: 'btn', onclick: close }, 'Cancel'),
+      h('button', {
+        class: 'btn primary',
+        onclick: async e => {
+          e.target.disabled = true;
+          const ok = await onSave().catch(err => { toast(err.message, true); return false; });
+          e.target.disabled = false;
+          if (ok !== false) close();
+        },
+      }, 'Save')) : null;
+
+    overlay.append(h('div', { class: 'modal' },
+      h('div', { class: 'modal-head' }, h('h2', null, title), h('button', { class: 'x', onclick: close }, '×')),
+      h('div', { class: 'modal-body' }, bodyEl),
+      foot));
+
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+    document.body.append(overlay);
+  }
+
+  // Footer-free modal variant (wizard-style flows manage their own buttons).
+  // Returns a close() handle so the flow can dismiss itself.
+  function openModalAuto(title, bodyEl) {
+    const overlay = h('div', { class: 'overlay' });
+    const close = () => overlay.remove();
+
+    overlay.append(h('div', { class: 'modal' },
+      h('div', { class: 'modal-head' }, h('h2', null, title), h('button', { class: 'x', onclick: close }, '×')),
+      h('div', { class: 'modal-body' }, bodyEl)));
+
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+    document.body.append(overlay);
+
+    return close;
+  }
+
+  /* ------------------------------------------------------------------- init */
+
+  async function boot() {
+    try {
+      await loadBoard();
+      render();
+      if (!IS_STAFF && !state.board?.shop?.onboarded) setTimeout(openTour, 300);   // first-run intro (admin only)
+    } catch (e) {
+      if (e.message !== 'reauth') {
+        root.replaceChildren(h('div', { class: 'boot' },
+          h('div', { class: 'boot-text' }, 'Something went wrong loading the board. Reload the page.')));
+      }
+    }
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else void boot();
+})();
