@@ -10,7 +10,7 @@ class BoardColumn extends Model
 {
     protected $table = 'columns';
 
-    protected $fillable = ['shop_id', 'name', 'position', 'is_done_stage'];
+    protected $fillable = ['shop_id', 'name', 'position', 'is_done_stage', 'team'];
 
     protected $casts = ['is_done_stage' => 'boolean'];
 

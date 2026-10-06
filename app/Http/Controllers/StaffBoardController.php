@@ -25,6 +25,7 @@ class StaffBoardController extends Controller
                 'id'            => $col->id,
                 'name'          => $col->name,
                 'is_done_stage' => $col->is_done_stage,
+                'team'          => $col->team,
                 'tasks'         => $col->tasks->map(fn (Task $t) => BoardController::taskJson($t))->values(),
             ]);
 

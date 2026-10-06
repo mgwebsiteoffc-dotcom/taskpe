@@ -10,12 +10,12 @@ use Illuminate\Support\Facades\Route;
 Route::get('/', [AppController::class, 'index'])->name('app');
 
 // One path per section, because that is what the app menu in Shopify's own
-// sidebar links to (ui-nav-menu → <a href="/team">). Same shell, and the path
-// decides which section opens — the alternative (a tab strip inside the app)
-// duplicates navigation the admin already provides. Constrained to these four
+// sidebar links to (<s-app-nav> → <s-link href="/team">). Same shell, and the
+// path decides which section opens — the alternative (a tab strip inside the app)
+// duplicates navigation the admin already provides. Constrained to these five
 // words, so it can never swallow /privacy, /staff, /api, /auth, /webhooks.
 Route::get('/{section}', [AppController::class, 'section'])
-    ->where('section', 'board|team|settings|plan')
+    ->where('section', 'dashboard|board|team|settings|plan')
     ->name('app.section');
 
 Route::get('/privacy', [AppController::class, 'privacy'])->name('privacy');

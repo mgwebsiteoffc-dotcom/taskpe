@@ -157,7 +157,7 @@ app/Services             ShopifyClient (GraphQL, retry), WhatifyClient, TaskNoti
 app/Http/Controllers     OAuth / webhooks / billing + /api/* tenant-scoped JSON
 app/Jobs                 ProcessShopifyWebhook, SendWhatsAppJob
 config/cors.php          API CORS for the admin extensions (/api/* only)
-public/js/app.js         the whole SPA (board, drawer, resource picker, team, settings, plan, shortcuts, admin app-menu mount)
+public/js/app.js         the whole SPA (dashboard + charts, board, drawer, resource picker, team, settings, plan, shortcuts, admin app-menu mount)
 extensions/              6 Admin UI extensions (Create task / bulk / order-page block) + shared/
 resources/views          app shell (App Bridge) + privacy policy
 config/task_templates.php  The COD/NDR one-click checklist pack (edit copy/add templates here)

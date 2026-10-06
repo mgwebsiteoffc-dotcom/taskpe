@@ -224,7 +224,7 @@ const check = (name, fn) => {
 
 // 1 — embedded and healthy: the board renders, token goes out on both headers.
 {
-  const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply(200, okBoard) });
+  const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply(200, okBoard), taskpe: { view: 'board' } });
   await settle();
   check('embedded + 200: board renders, no error screen', () => {
     const text = env.root.text();
@@ -331,9 +331,19 @@ const check = (name, fn) => {
 // left sidebar), NOT to a strip we paint inside the app. The element name matters:
 // App Bridge 4 ignores the retired <ui-nav-menu>, so a wrong tag means no menu.
 {
-  const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply(200, okBoard) });
+  const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply(200, okBoard), taskpe: { view: 'board' } });
   await settle();
   const nav = () => env.document.getElementById('taskpe-app-nav');
+  // Same shell, opened from the admin app icon (no section asked for): the owner
+  // gets the dashboard, a teammate gets the board. Built here because boot() is
+  // async and the assertions that read them live inside a sync check below.
+  const ownerEnv = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply(200, okBoard) });
+  const mateEnv = makeEnv({ shopify: { idToken: async () => 'a.b.c' },
+    fetchImpl: reply(200, { ...okBoard, members: okBoard.members.map(m => ({ ...m, role: 'teammate' })) }) });
+  await settle();
+  const navOwner = ownerEnv.document.getElementById('taskpe-app-nav');
+  const ownerRoot = ownerEnv.root.text();
+  const bareRoot = mateEnv.root.text();
 
   check('no nav strip of our own inside the app', () => {
     assert.equal(env.root.find(n => n.attrs.role === 'tablist').length, 0, 'in-app tab list is back');
@@ -344,20 +354,30 @@ const check = (name, fn) => {
     const menu = nav();
     assert.ok(menu, 's-app-nav not mounted');
     assert.equal(menu.tagName, 'S-APP-NAV');
-    assert.deepEqual(menu.children.map(c => c.tagName), Array(4).fill('S-LINK'),
+    assert.deepEqual(menu.children.map(c => c.tagName), Array(6).fill('S-LINK'),
       's-app-nav takes <s-link> children; <a> is the retired ui-nav-menu contract');
     assert.equal(menu.style.display, 'none', 'the element is data for App Bridge, never painted');
     const links = menu.children;
-    // Docs rule: the first link is the home route, rel="home", and is hidden
-    // from the rendered menu — so the admin's app name opens the board.
+    // Docs rule: the first link is the home route, rel="home", and is hidden from
+    // the rendered menu. It deliberately points at bare `/` — no section asked for —
+    // so the app name sends an owner to the dashboard and everyone else to the
+    // board, while the five visible entries each state their section.
     assert.equal(links[0].attrs.rel, 'home');
     assert.equal(links[0].attrs.href, '/');
-    assert.deepEqual(links.map(l => l.attrs.href), ['/', '/team', '/settings', '/plan']);
-    assert.deepEqual(links.slice(1).map(l => l.text()), ['Team', 'Settings', 'Plan']);
+    assert.deepEqual(links.map(l => l.attrs.href),
+      ['/', '/dashboard', '/board', '/team', '/settings', '/plan']);
+    assert.deepEqual(links.slice(1).map(l => l.text()),
+      ['Dashboard', 'Board', 'Team', 'Settings', 'Plan']);
   });
   check('the active section is marked for AT on the menu link', () => {
-    assert.equal(nav().children[0].attrs['aria-current'], 'page');
+    assert.equal(nav().children[2].attrs['aria-current'], 'page');   // Board, pinned by ?view
     assert.equal(nav().children[1].attrs['aria-current'], undefined);
+    // Nothing asked for a section, so role decides — and an owner is the one who
+    // opens the app for the numbers. (See `bareOwner` below for the same load as a
+    // teammate.)
+    assert.ok(ownerRoot.includes('Closed per day'), 'owner did not land on the dashboard: ' + ownerRoot.slice(0, 160));
+    assert.equal(navOwner.children[1].attrs['aria-current'], 'page');
+    assert.ok(bareRoot.includes('To Do'), 'teammate did not land on the board: ' + bareRoot.slice(0, 160));
   });
   // The click is raised on the container with the link as target — the shape a
   // bubbled click has by the time App Bridge's own document listener sees it.
@@ -365,22 +385,22 @@ const check = (name, fn) => {
     const before = env.calls.length;
     let defaulted = false;
     const menu = nav();
-    menu.fire('click', { target: menu.children[1], preventDefault: () => { defaulted = true; } });
+    menu.fire('click', { target: menu.children[3], preventDefault: () => { defaulted = true; } });
     assert.ok(defaulted, 'the SPA must cancel the link — otherwise the iframe reloads');
     assert.equal(env.pushes.at(-1), '/team', 'admin URL must follow the section');
     assert.ok(env.root.text().includes('Team'), 'team view did not render');
     assert.equal(env.calls.length, before, 'switching sections must not refetch the board');
-    assert.equal(nav().children[1].attrs['aria-current'], 'page', 'menu highlight did not move');
+    assert.equal(nav().children[3].attrs['aria-current'], 'page', 'menu highlight did not move');
   });
   check('the browser back arrow inside the iframe switches section too', () => {
     env.location.pathname = '/';
     env.fireWindow('popstate');
     assert.ok(env.root.text().includes('To Do'), 'board did not come back');
-    assert.equal(nav().children[0].attrs['aria-current'], 'page');
+    assert.equal(nav().children[2].attrs['aria-current'], 'page');
   });
   // Without App Bridge there is no sidebar to talk to — and mounting a menu
   // nobody reads would be the least of our problems; the gate is.
-  const bare = makeEnv({ fetchImpl: reply(200, okBoard) });
+  const bare = makeEnv({ fetchImpl: reply(200, okBoard), taskpe: { view: 'board' } });
   await settle();
   check('no session (not embedded): no menu mounted, gate still explains', () => {
     assert.ok(!bare.document.getElementById('taskpe-app-nav'), 'menu must not be built without App Bridge');
@@ -398,11 +418,12 @@ const check = (name, fn) => {
     const menu = sub.document.getElementById('taskpe-app-nav');
     assert.deepEqual(
       menu.children.map(l => l.attrs.href),
-      ['/taskpe/public', '/taskpe/public/team', '/taskpe/public/settings', '/taskpe/public/plan'],
+      ['/taskpe/public', '/taskpe/public/dashboard', '/taskpe/public/board', '/taskpe/public/team',
+       '/taskpe/public/settings', '/taskpe/public/plan'],
       'menu hrefs escaped the app folder: ' + JSON.stringify(menu.children.map(l => l.attrs.href)),
     );
     assert.ok(sub.root.find(n => n.attrs.class === 'mem-row').length, 'the path did not open the Team section');
-    assert.equal(menu.children[1].attrs['aria-current'], 'page', 'highlight did not follow the path');
+    assert.equal(menu.children[3].attrs['aria-current'], 'page', 'highlight did not follow the path');
   });
 
   check('no emoji anywhere in the rendered UI (board view)', () => {
@@ -413,7 +434,7 @@ const check = (name, fn) => {
 
 // 6b2 — the task drawer and the template picker: every icon button in there.
 {
-  const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply(200, okBoard) });
+  const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply(200, okBoard), taskpe: { view: 'board' } });
   await settle();
   const card = taskCard(env);
   card.click();
@@ -440,7 +461,7 @@ const check = (name, fn) => {
 // 6c — the other views too (tabs are the only shared surface, so check bodies).
 {
   for (const view of ['team', 'settings', 'plan']) {
-    const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply({ '/api/settings': okSettings }) });
+    const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply({ '/api/settings': okSettings }), taskpe: { view: 'board' } });
     await settle();
     {
       const menu = env.document.getElementById('taskpe-app-nav');
@@ -457,7 +478,7 @@ const check = (name, fn) => {
 // 6d — keyboard shortcuts: the board is the same three clicks over and over,
 // so `n` / `t` / `1-4` / `?` / Esc are contract, not decoration.
 {
-  const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply(200, okBoard) });
+  const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply(200, okBoard), taskpe: { view: 'board' } });
   await settle();
   const menu = () => env.document.getElementById('taskpe-app-nav');
   const overlays = () => env.document.body.children.filter(c => String(c.className).split(' ').includes('overlay'));
@@ -484,12 +505,12 @@ const check = (name, fn) => {
   });
   await settle();
 
-  check('1-4 switch sections and keep the admin menu in sync', () => {
-    env.document.fire('keydown', { key: '2' });
+  check('1-5 switch sections and keep the admin menu in sync', () => {
+    env.document.fire('keydown', { key: '3' });
     assert.equal(env.pushes.at(-1), '/team', 'Team not activated from the keyboard');
-    assert.equal(menu().children[1].attrs['aria-current'], 'page', 'menu highlight did not follow');
-    env.document.fire('keydown', { key: '1' });
-    assert.equal(env.pushes.at(-1), '/', 'Board not restored');
+    assert.equal(menu().children[3].attrs['aria-current'], 'page', 'menu highlight did not follow');
+    env.document.fire('keydown', { key: '2' });
+    assert.equal(env.pushes.at(-1), '/board', 'Board not restored');
   });
   await settle();
 
@@ -500,8 +521,8 @@ const check = (name, fn) => {
   check('shortcuts are inert while typing (an "n" in a title is not a command)', () => {
     assert.ok(area && area.tagName === 'TEXTAREA', 'add-task editor did not reopen');
     area.value = 'Send a refund note abo';
-    env.document.fire('keydown', { key: '2', target: area });
-    assert.equal(env.pushes.at(-1), '/', 'view changed while typing in a textarea');
+    env.document.fire('keydown', { key: '3', target: area });
+    assert.equal(env.pushes.at(-1), '/board', 'view changed while typing in a textarea');
   });
 
   // `c` acts on whatever the drawer has open — no confirm dialog, no modal.

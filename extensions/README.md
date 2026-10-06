@@ -54,7 +54,8 @@ extensions/<name>/src/*.jsx              two-line wrapper: imports the shared fi
 extensions/<name>/locales/en.default.json
 ```
 
-Edit `shared/api.js` **once** — `APP_URL` there is used by every extension, so
+`APP_URL` in `shared/api.js` is already set to `https://taskpe.rankboosterinfotech.in`
+(the production domain) and is used by every extension, so
 the modal, the bulk action and the card can never disagree about where the
 backend is. Each extension folder stays a two-line wrapper on purpose: Shopify
 resolves the module path per extension, so the shared logic lives one level up.
@@ -109,8 +110,11 @@ extension trusts it:
 2. **Link the app:** copy `shopify.app.toml.example` → `shopify.app.toml`, fill
    `client_id` + `application_url` (must match your production `APP_URL`), or run
    `shopify app config link`.
-3. **Point the extensions at your API:** edit `extensions/shared/api.js` →
-   `APP_URL = "https://app.yourdomain.com"` (no trailing slash).
+3. **Point the extensions at your API:** already done for the live store —
+   `extensions/shared/api.js` ships `APP_URL = "https://taskpe.rankboosterinfotech.in"`
+   (no trailing slash). Change it only for a different domain; every extension UI shows
+   a critical banner while it still looks like a placeholder, because the constant is
+   baked into the bundle at `shopify app deploy` time.
 4. **Deploy the backend first** — `public/js|css`, `app/`, `routes/api.php`,
    `config/task_templates.php`, then `php artisan config:clear`. The extensions
    call endpoints that live there; deploying extensions against an old backend

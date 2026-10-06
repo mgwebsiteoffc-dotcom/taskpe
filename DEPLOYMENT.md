@@ -14,7 +14,8 @@ php artisan key:generate
 php artisan migrate --force               # creates shops/members/columns/tasks/…
 php artisan storage:link                  # optional (no public uploads today)
 php artisan config:cache                  # cPanel often hides .env from PHP otherwise
-php artisan migrate:status                # every 2026_09_29_* row must be "Ran"
+php artisan migrate:status                # every 2026_* row must be "Ran" (a later
+                                            # upload that ships a migration needs `migrate --force` too)
 ```
 
 **Do not look for a frontend build step on the server — there is none.** No
@@ -151,10 +152,16 @@ that Shopify rejected the extension.
 
 ## 8. Section paths (the app menu in Shopify's sidebar)
 
-TaskPe has no in-app nav strip: **Board · Team · Settings · Plan** are menu items
-in the admin's own left sidebar. App Bridge v4 reads an `<s-app-nav>` element whose
+TaskPe has no in-app nav strip: **Dashboard · Board · Team · Settings · Plan** are menu
+items in the admin's own left sidebar. App Bridge v4 reads an `<s-app-nav>` element whose
 `<s-link>` children `public/js/app.js` mounts, and each entry is a path Laravel serves
-from the same shell (`/`, `/team`, `/settings`, `/plan` — see `AppController::SECTIONS`).
+from the same shell (`/dashboard`, `/board`, `/team`, `/settings`, `/plan` — see
+`AppController::SECTIONS`).
+
+A sixth link, `rel="home"`, is hidden from that list on purpose: it points at bare `/`,
+which asks for no section, so `app.js` picks by role — an **owner** who opens the app from
+its sidebar name lands on the **dashboard**, everyone else on the **board**. Every visible
+entry states its section, so the role default can never fight a deliberate click.
 
 * **No menu in the sidebar at all?** Two causes, in this order:
   1. *Stale `app.js`.* The assets are cache-busted by file mtime (`app.css?v=…`,
@@ -164,13 +171,13 @@ from the same shell (`/`, `/team`, `/settings`, `/plan` — see `AppController::
      which **ignores the retired `<ui-nav-menu>`/`<a>` pair** — no console error, just
      an empty sidebar. Declare `<s-app-nav>` with `<s-link href rel="home">`. Check from
      inside the frame: `document.getElementById('taskpe-app-nav')?.outerHTML` should
-     show `S-APP-NAV` with four `S-LINK` children, and `display: none` (it is
-     configuration; the admin paints the real menu).
+     show `S-APP-NAV` with six `S-LINK` children (home + the five sections), and
+     `display: none` (it is configuration; the admin paints the real menu).
 
 * **No new `.env` keys and nothing to deploy to Shopify.** This is routing plus a
   web component, not an extension — `php artisan config:clear` and the updated
   `public/js/app.js` are the whole change.
-* **`/team` must return the SPA, not a 404.** That is the same
+* **`/team` (and `/dashboard`) must return the SPA, not a 404.** That is the same
   `RewriteCond … !-f / !-f → index.php` rule in `public/.htaccess` the app already
   depends on. A host that 404s on `/team` (rare; usually an old `RewriteBase`
   experiment) shows up as sidebar links doing nothing while `Apps → TaskPe` still
@@ -258,3 +265,26 @@ Now:
 No `.env` value fixes it. After Shopify approves the scope, add `read_all_orders` to the app's scopes
 (Partner Dashboard **and** `shopify.app.toml`; `SHOPIFY_SCOPES` is the env twin), re-install on the
 store, and the note disappears by itself because `orderSearchSince()` re-reads `shops.scopes`.
+
+
+## 11. Teams on the dashboard (Accounting, Warehouse, …)
+
+`columns.team` is a free-text tag: which part of the shop works that column. It is the
+only new state the dashboard needs — nothing else is configured per team.
+
+```bash
+php artisan migrate --force      # 2026_10_06_000001_add_team_to_columns_table
+```
+
+* **Set it on the board**: the people icon in a column header (hover the header) → type
+  `Accounting`, `Warehouse`, `Fulfilment`… Existing names are suggested, so one team is
+  spelled one way. Empty = no team.
+* **What it drives**: the dashboard's **Teams** panel (open vs closed this week per team,
+  oldest item, who is on it) and clicking a team narrows the board to that team's columns
+  — the count tiles above the board follow the same filter, so "Warehouse: 2 open, 1 late"
+  is one click, not a manual scan.
+* **Columns with no tag** are not hidden: the panel ends with "N open in M columns with no
+  team". A half-tagged board has to report itself, otherwise the team rows silently fail to
+  add up to the totals next to them.
+* Members are *not* assigned to teams — a task belongs to the team of its column, which is
+  how a small shop actually works (the same person answers for COD calls and dispatch).

@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\Schema;
 class AppController extends Controller
 {
     /** Sections reachable as their own path (see routes/web.php). */
-    public const SECTIONS = ['board', 'team', 'settings', 'plan'];
+    public const SECTIONS = ['dashboard', 'board', 'team', 'settings', 'plan'];
 
     /**
      * GET / — the embedded app shell.
@@ -25,13 +25,17 @@ class AppController extends Controller
      */
     public function index(Request $request)
     {
-        return $this->shell($request, 'board');
+        // No section on purpose: opening the app from the sidebar icon is the one
+        // entry point that is not a deliberate choice of screen, so the SPA picks by
+        // role — owners land on the dashboard (the numbers they came for), teammates
+        // on the board (the work). Every sidebar item states its section explicitly.
+        return $this->shell($request, '');
     }
 
     /** GET /{section} — the same shell, opened on one section of the app. */
     public function section(Request $request, string $section)
     {
-        return $this->shell($request, in_array($section, self::SECTIONS, true) ? $section : 'board');
+        return $this->shell($request, in_array($section, self::SECTIONS, true) ? $section : '');
     }
 
     protected function shell(Request $request, string $section)

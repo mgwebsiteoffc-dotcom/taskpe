@@ -18,6 +18,7 @@ class BoardController extends Controller
             'name'          => $col->name,
             'position'      => $col->position,
             'is_done_stage' => $col->is_done_stage,
+            'team'          => $col->team,
             'tasks'         => $col->tasks->map(fn (Task $t) => $this->taskJson($t))->values(),
         ])->values();
 

@@ -6,11 +6,16 @@
    is the only file to edit — the modal, the order-page card and the bulk
    action all import from here.
 
-   REQUIRED BEFORE DEPLOY: set APP_URL to your production app domain (the same
-   value as APP_URL in your Laravel .env), then run `shopify app deploy`.
+   APP_URL below is already set to the production domain. `shopify app deploy`
+   bakes that constant in, so re-run it whenever the domain changes.
    ========================================================================== */
 
-export const APP_URL = "https://app.yourdomain.com"; // ← CHANGE ME before deploy
+/* The one line to change for a different deployment. This is the app's public
+ * https:// URL — identical to APP_URL in the Laravel .env, no trailing slash.
+ * It is baked into the bundle by `shopify app deploy`, so a wrong value here is
+ * a wrong extension forever; `appUrlNotSet()` below turns it into a banner in
+ * every extension UI instead of a silent fetch failure. */
+export const APP_URL = "https://taskpe.rankboosterinfotech.in";
 
 /** gid://shopify/<Node>/<id> → the `resource_type` Task stores. */
 export const TYPE_MAP = {
@@ -23,7 +28,7 @@ export const TYPE_MAP = {
 
 /** True while the placeholder is still in place — every UI shows a banner. */
 export function appUrlNotSet() {
-  return !APP_URL || APP_URL.includes("yourdomain");
+  return !APP_URL || !/^https:\/\/[^/]+/.test(APP_URL) || APP_URL.includes("yourdomain");
 }
 
 /**

@@ -19,14 +19,18 @@
   // the same shell on each path and tells us which section to open — there is
   // deliberately no second, in-app tab strip competing with the admin's nav.
   const SECTIONS = [
-    { view: 'board',    label: 'Board',    icon: 'board',    path: '/' },
-    { view: 'team',     label: 'Team',     icon: 'people',   path: '/team' },
-    { view: 'settings', label: 'Settings', icon: 'settings', path: '/settings' },
-    { view: 'plan',     label: 'Plan',     icon: 'premium',  path: '/plan' },
+    { view: 'dashboard', label: 'Dashboard', icon: 'chart',    path: '/dashboard' },
+    { view: 'board',     label: 'Board',     icon: 'board',    path: '/board' },
+    { view: 'team',      label: 'Team',      icon: 'people',   path: '/team' },
+    { view: 'settings',  label: 'Settings',  icon: 'settings', path: '/settings' },
+    { view: 'plan',      label: 'Plan',      icon: 'premium',  path: '/plan' },
   ];
   const SECTION_BY_VIEW = Object.fromEntries(SECTIONS.map(sec => [sec.view, sec]));
 
-  function viewFromLocation() {
+  // Which section was actually asked for — a sidebar item, a ?view= deep link, or
+  // the last path segment. null means nobody asked (the app was opened from its
+  // icon in the admin), and boot() then picks by role.
+  function askedSection() {
     const fromServer = cfg.view;                      // path-derived, by Laravel
     if (SECTION_BY_VIEW[fromServer]) return fromServer;
     const fromQuery = new URLSearchParams(location.search).get('view');
@@ -34,7 +38,19 @@
     // Last segment, not the first: a subdirectory deploy lives at
     // /taskpe/public/team and the first segment there is the folder, not the app.
     const seg = String(location.pathname || '/').replace(/\/+$/, '').split('/').pop();
-    return SECTION_BY_VIEW[seg] ? seg : 'board';
+    return SECTION_BY_VIEW[seg] ? seg : null;
+  }
+
+  function viewFromLocation() { return askedSection() || 'board'; }
+
+  // Owners open the app to read the numbers; everyone else opens it to work the
+  // board. Only ever consulted when nothing asked for a section, so a sidebar
+  // item or a deep link is never overridden.
+  function landingView() {
+    if (IS_STAFF) return 'board';
+    const s = state.board;
+    const me = s && (s.members || []).find(m => m.id === (state.me || s.me));
+    return me && /owner|admin/i.test(String(me.role || '')) ? 'dashboard' : 'board';
   }
 
   // A blocked-cookie browser (private mode, a partitioned iframe) can make even
@@ -56,6 +72,7 @@
     drawerTaskId: null,
     quickAdd: null,      // column id whose "add task" editor should auto-open
     filter: null,        // stat cell the board is currently narrowed to (see STAT_FILTERS)
+    team: null,          // column team tag the board + stats are narrowed to (Accounting, Warehouse…)
     dashHidden: readPref('taskpe_dash') === 'off',   // overview band
     loading: false,
   };
@@ -247,6 +264,7 @@
     settings:   [['path', { d: 'M4 7.6h8.8M17.4 7.6H20M4 16.4h4.4M12.9 16.4H20' }],
                  ['circle', { cx: 15, cy: 7.6, r: 2.3 }], ['circle', { cx: 10.7, cy: 16.4, r: 2.3 }]],
     premium:    [['path', { d: 'M12 3.9l2.5 5 5.6.9-4.1 3.9 1 5.6-5-2.6-5 2.6 1-5.6-4.1-3.9 5.6-.9z' }]],
+    chart:      [['path', { d: 'M4.6 19.4h14.8' }], ['path', { d: 'M7.6 16.4v-4.6M12 16.4V6.2M16.4 16.4v-6.8' }]],
     plus:       [['path', { d: 'M12 5.4v13.2M5.4 12h13.2' }]],
     minus:      [['path', { d: 'M5.4 12h13.2' }]],
     edit:       [['path', { d: 'M4.6 19.4h4L20 8a2.1 2.1 0 0 0-3-3L5.6 16.4z' }], ['path', { d: 'M14.9 7.1l3 3' }]],
@@ -378,14 +396,20 @@
       }, true);
     }
 
-    nav.replaceChildren(...SECTIONS.map(sec => {
+    // rel="home" makes the admin's app name open this href and hides the entry from
+    // the list, so it points at bare `/`: no section asked for, which is what lets
+    // landingView() send an owner to the dashboard and a teammate to the board.
+    const home = document.createElement('s-link');
+    home.setAttribute('href', sectionPath(null));
+    home.setAttribute('rel', 'home');
+    home.textContent = 'Dashboard';
+    home.dataset.view = landingView();
+
+    nav.replaceChildren(home, ...SECTIONS.map(sec => {
       const link = document.createElement('s-link');      // not <a>: s-app-nav takes s-link children
       link.setAttribute('href', sectionPath(sec.view));
       link.textContent = sec.label;
       link.dataset.view = sec.view;
-      // rel="home" hides that entry from the menu and makes the admin's app name
-      // open it — which is exactly right for the board, so it is not listed twice.
-      if (sec.view === 'board') link.setAttribute('rel', 'home');
       if (sec.view === state.view) link.setAttribute('aria-current', 'page');
       return link;
     }));
@@ -397,7 +421,7 @@
   // wherever the shell is mounted*, so a subdirectory deploy — where the board is
   // /taskpe/public/ — swaps its last segment instead of assuming root paths.
   function sectionPath(view) {
-    const label = SECTION_BY_VIEW[view].path.split('/').pop();
+    const label = view ? SECTION_BY_VIEW[view].path.split('/').pop() : '';
     const here = String(location.pathname || '/').replace(/\/+$/, '');
     const parent = here.includes('/') ? here.slice(0, here.lastIndexOf('/') + 1) : '/';
     return label ? parent + label : (parent.replace(/\/+$/, '') || '/');
@@ -415,7 +439,14 @@
   // what drives the sidebar's active highlight), re-render.
   function goView(view) {
     if (!SECTION_BY_VIEW[view]) view = 'board';
-    if (state.view !== view) { state.view = view; state.drawerTaskId = null; }
+    if (state.view !== view) {
+      state.view = view;
+      state.drawerTaskId = null;
+      // A team filter is a way of reading *the board*. Leaving it on would quietly
+      // narrow the dashboard's totals too, and a dashboard that reports one
+      // department under the title "Dashboard" is how numbers get mistrusted.
+      if (view !== 'board') state.team = null;
+    }
 
     const path = sectionPath(view);
     if (!IS_STAFF && appBridge() && location.pathname !== path) {
@@ -479,6 +510,7 @@
     // the shortcut help, because those are utilities, not a second menu.
     return h('div', null,
       renderBanners(),
+      state.view === 'dashboard' ? renderDashboard() :
       state.view === 'board' ? renderBoard() :
       state.view === 'team' ? renderTeam() :
       state.view === 'settings' ? renderSettings() : renderPlan(),
@@ -555,7 +587,8 @@
 
   const STAT_FILTERS = [
     { key: 'open', label: 'Open', test: isOpenTask,
-      sub: st => st.cap ? st.open + ' of ' + st.cap + ' allowed' : st.total + ' on the board' },
+      sub: st => state.team ? st.open + ' in ' + state.team
+        : st.cap ? st.open + ' of ' + st.cap + ' allowed' : st.total + ' on the board' },
     { key: 'overdue', label: 'Overdue', tone: 'crit', test: t => isOpenTask(t) && !!t.overdue,
       sub: st => st.oldestOverdue ? 'oldest waiting ' + st.oldestOverdue + 'd' : 'nothing past its date' },
     { key: 'due', label: 'Due today', tone: 'warn', test: t => isOpenTask(t) && !t.overdue && isToday(t.due_at),
@@ -592,7 +625,10 @@
     return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
   }
 
-  const allTasks = () => (state.board?.columns || []).reduce((acc, c) => acc.concat(c.tasks || []), []);
+  // Every number and the board itself are drawn from these columns, so tagging a
+  // column with a team is also what makes "just Accounting" a thing you can click.
+  const boardColumns = () => (state.board?.columns || []).filter(c => !state.team || (c.team || null) === state.team);
+  const allTasks = () => boardColumns().reduce((acc, c) => acc.concat(c.tasks || []), []);
 
   function boardStats() {
     const all = allTasks();
@@ -619,18 +655,61 @@
         const late = done.filter(t => new Date(t.completed_at) > new Date(t.due_at.slice(0, 10) + 'T23:59:59')).length;
         return Math.round(((done.length - late) / done.length) * 100);
       })(),
-      series: Array.from({ length: 7 }, (_, i) => {
-        const key = daysAgoKey(6 - i);
-        return {
-          key,
-          today: i === 6,
-          label: (['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(key + 'T12:00:00').getDay()] || '').slice(0, 1),
-          n: all.filter(t => t.completed_at && dateKey(t.completed_at) === key).length,
-        };
-      }),
+      series: seriesFor(all, 14),
+      twoWeeks: closedIn(14),
+      teams: teamRows(),
+      // "Nothing is moving" and "we are busy" look the same in a total. Ageing is
+      // the difference, and 8+ days is the bucket an owner needs to see.
+      age: [['new', t => ageDays(t.created_at) <= 1],
+            ['2–3 days', t => ageDays(t.created_at) > 1 && ageDays(t.created_at) <= 3],
+            ['4–7 days', t => ageDays(t.created_at) > 3 && ageDays(t.created_at) <= 7],
+            ['8+ days', t => ageDays(t.created_at) > 7]]
+        .map(([label, test], i) => ({ label, n: open.filter(test).length, hot: i >= 2 })),
     };
     for (const f of STAT_FILTERS) out[f.key] = all.filter(f.test).length;
     return out;
+  }
+
+  // Closed tasks per day, oldest first. Above a week the labels thin out to every
+  // other day, because 14 single letters in a half-width panel is a smear.
+  function seriesFor(list, days) {
+    const step = days > 7 ? 2 : 1;
+    return Array.from({ length: days }, (_, i) => {
+      const key = daysAgoKey(days - 1 - i);
+      return {
+        key,
+        today: i === days - 1,
+        label: i % step === (days - 1) % step
+          ? (['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(key + 'T12:00:00').getDay()] || '').slice(0, 1)
+          : '',
+        n: list.filter(t => t.completed_at && dateKey(t.completed_at) === key).length,
+      };
+    });
+  }
+
+  // `team` is a free-text tag on a column (Accounting, Warehouse, Fulfilment…).
+  // Grouping by it is what turns one flat list of columns into numbers an owner can
+  // read per department — and the untagged bucket is kept visible on purpose, so a
+  // half-tagged board reports itself instead of quietly dropping work.
+  function teamRows() {
+    const rows = new Map();
+    for (const col of state.board?.columns || []) {
+      const key = col.team || '';
+      if (!rows.has(key)) rows.set(key, { team: key, columns: [], open: 0, overdue: 0, week: 0, oldest: 0, people: new Set() });
+      const r = rows.get(key);
+      r.columns.push(col.name);
+      for (const t of col.tasks || []) {
+        if (t.completed_at) { if (ageDays(t.completed_at) < 7) r.week++; continue; }
+        r.open++;
+        if (t.overdue) r.overdue++;
+        r.oldest = Math.max(r.oldest, ageDays(t.created_at));
+        if (t.assignee && t.assignee.name) r.people.add(String(t.assignee.name).split(' ')[0]);
+      }
+    }
+
+    return [...rows.values()]
+      .map(r => ({ ...r, people: [...r.people] }))
+      .sort((a, b) => (b.open + b.overdue) - (a.open + a.overdue) || (a.team || '￿').localeCompare(b.team || '￿'));
   }
 
   function setFilter(key) {
@@ -660,8 +739,8 @@
       h('div', { class: 'page-actions' },
         IS_STAFF ? null : renderMeChips(),
         IS_STAFF ? null : iconButton('info-circle', { title: 'Keyboard shortcuts (?)', onClick: openShortcutsHelp }),
-        h('button', { class: 'btn plain sm', onclick: toggleDash, title: 'The overview band (KPIs, throughput, workload) — d' },
-          state.dashHidden ? 'Show overview' : 'Hide overview'),
+        h('button', { class: 'btn plain sm', onclick: toggleDash, title: 'The count tiles — they double as board filters (d). Charts live on the Dashboard.' },
+          state.dashHidden ? 'Show stats' : 'Hide stats'),
         h('button', { class: 'btn sm', onclick: openTemplatesModal, title: 'One-click checklists for COD confirmation, NDR rescue and RTO — pick one and it is filed with its steps' },
           ...withIcon('stack', 'Task templates')),
         h('button', { class: 'btn primary sm', onclick: startQuickAdd }, ...withIcon('plus', 'Add task', { size: 15 }))));
@@ -680,7 +759,11 @@
 
         return h('button', {
           class: cls,
-          onclick: () => setFilter(f.key),
+          onclick: () => {
+            if (state.view === 'board') { setFilter(f.key); return; }
+            state.filter = state.filter === f.key ? null : f.key;
+            goView('board');                       // from the dashboard: jump to the filtered board
+          },
           title: state.filter === f.key ? 'Show every task again' : 'Show only ' + f.label.toLowerCase() + ' tasks',
           'aria-pressed': String(state.filter === f.key),
         },
@@ -690,30 +773,25 @@
       }));
   }
 
-  // Throughput on the left, people on the right, and the two or four tasks that
-  // deserve the next click underneath. Nothing here is decoration: each panel
-  // answers a question a manager asks in the first ten seconds of the day.
-  function renderTrends(st) {
-    return h('div', { class: 'panels' },
-      h('section', { class: 'panel' },
-        h('div', { class: 'p-head' },
-          h('h2', null, 'Closed per day'),
-          st.onTime === null ? null : h('span', { class: 'sub' }, st.onTime + '% on time'),
-          h('span', { class: 'spacer' }),
-          h('span', { class: 'pill ' + (st.weekDelta > 0 ? 'medium' : st.weekDelta < 0 ? 'high' : 'low') },
-            (st.weekDelta > 0 ? '+' : '') + st.weekDelta + ' vs last week')),
-        h('div', { class: 'p-body' }, renderChart(st))),
-      h('section', { class: 'panel' },
-        h('div', { class: 'p-head' },
-          h('h2', null, 'Who is carrying what'),
-          h('span', { class: 'sub' }, 'open vs closed this week')),
-        h('div', { class: 'p-body' }, renderWorkload())));
+  // Throughput on the left, throughput's owner-level context on the right, then
+  // teams, then people, then the tasks that deserve the next click. Nothing here is
+  // decoration: each panel answers a question a shop owner asks in the first ten
+  // seconds of the day, and every row is a way into the board that holds the work.
+  function renderThroughput(st) {
+    return h('section', { class: 'panel' },
+      h('div', { class: 'p-head' },
+        h('h2', null, 'Closed per day'),
+        h('span', { class: 'sub' }, st.twoWeeks + ' in the last 14 days' + (st.onTime === null ? '' : ' · ' + st.onTime + '% on time')),
+        h('span', { class: 'spacer' }),
+        h('span', { class: 'pill ' + (st.weekDelta > 0 ? 'medium' : st.weekDelta < 0 ? 'high' : 'low') },
+          (st.weekDelta > 0 ? '+' : '') + st.weekDelta + ' vs last week')),
+      h('div', { class: 'p-body' }, renderChart(st)));
   }
 
   function renderChart(st) {
     const max = Math.max(1, ...st.series.map(d => d.n));
 
-    return h('div', { class: 'chart', role: 'img', 'aria-label': st.week + ' tasks closed in the last 7 days' },
+    return h('div', { class: 'chart', role: 'img', 'aria-label': st.twoWeeks + ' tasks closed in the last 14 days' },
       st.series.map(d => h('div', {
         class: 'c-col' + (d.today ? ' today' : ''),
         title: d.key + ' — ' + d.n + (d.n === 1 ? ' task closed' : ' tasks closed'),
@@ -721,6 +799,117 @@
         h('span', { class: 'c-num' }, d.n ? String(d.n) : ''),
         h('div', { class: 'c-bar' + (d.n ? '' : ' zero'), style: 'height:' + (d.n ? Math.max(12, Math.round((d.n / max) * 100)) : 3) + '%' }),
         h('span', { class: 'c-cap' }, d.label))));
+  }
+
+  function renderTeams(st) {
+    const tagged = st.teams.filter(r => r.team);
+    const untagged = st.teams.find(r => !r.team);
+    const max = Math.max(1, ...tagged.map(r => r.open + r.week));
+    const bar = (share, cls) => h('div', { class: 'wl-fill ' + cls, style: 'width:' + Math.round((share / max) * 100) + '%' });
+
+    const head = h('div', { class: 'p-head' },
+      h('h2', null, 'Teams'),
+      h('span', { class: 'sub' }, tagged.length ? 'open vs closed this week — click to work that board' : 'by department'));
+
+    const row = r => {
+      const cls = 'tm-row' + (state.team === r.team ? ' on' : '');
+      const title = r.columns.join(' · ') + (r.people.length ? ' — ' + r.people.join(', ') : '');
+      const bits = [r.open + ' open'];
+      if (r.overdue) bits.push(r.overdue + ' late');
+      if (r.week) bits.push('+' + r.week);
+
+      return h('button', { class: cls, title, onclick: () => openTeamBoard(r.team) },
+        h('span', { class: 'tm-name' }, r.team),
+        h('span', { class: 'wl-track' },
+          r.week ? bar(r.week, 'done') : null,
+          r.open ? bar(r.open, r.overdue ? 'late' : 'open') : null),
+        h('span', { class: 'tm-n' }, bits.join(' · ')));
+    };
+
+    const body = tagged.length
+      ? h('div', { class: 'p-body flush' }, tagged.map(row))
+      : h('div', { class: 'p-body' }, h('div', { class: 'muted small' },
+        'Nothing is grouped yet. On the board, the people icon on a column names its team — Accounting, Warehouse, '
+        + 'Fulfilment \u2026 and this panel fills itself in.'));
+
+    // A half-tagged board is the failure mode here, so say how much is untagged
+    // instead of letting the totals quietly disagree with the rows above.
+    const foot = untagged && tagged.length
+      ? h('div', { class: 'p-foot' },
+        h('span', { class: 'muted small' }, untagged.open + ' open in ' + untagged.columns.length
+          + ' column' + (untagged.columns.length === 1 ? '' : 's') + ' with no team'),
+        h('button', { class: 'btn plain sm', onclick: () => goView('board') }, 'Tag a column'))
+      : null;
+
+    return h('section', { class: 'panel' }, head, body, foot);
+  }
+
+  function renderAging(st) {
+    const max = Math.max(1, ...st.age.map(b => b.n));
+
+    return h('section', { class: 'panel' },
+      h('div', { class: 'p-head' },
+        h('h2', null, 'How old the open work is'),
+        h('span', { class: 'sub' }, st.oldestOpen ? 'oldest waiting ' + st.oldestOpen + 'd' : 'nothing open')),
+      h('div', { class: 'p-body' }, h('div', { class: 'wl' }, st.age.map(b => h('div', {
+          class: 'wl-row' + (b.hot && b.n ? ' late' : ''),
+        },
+        h('span', { class: 'wl-name' }, b.label),
+        h('span', { class: 'wl-track' }, b.n ? h('div', { class: 'wl-fill ' + (b.hot ? 'late' : 'open'), style: 'width:' + Math.round((b.n / max) * 100) + '%' }) : null),
+        h('span', { class: 'wl-n' }, String(b.n)))))));
+  }
+
+  function dashPanel(title, sub, bodyEl, flush) {
+    return h('section', { class: 'panel' },
+      h('div', { class: 'p-head' }, h('h2', null, title), sub ? h('span', { class: 'sub' }, sub) : null),
+      h('div', { class: 'p-body' + (flush ? ' flush' : '') }, bodyEl));
+  }
+
+  // The page an owner actually opens the app for: what is moving, what is stuck,
+  // who and which department is carrying it. One sentence up front, because a
+  // dashboard nobody reads is a chart collection.
+  function renderDashboard() {
+    const st = boardStats();
+    const shop = state.board.shop;
+
+    return h('div', { class: 'page dash-page' },
+      h('header', { class: 'page-head' },
+        h('div', { class: 'page-id' },
+          h('h1', null, 'Dashboard'),
+          h('div', { class: 'page-sub' },
+            [shop.name || shop.domain,
+             shop.plan === 'free' ? 'Free plan' : cap(shop.plan) + ' plan',
+             new Intl.DateTimeFormat('en-IN', { weekday: 'long', day: 'numeric', month: 'short' }).format(new Date())]
+              .filter(Boolean).join(' \u00b7 '))),
+        h('div', { class: 'page-actions' },
+          h('button', { class: 'btn sm', onclick: () => goView('board') }, ...withIcon('board', 'Open board', { size: 15 })),
+          h('button', { class: 'btn primary sm', onclick: () => { goView('board'); startQuickAdd(); } },
+            ...withIcon('plus', 'Add task', { size: 15 })))),
+
+      h('p', { class: 'dash-lede' }, dashLede(st)),
+      renderStats(st),
+      h('div', { class: 'panels' }, renderThroughput(st), renderTeams(st)),
+      h('div', { class: 'panels' },
+        dashPanel('Who is carrying what', 'open vs closed this week', renderWorkload()),
+        renderAging(st)),
+      renderAttention());
+  }
+
+  function dashLede(st) {
+    const bits = [st.open + (st.open === 1 ? ' task open' : ' tasks open')];
+    if (st.overdue) bits.push(st.overdue + ' overdue' + (st.oldestOverdue ? ' (oldest waiting ' + st.oldestOverdue + 'd)' : ''));
+    if (st.unclaimed) bits.push(st.unclaimed + ' nobody has picked up');
+    bits.push(st.week + ' closed in the last 7 days'
+      + (st.weekDelta ? ' (' + (st.weekDelta > 0 ? '+' : '') + st.weekDelta + ' vs the week before)' : ''));
+    const top = st.teams.find(r => r.team && r.open);
+    if (top) bits.push(top.team + ' is carrying the most (' + top.open + ')');
+    return bits.join(' \u00b7 ');
+  }
+
+  function openTeamBoard(team) {
+    state.team = state.team === team ? null : team;
+    state.filter = null;
+    goView('board');
   }
 
   function renderWorkload() {
@@ -782,7 +971,7 @@
           t.assignee ? h('span', { class: 'avatar', title: t.assignee.name }, t.assignee.initials)
             : h('span', { class: 'avatar gray', title: 'Unclaimed' }, '·'))))
         : h('div', { class: 'p-body' }, h('div', { class: 'muted small' },
-            'Nothing open. Add a task, or tick one off the board above.')));
+            'Nothing open. Add a task, or tick one off the board.')));
   }
 
   function toggleDash() {
@@ -791,15 +980,19 @@
     render();
   }
 
+  function clearFilters() { state.filter = null; state.team = null; render(); }
+
   function renderFilterBar(st) {
     const f = STAT_FILTERS.find(x => x.key === state.filter);
-    if (!f) return null;
-    const shown = st[f.key] || 0;
+    if (!f && !state.team) return null;
+    const shown = f ? st[f.key] || 0 : 0;
 
     return h('div', { class: 'filter-bar' },
       h('span', { class: 'muted small' },
-        'Filtered: ' + shown + ' ' + f.label.toLowerCase() + ' of ' + st.total + ' task' + (st.total === 1 ? '' : 's')),
-      h('button', { class: 'btn plain sm', onclick: () => setFilter(f.key) }, 'Show all'));
+        [state.team ? 'Team: ' + state.team : null,
+         f ? shown + ' ' + f.label.toLowerCase() + ' of ' + st.total + ' task' + (st.total === 1 ? '' : 's') : null]
+          .filter(Boolean).join(' · ')),
+      h('button', { class: 'btn plain sm', onclick: clearFilters }, 'Show all'));
   }
 
   function renderBoard() {
@@ -807,12 +1000,12 @@
     const st = boardStats();
     const board = h('div', { class: 'board' });
 
-    for (const col of s.columns) board.append(renderColumn(col));
+    for (const col of boardColumns()) board.append(renderColumn(col));
     board.append(h('button', { class: 'add-col-btn', onclick: promptAddColumn }, ...withIcon('plus', 'Add column', { size: 16 })));
 
     return h('div', { class: 'board-page' },
       renderPageHead(),
-      state.dashHidden ? null : h('div', { class: 'dash' }, renderStats(st), renderTrends(st), renderAttention()),
+      state.dashHidden ? null : h('div', { class: 'dash' }, renderStats(st)),
       renderFilterBar(st),
       board);
   }
@@ -825,8 +1018,13 @@
     const el = h('div', { class: 'board-col', dataset: { colId: col.id } },
       h('div', { class: 'col-head' },
         h('h3', null, col.name),
+        col.team && !state.team ? h('span', { class: 'col-team' }, col.team) : null,
         h('span', { class: 'col-count' }, tasks.length + (active && hidden ? '/' + col.tasks.length : '')),
         h('div', { class: 'col-actions' },
+          iconButton('people', {
+            title: col.team ? 'Team: ' + col.team + ' — change which team works this column' : 'Assign this column to a team (Accounting, Warehouse…)',
+            onClick: () => promptColumnTeam(col),
+          }),
           iconButton('edit', { title: 'Rename column', onClick: () => promptRenameColumn(col) }),
           state.board.columns.length > 1
             ? iconButton('delete', { title: 'Delete column', onClick: () => deleteColumn(col) }) : null)),
@@ -1002,6 +1200,26 @@
         if (!name) return false;
         await api('/columns/' + col.id, { method: 'PATCH', body: { name } });
         await refreshBoard();
+        return true;
+      });
+  }
+
+  function promptColumnTeam(col) {
+    // Existing tags are offered back as suggestions: a team is only useful on a
+    // dashboard if "Warehouse" is spelled one way across the columns.
+    const known = [...new Set((state.board.columns || []).map(c => c.team).filter(Boolean))].sort();
+    openModal('Team for ' + col.name, h('div', null,
+      h('div', { class: 'field' },
+        h('label', null, 'Which team works this column?'),
+        h('input', { class: 'input', id: 'col-team', value: col.team || '', maxlength: 40, list: 'col-team-list', placeholder: 'Accounting, Warehouse, Fulfilment\u2026' }),
+        h('datalist', { id: 'col-team-list' }, known.map(t => h('option', { value: t }))),
+        h('div', { class: 'help' }, 'Free text, shown as its own row on the dashboard. Empty means no team.'))),
+      async () => {
+        const team = document.getElementById('col-team').value.trim();
+        await api('/columns/' + col.id, { method: 'PATCH', body: { team } });
+        if (state.team === col.team && team !== state.team) state.team = null;   // it just left this filter
+        await refreshBoard();
+        toast(team ? col.name + ' is now ' + team : col.name + ' has no team');
         return true;
       });
   }
@@ -2184,8 +2402,8 @@
     ['n', 'Add a task to the first open column'],
     ['t', 'Open the COD / NDR template pack'],
     ['c', 'Complete (or reopen) the task open in the drawer'],
-    ['d', 'Hide or show the overview band'],
-    ['1 – 4', 'Board · Team · Settings · Plan'],
+    ['d', 'Hide or show the count tiles on the board'],
+    ['1 – 5', 'Dashboard · Board · Team · Settings · Plan'],
     ['?', 'This list'],
     ['Esc', 'Close the open dialog'],
   ];
@@ -2266,7 +2484,7 @@
       if (ev.key === 't' || ev.key === 'T') { ev.preventDefault(); openTemplatesModal(); return; }
       if (ev.key === 'd' || ev.key === 'D') { ev.preventDefault(); toggleDash(); return; }
 
-      const idx = ['1', '2', '3', '4'].indexOf(ev.key);
+      const idx = ['1', '2', '3', '4', '5'].indexOf(ev.key);
       if (idx > -1 && SECTIONS[idx]) {
         ev.preventDefault();
         if (SECTIONS[idx].view !== state.view) goView(SECTIONS[idx].view);
@@ -2325,6 +2543,15 @@
     mountAdminNav();
     try {
       await loadBoard();
+      if (!askedSection()) {
+        // Opened from the app icon, not a nav item: owners get the dashboard, the
+        // rest get the board. replaceState keeps the admin URL in step without
+        // adding a history entry the back arrow has to climb over twice.
+        state.view = landingView();
+        if (!IS_STAFF && appBridge() && typeof history.replaceState === 'function') {
+          try { history.replaceState({ view: state.view }, '', sectionPath(state.view)); } catch (e) { /* odd base URL */ }
+        }
+      }
       mountAdminNav();
       render();
       bindShortcuts();

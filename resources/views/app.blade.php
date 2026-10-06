@@ -79,7 +79,7 @@
             // Which section this path/param asks for. The app menu in Shopify's
             // sidebar (<s-app-nav>, mounted by app.js) is what moves between
             // them — there is deliberately no in-app tab strip.
-            view: @json($section ?? 'board'),
+            view: @json($section ?: null),   // null = open the app, let the SPA choose by role
         };
     </script>
     <script src="{{ asset('js/app.js') }}?v={{ $taskpeVer }}" defer></script>

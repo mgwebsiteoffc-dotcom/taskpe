@@ -109,8 +109,9 @@ function CreateTaskAction({ resourceLabel }) {
     return (
       <s-admin-action heading="Create task">
         <s-banner tone="critical">
-          APP_URL is not configured. Edit extensions/shared/api.js, set your live
-          domain, then run shopify app deploy again.
+          This bundle has no backend address. Set `APP_URL` in
+          extensions/shared/api.js to the same https:// domain as APP_URL in the
+          Laravel .env, then run shopify app deploy again.
         </s-banner>
       </s-admin-action>
     );
