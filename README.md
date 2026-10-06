@@ -6,7 +6,8 @@ A Laravel 12 + MySQL **public Shopify app** for Indian D2C teams:
 - 🔗 **Link any object** to a task — Order, Draft Order, Product, Customer, Blog post — one click deep-links into that Shopify Admin page
 - 🟢 **WhatsApp to staff via YOUR Whatify account** (BYO-BSP): assignment pings, nudges, and the owner's morning **Bird's-Eye-View digest**. ~₹0.12/message on your own Whatify wallet
 - 🎛 **WhatsApp is merchant-controlled**: a master **Enable/Disable** switch in the Admin Settings panel — OFF by default. Turned off = board/team/linking keep working, nothing ever hits WhatsApp.
-- ⚡ **"Create task" Admin Action Extensions** — real buttons on Shopify's Order, Draft Order, Product and Customer pages (*More actions → Create task*) that open a modal with the resource pre-linked. Code in `extensions/`, built per the current preact + `s-admin-action` API.
+- ⚡ **Work happens where the order is** — "Create task" in *More actions* on Order / Draft Order / Product / Customer pages (modal, resource pre-linked), **bulk "Create TaskPe tasks"** on the Orders list (tick 30 COD orders → 30 pre-filled checklist tasks, safe to re-run), and an **order-page block** that shows that order's open tasks with tickable checklist steps. Code in `extensions/`, built per the current preact + `s-admin-action` / `s-admin-block` API.
+- **Keyboard-first board** — `n` new task, `t` template pack, `c` complete the open task, `1`–`4` switch sections, `?` lists them, `Esc` closes. Inert while you type, so a stray letter never files junk.
 - 👥 **Team roster with WhatsApp OTP verification** (doubles as Meta-compliant opt-in) — staff see own tasks, owners see everything
 - 💳 **In-Shopify billing in the merchant's own currency** — Indian stores approve **₹499 / ₹999 per month in INR** (local INR pricing via the Billing API's merchant-billing-currency support, no FX fees); stores in other billing currencies see **$5.99 / $11.99 USD**. Nothing is ever charged outside Shopify
 - 📦 **COD/NDR template pack** — one-click India-D2C task checklists (COD confirmation, NDR rescue, high-risk order check, prepaid conversion, address fix, delayed-shipment save, weekly COD remittance reconciliation, return pickup). Tasks are created pre-filled with a **tickable checklist** and an order link; board cards show ☑ 2/6 progress
@@ -32,6 +33,8 @@ Built to the **2026 public-app requirements** — see the compliance map below.
 | Frontend | App Bridge v4 (Shopify CDN) + hand-written Polaris CSS + vanilla JS | Zero build step — FTP upload just works |
 | Iconography | Inline SVG from the `ICONS` map in `public/js/app.js` (`icon(name)`) | No emoji: OS-dependent glyphs, untintable, wrong at 13px — and `boot.smoke.mjs` fails the build if one appears |
 | Navigation | Shopify-admin section tabs (icon + label, bottom-border active state) | No duplicate app header inside the admin frame |
+| Admin surface | 6 UI extensions: 4 actions + 1 bulk selection action + 1 order-page block, sharing `extensions/shared/api.js` | Shopify has no per-row list button; these are the three real affordances, and one shared file keeps APP_URL/auth from drifting |
+| Bulk creation | `POST /api/tasks/bulk` via `App\Services\TaskTemplates` | One materialisation path for board, block, bulk and the COD webhook: same title format, same checklist, same plan ceiling |
 
 ## Local development
 
@@ -112,14 +115,14 @@ If a template isn't mapped in Settings, the app falls back to plain text (delive
 
 ## Admin "Create task" extensions (`extensions/`)
 
-Four UI extensions add **More actions → Create task** on Order / Draft Order / Product / Customer admin pages. They reuse the same session-token-authenticated `/api/*` backend — no separate auth surface.
+Six UI extensions, one backend. Four add **More actions → Create task** on Order / Draft Order / Product / Customer pages; **`taskpe-task-order-bulk`** adds **Create TaskPe tasks** to the Orders-list selection menu (bulk, `POST /api/tasks/bulk`); **`taskpe-order-block`** pins an inline card on the order page (open tasks + checklist ticks + one-tap templates). All of them reuse the same session-token-authenticated `/api/*` backend — no separate auth surface, and shared code in `extensions/shared/` (`api.js`, `CreateTaskAction.jsx`, `BulkCreateTasks.jsx`, `OrderTaskBlock.jsx`).
 
 ```bash
 # Local machine only (NOT the server — extensions run on Shopify's CDN):
 npm install -g @shopify/cli@latest
 cp shopify.app.toml.example shopify.app.toml     # fill client_id + application_url
-# set APP_URL inside extensions/shared/CreateTaskAction.jsx
-for d in extensions/taskpe-task-*/; do (cd "$d" && npm install --omit=dev); done
+# set APP_URL once, in extensions/shared/api.js (all six extensions import it)
+for d in extensions/taskpe-*/; do (cd "$d" && npm install --omit=dev); done
 shopify app deploy                                # then release in Partner Dashboard
 ```
 
@@ -134,8 +137,8 @@ app/Services             ShopifyClient (GraphQL, retry), WhatifyClient, TaskNoti
 app/Http/Controllers     OAuth / webhooks / billing + /api/* tenant-scoped JSON
 app/Jobs                 ProcessShopifyWebhook, SendWhatsAppJob
 config/cors.php          API CORS for the admin extensions (/api/* only)
-public/js/app.js         the whole SPA (board, drawer, resource picker, team, settings, plan)
-extensions/              4 Admin Action UI extensions ("Create task") + shared component
+public/js/app.js         the whole SPA (board, drawer, resource picker, team, settings, plan, shortcuts)
+extensions/              6 Admin UI extensions (Create task / bulk / order-page block) + shared/
 resources/views          app shell (App Bridge) + privacy policy
 config/task_templates.php  The COD/NDR one-click checklist pack (edit copy/add templates here)
 LISTING.md               App Store submission pack: listing copy, screenshot shot-list, reviewer instructions

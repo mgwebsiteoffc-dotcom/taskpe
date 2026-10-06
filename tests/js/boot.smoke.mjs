@@ -31,6 +31,7 @@ class El {
     this.style = {};
     this.listeners = {};
     this._text = '';
+    this.parent = null;                    // set by append(), so remove() detaches
     this.disabled = false;
     this.checked = false;
     this.value = '';
@@ -49,11 +50,16 @@ class El {
   get textContent() { return this._text + ' ' + this.children.map(c => c.textContent).join(' '); }
   setAttribute(k, v) { this.attrs[k] = String(v); }
   getAttribute(k) { return this.attrs[k]; }
-  append(...nodes) { for (const n of nodes) if (n) this.children.push(n); }
+  append(...nodes) { for (const n of nodes) if (n) { n.parent = this; this.children.push(n); } }
   replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
   fire(type, ev = {}) { for (const fn of this.listeners[type] || []) fn({ preventDefault() {}, target: this, ...ev }); }
-  remove() {}
+  remove() {
+    if (!this.parent) return;
+    const kids = this.parent.children;
+    const i = kids.indexOf(this);
+    if (i > -1) kids.splice(i, 1);
+  }
   querySelectorAll() { return []; }
   querySelector() { return null; }
   getBoundingClientRect() { return { top: 0, height: 0 }; }
@@ -74,8 +80,10 @@ function makeEnv({ taskpe = {}, shopify, fetchImpl } = {}) {
   const navigations = [];
   const calls = [];
 
+  const docListeners = {};
   const document = {
     readyState: 'complete',
+    activeElement: null,
     title: '',
     body,
     createElement: t => new El(t),
@@ -84,7 +92,10 @@ function makeEnv({ taskpe = {}, shopify, fetchImpl } = {}) {
     // Real-ish: searches the live tree, so handlers that look up their
     // sibling nodes (gate-err, col-name…) behave like they do in a browser.
     getElementById: id => byId[id] || [root, body].map(n => n.find(x => x.attrs.id === id)[0]).find(Boolean) || null,
-    addEventListener() {},
+    addEventListener: (type, fn) => { (docListeners[type] ||= []).push(fn); },
+    // Keyboard events are document-level, so the harness needs to raise them.
+    fire: (type, ev = {}) => { for (const fn of docListeners[type] || []) fn({ preventDefault() {}, target: body, ...ev }); },
+    listeners: docListeners,
   };
 
   const location = {
@@ -174,6 +185,10 @@ const okBoard = {
 };
 
 const settle = (ms = 60) => new Promise(r => setTimeout(r, ms));
+
+// The board's task cards — matched on the class *token*, because .col-cards
+// (each column's list wrapper) otherwise wins a substring search.
+const taskCard = env => env.root.find(n => String(n.attrs.class || '').split(' ').includes('card'))[0];
 
 // Anything in the emoji/pictograph blocks — the app uses inline SVG instead.
 const EMOJI = /[\u{1F000}-\u{1FAFF}\u{1F1E6}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE0F}\u{2B00}-\u{2BFF}]/u;
@@ -333,10 +348,11 @@ const check = (name, fn) => {
 {
   const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply(200, okBoard) });
   await settle();
-  const card = env.root.find(n => n.attrs.class && String(n.attrs.class).includes('card'))[0];
+  const card = taskCard(env);
   card.click();
   await settle();
   check('task drawer renders with icons, no emoji', () => {
+    assert.ok(env.root.text().includes('Checklist'), 'the drawer did not open at all');
     const bad = uiText(env).filter(t => EMOJI.test(t));
     assert.deepEqual(bad, [], 'emoji in drawer: ' + JSON.stringify(bad.slice(0, 4)));
     const labels = env.root.find(n => n.tagName === 'BUTTON').map(b => b.attrs['aria-label']).filter(Boolean);
@@ -366,6 +382,75 @@ const check = (name, fn) => {
       assert.deepEqual(bad, [], 'emoji found: ' + JSON.stringify(bad.slice(0, 4)));
     });
   }
+}
+
+// 6d — keyboard shortcuts: the board is the same three clicks over and over,
+// so `n` / `t` / `1-4` / `?` / Esc are contract, not decoration.
+{
+  const env = makeEnv({ shopify: { idToken: async () => 'a.b.c' }, fetchImpl: reply(200, okBoard) });
+  await settle();
+  const tabs = () => env.root.find(n => n.attrs.class && String(n.attrs.class).split(' ').includes('tab'));
+  const overlays = () => env.document.body.children.filter(c => String(c.className).split(' ').includes('overlay'));
+
+  check('n opens the add-task editor in the first open column', () => {
+    assert.ok(env.document.listeners.keydown, 'the SPA never bound a keydown handler');
+    env.document.fire('keydown', { key: 'n' });
+  });
+  await settle();
+  check('…and the editor is a focused textarea, not an alert() prompt', () => {
+    const area = env.root.find(n => n.tagName === 'TEXTAREA')[0];
+    assert.ok(area, 'add-task textarea did not open');
+    assert.ok(area.attrs.placeholder.includes('Refund'), 'unexpected placeholder: ' + area.attrs.placeholder);
+  });
+  env.document.fire('keydown', { key: 'Escape' });
+  await settle();
+
+  check('? opens the shortcut list, Esc closes it again', () => {
+    env.document.fire('keydown', { key: '?' });
+    assert.equal(overlays().length, 1, 'help modal did not open');
+    assert.ok(overlays()[0].text().includes('Add a task to the first open column'), 'shortcut list is missing its rows');
+    env.document.fire('keydown', { key: 'Escape' });
+    assert.equal(overlays().length, 0, 'Esc must remove the topmost dialog');
+  });
+  await settle();
+
+  check('1-4 switch sections (no mouse needed)', () => {
+    env.document.fire('keydown', { key: '2' });
+    assert.equal(tabs()[1].attrs['aria-selected'], 'true', 'Team tab not activated');
+    env.document.fire('keydown', { key: '1' });
+    assert.equal(tabs()[0].attrs['aria-selected'], 'true', 'Board tab not restored');
+  });
+  await settle();
+
+  // Re-open the editor (the flags are one-shot by design), then type in it.
+  env.document.fire('keydown', { key: 'n' });
+  await settle();
+  const area = env.root.find(n => n.tagName === 'TEXTAREA')[0];
+  check('shortcuts are inert while typing (an "n" in a title is not a command)', () => {
+    assert.ok(area && area.tagName === 'TEXTAREA', 'add-task editor did not reopen');
+    area.value = 'Send a refund note abo';
+    env.document.fire('keydown', { key: '2', target: area });
+    assert.equal(tabs()[0].attrs['aria-selected'], 'true', 'view changed while typing in a textarea');
+  });
+
+  // `c` acts on whatever the drawer has open — no confirm dialog, no modal.
+  const card = taskCard(env);
+  assert.ok(card, 'no task card rendered');
+  card.click();
+  await settle();
+  assert.ok(env.root.text().includes('Checklist'), 'the drawer must be open before c can act on it');
+  env.document.fire('keydown', { key: 'c' });
+  await settle();
+  check('c completes the task open in the drawer', () => {
+    const posts = env.calls.filter(c => c.url.endsWith('/api/tasks/11/complete') && c.init?.method === 'POST');
+    assert.equal(posts.length, 1, 'expected exactly one complete call, got ' + posts.length);
+  });
+  check('t opens the template pack modal, and it is dismissed by Esc', () => {
+    env.document.fire('keydown', { key: 't' });
+    assert.equal(overlays().length, 1, 'template modal did not open from the keyboard');
+    env.document.fire('keydown', { key: 'Escape' });
+    assert.equal(overlays().length, 0);
+  });
 }
 
 // 7 — staff portal: cookie path, and an expired session bounces to sign-in.

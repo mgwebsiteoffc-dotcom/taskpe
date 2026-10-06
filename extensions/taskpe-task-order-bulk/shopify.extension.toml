@@ -1,0 +1,18 @@
+# TaskPe bulk action — appears when orders are ticked on the Orders list.
+# Bump api_version together with SHOPIFY_API_VERSION in your Laravel .env.
+api_version = "2026-07"
+
+[[extensions]]
+name = "t:name"
+handle = "taskpe-task-order-bulk"
+type = "ui_extension"
+# uid is injected automatically by Shopify CLI on first deploy — do not add one.
+description = "t:description"
+
+[[extensions.targeting]]
+module = "./src/ActionExtension.jsx"
+target = "admin.order-index.selection-action.render"
+
+# Needed so the extension may call the TaskPe Laravel backend (session-token JWT).
+[extensions.capabilities]
+network_access = true

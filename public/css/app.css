@@ -424,3 +424,24 @@ input, select, textarea { font: inherit; }
 .gate-row .v { word-break: break-word; }
 .login-err { color: var(--critical,#d72c0d); font-size: 13px; min-height: 18px; margin: 4px 0 10px; }
 .gate code, .banner code { background: #eee; border-radius: 5px; padding: 1px 6px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* ---------------- keyboard shortcuts help ----------------
+   The modal is pure reference, so <kbd> borrows the existing .kbd chip look
+   (with a heavier bottom edge, like a real key) instead of inventing a second
+   key style. Rows stay one line per shortcut — scannable at a glance. */
+.shortcuts { display: flex; flex-direction: column; gap: 8px; }
+.shortcuts .sc-row { display: flex; align-items: baseline; gap: 12px; font-size: 13.5px; }
+.shortcuts .sc-row kbd {
+  flex: 0 0 64px; text-align: center;
+  background: var(--bg); border: 1px solid var(--border-strong); border-bottom-width: 2px;
+  border-radius: 6px; padding: 2px 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+}
+
+/* "In your Shopify admin" settings panel — one icon per capability row, so the
+   list reads like the admin's own help cards instead of a wall of prose. */
+.how-row { display: flex; gap: 11px; align-items: flex-start; padding: 9px 0; }
+.how-row + .how-row { border-top: 1px solid var(--border); }
+.how-row > .icon { margin-top: 2px; color: var(--text-subdued); }
+.how-row p { line-height: 1.5; }
+.how-row code { background: var(--bg); border-radius: 5px; padding: 1px 5px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }

@@ -115,13 +115,23 @@ tail -f storage/logs/laravel.log
 curl -s -o /dev/null -w '%{http_code}\n' https://taskpe.example.in/up            # 200 = framework alive
 curl -s https://taskpe.example.in/api/board                                        # JSON 401 = routing + middleware alive
 curl -s https://taskpe.example.in/privacy | head -5                                # HTML renders, views writable
+curl -s https://taskpe.example.in/api/task-templates?type=order  # 401 JSON = extension endpoints deployed; 404 = old routes/api.php
 php artisan taskpe:demo-store demo.myshopify.com --force   # fill a dev store's board
-php artisan test                     # PHP suite (auth boundary, tenancy, billing, …)
+php artisan test                     # PHP suite (auth boundary, tenancy, bulk creation, billing, …)
 node tests/js/boot.smoke.mjs         # SPA boot screens for each failure mode
 ```
 
-## 7. Admin action extensions
+## 7. Admin extensions (actions, bulk action, order-page block)
 
 `extensions/` is built and hosted by Shopify, never on this server — see
 `extensions/README.md` (`shopify app deploy`). They call the same `/api/*`
 endpoints, so § 3 applies to them too.
+
+When you ship both halves, **order matters**: the bulk action
+(`POST /api/tasks/bulk`) and the order-page card (`GET /api/resource-tasks`,
+`GET /api/task-templates`) are backend routes. Upload `routes/api.php`,
+`app/Services/TaskTemplates.php`, `app/Http/Controllers/Api/TaskController.php`,
+`app/Services/CodAutoTask.php` and `public/js/app.js` + `public/css/app.css`,
+run `php artisan config:clear`, and only then `shopify app deploy`. A 404 inside
+the bulk modal means the extensions were deployed against an older backend — not
+that Shopify rejected the extension.

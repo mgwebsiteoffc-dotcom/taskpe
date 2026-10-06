@@ -26,6 +26,8 @@ Route::middleware('shopify.token')->group(function () {
     Route::delete('/columns/{id}', [ColumnController::class, 'destroy']);
 
     Route::post('/tasks', [TaskController::class, 'store']);
+    // Bulk: one template × many selected Shopify objects (Admin list selection).
+    Route::post('/tasks/bulk', [TaskController::class, 'bulk']);
     Route::patch('/tasks/{id}', [TaskController::class, 'update']);
     Route::post('/tasks/{id}/move', [TaskController::class, 'move']);
     Route::post('/tasks/{id}/complete', [TaskController::class, 'complete']);
@@ -50,6 +52,11 @@ Route::middleware('shopify.token')->group(function () {
     Route::post('/onboarding/complete', [SettingController::class, 'completeOnboarding']);
 
     Route::get('/resources/search', [ResourceSearchController::class, 'search']);
+
+    // For the Admin extensions: which templates fit this page, and what is
+    // already on the board for the order/product/customer being viewed.
+    Route::get('/task-templates', [TaskController::class, 'templates']);
+    Route::get('/resource-tasks', [TaskController::class, 'resourceTasks']);
 
     Route::get('/digest/preview', [DigestController::class, 'preview']);
     Route::post('/digest/send', [DigestController::class, 'send']);

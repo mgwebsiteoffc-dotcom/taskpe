@@ -8,6 +8,8 @@ use App\Models\BoardColumn;
 use App\Models\Member;
 use App\Models\Task;
 use App\Models\TaskActivity;
+use App\Services\ShopifyClient;
+use App\Services\TaskTemplates;
 use App\Support\ShopContext;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -19,8 +21,8 @@ class TaskController extends Controller
     {
         $shop = $ctx->shop();
 
-        $limit = (int) ($shop->planConfig()['task_limit'] ?? 0);
-        if ($limit > 0 && $shop->tasks()->whereNull('completed_at')->count() >= $limit) {
+        $limit = TaskTemplates::taskLimit($shop);
+        if ($limit > 0 && TaskTemplates::openTaskCount($shop) >= $limit) {
             return response()->json(['error' => 'plan_limit', 'message' => "Free plan allows {$limit} open tasks. Upgrade to add more."], 402);
         }
 
@@ -164,7 +166,283 @@ class TaskController extends Controller
         );
     }
 
+    /**
+     * POST /api/tasks/bulk — one template × many Shopify objects.
+     *
+     * This is the engine behind "Create TaskPe tasks" on the Orders list
+     * (admin.order-index.selection-action.render): tick 30 COD orders, pick
+     * "COD confirmation", and every one of them gets a pre-filled task with the
+     * same checklist, assignee and due rule — instead of 30 × (open order →
+     * More actions → Create task → type → save).
+     *
+     * Safe to re-run: an order that already has an OPEN task with the same
+     * rendered title is skipped, never doubled. The plan's open-task ceiling
+     * still applies, so the batch stops at the limit instead of blowing past it.
+     */
+    public function bulk(Request $request, ShopContext $ctx)
+    {
+        $shop = $ctx->shop();
+
+        $data = $request->validate([
+            'template'          => ['required', 'string', Rule::in(TaskTemplates::keys())],
+            'resources'         => ['required', 'array', 'min:1', 'max:100'],
+            'resources.*.type'  => ['required', Rule::in(Task::RESOURCE_TYPES)],
+            'resources.*.id'    => ['required', 'integer', 'min:1'],
+            'resources.*.title' => ['nullable', 'string', 'max:190'],
+            'resources.*.gid'   => ['nullable', 'string', 'max:120'],
+            'assignee_id'       => ['nullable', 'integer', Rule::exists('members', 'id')->where('shop_id', $shop->id)->where('active', true)],
+            'column_id'         => ['nullable', 'integer', Rule::exists('columns', 'id')->where('shop_id', $shop->id)],
+            'priority'          => ['nullable', Rule::in(Task::PRIORITIES)],
+            'due_in_hours'      => ['nullable', 'integer', 'min:1', 'max:2160'],
+            'notify'            => ['boolean'],
+        ]);
+
+        $tpl = TaskTemplates::find($data['template']);
+        if (!$tpl) {
+            return response()->json(['error' => 'unknown_template', 'message' => 'Unknown task template.'], 422);
+        }
+
+        $limit = TaskTemplates::taskLimit($shop);
+        if ($limit > 0 && TaskTemplates::openTaskCount($shop) >= $limit) {
+            return response()->json(['error' => 'plan_limit', 'message' => "Free plan allows {$limit} open tasks. Upgrade to add more."], 402);
+        }
+
+        $tplType = $tpl['resource_type'] ?? null;
+        $resources = collect($data['resources'])
+            ->map(fn ($r) => [
+                'type'  => $r['type'],
+                'id'    => (int) $r['id'],
+                'title' => $r['title'] ?? null,
+                'gid'   => $r['gid'] ?? null,
+            ])
+            // Dedupe within the batch itself (same order ticked twice by accident).
+            ->unique(fn ($r) => $r['type'].':'.$r['id'])
+            ->values();
+
+        // Bulk selections arrive as GIDs only — no order number. Fill the titles
+        // in ourselves so tasks read "Confirm COD order #1042", not "order 5123…".
+        $resources = $this->hydrateOrderTitles($shop, $resources);
+
+        $overrides = array_filter([
+            'priority'     => $data['priority'] ?? null,
+            'due_in_hours' => $data['due_in_hours'] ?? null,
+            'assignee_id'  => $data['assignee_id'] ?? null,
+            'column_id'    => $data['column_id'] ?? null,
+        ], fn ($v) => $v !== null);
+
+        $actor = $ctx->actorName();
+        $created = [];
+        $skipped = [];
+        $limited = false;
+
+        // WhatsApp pings are capped per batch on purpose: one message per task
+        // would mean 30 pings for one click (and a Meta template-throttle visit).
+        $pingsLeft = !empty($data['notify']) && !empty($overrides['assignee_id']) ? 3 : 0;
+
+        foreach ($resources as $res) {
+            if ($tplType && $res['type'] !== $tplType) {
+                $skipped[] = ['id' => $res['id'], 'reason' => 'wrong_resource', 'message' => "This template files against a {$tplType}."];
+
+                continue;
+            }
+
+            if ($limit > 0 && TaskTemplates::openTaskCount($shop) >= $limit) {
+                $limited = true;
+                break;
+            }
+
+            $title = TaskTemplates::renderTitle($tpl, $res['title'], $res['id'], $res['type']);
+
+            if (TaskTemplates::openDuplicate($shop, $tpl, $res['type'], $res['id'], $res['title'], $title)) {
+                $skipped[] = ['id' => $res['id'], 'reason' => 'already_open', 'message' => 'An open task for this already exists.'];
+
+                continue;
+            }
+
+            $task = TaskTemplates::create($shop, $tpl, $res, [...$overrides, 'title' => $title], $actor);
+            if (!$task) {
+                $skipped[] = ['id' => $res['id'], 'reason' => 'no_column', 'message' => 'Add a board column first.'];
+
+                continue;
+            }
+
+            TaskActivity::record($task, 'created', ['template' => $data['template'], 'bulk' => true], $actor);
+
+            if ($pingsLeft > 0) {
+                $this->maybeNotifyAssignee($task, $ctx);
+                $pingsLeft--;
+            }
+
+            $created[] = BoardController::taskJson($task->load('assignee'));
+        }
+
+        return response()->json([
+            'created'  => count($created),
+            'skipped'  => $skipped,
+            'limited'  => $limited,
+            'template' => $data['template'],
+            'tasks'    => $created,
+            'plan'     => ['open' => TaskTemplates::openTaskCount($shop), 'max' => $limit],
+            'message'  => $limited
+                ? 'Stopped at your plan\'s open-task limit — upgrade to queue more.'
+                : (count($created) ? count($created).' task(s) created.' : 'Nothing to create — tasks already existed.'),
+        ], 201);
+    }
+
+    /**
+     * GET /api/task-templates?type=order — the picker data for the extensions.
+     * The board already ships templates inside /api/board; extensions want the
+     * short version filtered to the page they are standing on.
+     */
+    public function templates(Request $request, ShopContext $ctx)
+    {
+        $data = $request->validate([
+            'type' => ['nullable', Rule::in(Task::RESOURCE_TYPES)],
+        ]);
+
+        $templates = TaskTemplates::forResource($data['type'] ?? null);
+
+        return response()->json([
+            'templates' => collect($templates)->map(fn ($tpl, $key) => [
+                'key'          => $key,
+                'icon'         => $tpl['icon'] ?? 'box',
+                'name'         => $tpl['name'],
+                'tagline'      => $tpl['tagline'] ?? null,
+                'priority'     => $tpl['priority'] ?? 'medium',
+                'due_in_hours' => $tpl['due_in_hours'] ?? null,
+                'resource_type' => $tpl['resource_type'] ?? null,
+                'title'        => $tpl['title'] ?? null,
+                'steps'        => count($tpl['checklist'] ?? []),
+                'checklist'    => array_values($tpl['checklist'] ?? []),
+            ])->values(),
+            'columns'   => TaskTemplates::openColumns($ctx->shop()),
+            'members'   => $ctx->shop()->members()->where('active', true)->orderBy('name')
+                ->get()->map(fn ($m) => ['id' => $m->id, 'name' => $m->name]),
+            'plan'      => [
+                'open' => TaskTemplates::openTaskCount($ctx->shop()),
+                'max'  => TaskTemplates::taskLimit($ctx->shop()),
+                'full' => TaskTemplates::limitReached($ctx->shop()),
+            ],
+        ]);
+    }
+
+    /**
+     * GET /api/resource-tasks?type=order&id=1042 — everything the order-page
+     * block card needs in ONE request: this order's open tasks (checklist
+     * already parsed, so ticking a step is one PATCH away) and its recently
+     * completed ones, the templates that fit this object type, a deep link back
+     * to the board, and whether the plan still has room to file more.
+     */
+    public function resourceTasks(Request $request, ShopContext $ctx)
+    {
+        $shop = $ctx->shop();
+
+        $data = $request->validate([
+            'type' => ['required', Rule::in(Task::RESOURCE_TYPES)],
+            'id'   => ['required', 'integer', 'min:1'],
+            'done' => ['boolean'],   // include recently completed ones too
+        ]);
+
+        // Two small queries instead of one filtered list: taking "newest 30 and
+        // split in PHP" silently loses older OPEN tasks once an order has enough
+        // completed ones, which is exactly when the card matters most.
+        $shape = function (Task $t) use ($shop) {
+            $json = BoardController::taskJson($t->load('assignee'));
+            $ck = TaskTemplates::parseChecklist($t->description);
+
+            return $json + [
+                'checklist'  => $ck['items'] ?? [],
+                'done_count' => $ck ? collect($ck['items'])->where('done', true)->count() : 0,
+                'step_count' => $ck ? count($ck['items']) : 0,
+                'open_url'   => $shop->appUrl('task='.$t->id),
+            ];
+        };
+
+        $forResource = fn () => $shop->tasks()
+            ->where('resource_type', $data['type'])
+            ->where('resource_id', (int) $data['id']);
+
+        $open = $forResource()->whereNull('completed_at')
+            ->orderByRaw('due_at is null, due_at asc')
+            ->limit(10)->get()->map($shape)->values();
+
+        $done = $forResource()->whereNotNull('completed_at')
+            ->orderByDesc('completed_at')
+            ->limit(5)->get();
+
+        $doneCount = $forResource()->whereNotNull('completed_at')->count();
+
+        return response()->json([
+            'resource' => [
+                'type' => $data['type'],
+                'id'   => (int) $data['id'],
+                'gid'  => TaskTemplates::gidFor($data['type'], (int) $data['id']),
+                'url'  => TaskTemplates::adminUrl($shop, $data['type'], (int) $data['id']),
+            ],
+            'open'       => $open,
+            'done'       => !empty($data['done']) ? $done->map($shape)->values() : [],
+            'done_count' => $doneCount,
+            'templates'  => collect(TaskTemplates::forResource($data['type']))
+                ->map(fn ($tpl, $key) => [
+                    'key'       => $key,
+                    'icon'      => $tpl['icon'] ?? 'box',
+                    'name'      => $tpl['name'],
+                    'priority'  => $tpl['priority'] ?? 'medium',
+                    'steps'     => count($tpl['checklist'] ?? []),
+                ])->values(),
+            'board_url'  => $shop->appUrl(),
+            'plan'       => [
+                'open' => TaskTemplates::openTaskCount($shop),
+                'max'  => TaskTemplates::taskLimit($shop),
+                'full' => TaskTemplates::limitReached($shop),
+            ],
+        ]);
+    }
+
     // ---------------- internals ----------------
+
+    /**
+     * Admin bulk selection hands us GIDs and nothing else, so fetch the order
+     * names in ONE query (best-effort: if Shopify is slow we just create tasks
+     * with "order <id>" titles instead of failing the whole batch).
+     */
+    protected function hydrateOrderTitles(Shop $shop, $resources)
+    {
+        $ids = $resources->filter(fn ($r) => $r['type'] === 'order' && empty($r['title']))
+            ->pluck('id')->unique()->take(50)->values();
+
+        if ($ids->isEmpty()) {
+            return $resources;
+        }
+
+        try {
+            $query = 'id:'.implode(' OR id:', $ids->all());
+            $gql = <<<'GQL'
+            query ($query: String!) {
+              orders(first: 50, query: $query) { nodes { id name } }
+            }
+            GQL;
+
+            $data = (new ShopifyClient($shop))->graphql($gql, ['query' => $query]);
+
+            $names = collect($data['orders']['nodes'] ?? [])
+                ->mapWithKeys(fn ($o) => [(int) basename($o['id']) => $o['name']]);
+
+            if ($names->isEmpty()) {
+                return $resources;
+            }
+
+            return $resources->map(function ($r) use ($names) {
+                if ($r['type'] === 'order' && empty($r['title']) && $names->has($r['id'])) {
+                    $r['title'] = $names->get($r['id']);
+                }
+
+                return $r;
+            })->values();
+        } catch (\Throwable $e) {
+            return $resources;
+        }
+    }
 
     protected function rules($shop, bool $partial = false): array
     {

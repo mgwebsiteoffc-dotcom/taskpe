@@ -48,8 +48,7 @@ class CodAutoTask
         }
 
         // Respect the plan's open-task ceiling — never push Free past 50.
-        $limit = (int) ($shop->planConfig()['task_limit'] ?? 0);
-        if ($limit > 0 && $shop->tasks()->whereNull('completed_at')->count() >= $limit) {
+        if (TaskTemplates::limitReached($shop)) {
             Log::info('COD auto-task skipped: plan task limit reached', ['shop' => $shop->domain]);
 
             return null;
@@ -60,30 +59,21 @@ class CodAutoTask
             return null;
         }
 
-        $column = $shop->columns()->where('is_done_stage', false)->orderBy('position')->first()
-            ?? $shop->columns()->orderBy('position')->first();
-        if (!$column) {
-            return null;
-        }
+        // Same materialisation the Admin bulk action and the board picker use,
+        // so a webhook-made task and a hand-made one are never formatted apart.
+        return TaskTemplates::create($shop, $tpl, [
+            'type'  => 'order',
+            'id'    => $orderId,
+            'gid'   => $order['admin_graphql_api_id'] ?? null,
+            'title' => $orderName,
+        ], [], self::ACTOR);
+    }
 
-        return $shop->tasks()->create([
-            'column_id'       => $column->id,
-            'title'           => str_replace(
-                ['{order}', '{date}'],
-                [$orderName, now()->format('d M Y')],
-                $tpl['title']
-            ),
-            'description'     => static::checklist($tpl),
-            'priority'        => $tpl['priority'] ?? 'high',
-            'due_at'          => now()->addHours((int) ($tpl['due_in_hours'] ?? 24)),
-            'resource_type'   => 'order',
-            'resource_id'     => $orderId,
-            'resource_gid'    => $order['admin_graphql_api_id'] ?? null,
-            'resource_title'  => $orderName,
-            'resource_url'    => $shop->adminBaseUrl().'/orders/'.$orderId,
-            'position'        => ((int) $shop->tasks()->where('column_id', $column->id)->max('position')) + 1,
-            'created_by_name' => self::ACTOR,
-        ]);
+    /** Kept for callers/tests (NdrAutoTask, RecurringChores) that build a
+     *  checklist outside the auto-create path — one formatting rule, one file. */
+    public static function checklist(array $tpl): string
+    {
+        return TaskTemplates::checklist($tpl);
     }
 
     /** COD detection across Indian gateways/panels: "Cash on Delivery", "cod", "cash_on_delivery", "COD (…)". */
@@ -104,10 +94,4 @@ class CodAutoTask
         );
     }
 
-    public static function checklist(array $tpl): string
-    {
-        return collect($tpl['checklist'] ?? [])
-            ->map(fn ($item) => '- [ ] '.$item)
-            ->implode("\n");
-    }
 }

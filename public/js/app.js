@@ -28,6 +28,7 @@
     settings: null,       // /api/settings payload (lazy)
     me: Number(localStorage.getItem('taskpe_me') || 0),
     drawerTaskId: null,
+    quickAdd: null,      // column id whose "add task" editor should auto-open
     loading: false,
   };
 
@@ -344,7 +345,8 @@
             h('span', { class: 'avatar' }, cfg.staff.initials || ''),
             cfg.staff.name),
           h('button', { class: 'btn plain sm', onclick: staffLogout },
-            ...withIcon('logout', 'Log out', { size: 15 }))),
+            ...withIcon('logout', 'Log out', { size: 15 })),
+          iconButton('info-circle', { title: 'Keyboard shortcuts', onClick: openShortcutsHelp })),
         renderBoard(),
         state.drawerTaskId ? renderTaskDrawer(state.drawerTaskId) : null,
       );
@@ -362,7 +364,8 @@
             'aria-selected': state.view === sec.view ? 'true' : 'false',
             onclick: () => { state.view = sec.view; render(); },
           }, icon(sec.icon, { size: 18, class: 'tab-icon' }), sec.label))),
-        renderMeChips()),
+        renderMeChips(),
+        iconButton('info-circle', { title: 'Keyboard shortcuts (?)', onClick: openShortcutsHelp })),
       renderBanners(),
       state.view === 'board' ? renderBoard() :
       state.view === 'team' ? renderTeam() :
@@ -580,6 +583,14 @@
     function closeEditor() { box.replaceChildren(toggle); }
 
     toggle.addEventListener('click', openEditor);
+    // Opened by a key rather than a click (see bindShortcuts): consume the flag
+    // so a later re-render does not keep popping the editor back open.
+    if (state.quickAdd === col.id) {
+      state.quickAdd = null;
+      box.append(toggle);
+      setTimeout(openEditor, 0);
+      return box;
+    }
     box.append(toggle);
     return box;
   }
@@ -919,7 +930,14 @@
   /* ------------------------------------------- COD / NDR template pack modal */
 
   function fillTemplateTitle(tpl, orderTitle) {
-    const today = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+    // Deliberately identical to TaskTemplates::renderTitle() (PHP format "d M Y"),
+    // because POST /api/tasks/bulk treats "same title + same order + still open"
+    // as its duplicate test. If the two date formats drift, a task created from
+    // the board and one created from the Orders list stop recognising each other
+    // and the merchant files the same follow-up twice.
+    const d = new Date();
+    const today = String(d.getDate()).padStart(2, '0') + ' '
+      + d.toLocaleDateString('en-GB', { month: 'short' }) + ' ' + d.getFullYear();
     return (tpl.title || tpl.name).replace('{order}', orderTitle || '').replace('{date}', today).replace(/\s+/g, ' ').trim();
   }
 
@@ -1432,6 +1450,29 @@
             }, 'Save'))));
     })();
 
+    // What TaskPe puts *inside* the Shopify admin, and how a merchant turns it
+    // on. Both the bulk action and the block need a step from them (Shopify does
+    // not let an app place a block), so the instructions live next to the
+    // automations they belong to instead of only in extensions/README.md.
+    const adminPanel = h('div', { class: 'panel' },
+      h('div', { class: 'p-head' },
+        h('h2', null, 'In your Shopify admin'),
+        h('span', { class: 'sub' }, 'File follow-ups without leaving the order')),
+      h('div', { class: 'p-body small' },
+        h('div', { class: 'how-row' }, icon('plus', { size: 16 }),
+          h('div', null, h('b', null, 'One order'),
+            h('p', { class: 'mt' }, 'Open it → ', h('b', null, 'More actions'), ' → ', h('b', null, 'Create task'), '. The order is pre-linked, so the task never loses its context.'))),
+        h('div', { class: 'how-row' }, icon('stack', { size: 16 }),
+          h('div', null, h('b', null, 'Many orders at once'),
+            h('p', { class: 'mt' }, 'Tick them on the Orders list → ', h('b', null, 'Create TaskPe tasks'), ' → choose the template and who does them. Orders that already have that task open are skipped, so pressing it twice is safe.'))),
+        h('div', { class: 'how-row' }, icon('check-circle', { size: 16 }),
+          h('div', null, h('b', null, 'The order-page card'),
+            h('p', { class: 'mt' }, 'On an order page, choose ', h('b', null, 'Add custom app block'), ' → TaskPe. Then you can tick checklist steps and file a COD/NDR task while the order is open. Only you can pin a block — Shopify does not let apps place it.'))),
+        h('div', { class: 'how-row' }, icon('edit', { size: 16 }),
+          h('div', null, h('b', null, 'Entries missing from the admin menus?'),
+            h('p', { class: 'mt' }, 'They are Shopify extensions: set ', h('code', null, 'APP_URL'), ' in ', h('code', null, 'extensions/shared/api.js'), ', then run ', h('code', null, 'shopify app deploy'), ' from your own computer (', h('code', null, 'extensions/README.md'), ').'))),
+        h('p', { class: 'mt small muted' }, 'On the board: n adds a task · t opens templates · c completes the open task · 1–4 switch sections · ? lists them.')));
+
     // DISABLED state: show only the master card + explanation. Zero WhatsApp
     // UI otherwise — feature stays invisible until the merchant turns it on.
     if (!waOn) {
@@ -1445,6 +1486,7 @@
                 h('p', { class: 'mt' }, 'Turn the switch on when you want: instant task pings to staff, due reminders, and the owner\'s morning digest.')))),
           h('div', null,
             codPanel,
+            adminPanel,
             h('div', { class: 'panel' },
               h('div', { class: 'p-head' }, h('h2', null, 'Setup guide')),
               h('div', { class: 'p-body small muted' },
@@ -1591,6 +1633,7 @@
         // ---- right rail: setup guide
         h('div', null,
           codPanel,
+          adminPanel,
           h('div', { class: 'panel' },
             h('div', { class: 'p-head' }, h('h2', null, 'Setup guide')),
             h('div', { class: 'p-body small muted' },
@@ -1744,6 +1787,100 @@
 
   /* ----------------------------------------------------------------- modal */
 
+  /* ------------------------------------------------------ keyboard shortcuts */
+
+  // The board and the Orders list are the same two pages all day, so every
+  // shortcut here is a click somebody used to make. Single keys, and inert
+  // while a field has focus — same etiquette the admin itself follows.
+  const SHORTCUTS = [
+    ['n', 'Add a task to the first open column'],
+    ['t', 'Open the COD / NDR template pack'],
+    ['c', 'Complete (or reopen) the task open in the drawer'],
+    ['1 – 4', 'Board · Team · Settings · Plan'],
+    ['?', 'This list'],
+    ['Esc', 'Close the open dialog'],
+  ];
+
+  function isTyping(el) {
+    if (!el || !el.tagName) return false;
+    const tag = String(el.tagName).toUpperCase();
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable === true;
+  }
+
+  // Dialogs append themselves to <body>, while the drawer is rendered inside
+  // the board tree — so "a dialog is open" means "an overlay on body", and the
+  // drawer never blocks its own `c` key.
+  function openOverlays() {
+    return (document.body.children || []).filter(el => String(el.className || '').split(' ').includes('overlay'));
+  }
+
+  function openShortcutsHelp() {
+    openModalAuto('Keyboard shortcuts', h('div', { class: 'shortcuts' },
+      h('p', { class: 'muted small', style: 'margin-top:0' }, 'They work on every view — just not while you are typing in a field.'),
+      SHORTCUTS.map(([key, label]) => h('div', { class: 'sc-row' }, h('kbd', null, key), h('span', null, label)))));
+  }
+
+  function firstOpenColumn() {
+    const cols = state.board?.columns || [];
+    return cols.find(c => !c.is_done_stage) || cols[0] || null;
+  }
+
+  function startQuickAdd() {
+    const col = firstOpenColumn();
+    if (!col) return;
+    state.quickAdd = col.id;
+    state.drawerTaskId = null;
+    render();
+  }
+
+  async function completeOpenTask() {
+    const id = state.drawerTaskId;
+    if (!id) return;
+    const wasDone = !!findTask(id)?.completed_at;
+    try {
+      await api('/tasks/' + id + '/complete', { method: 'POST' });
+      await refreshBoard();
+      state.drawerTaskId = id;          // stay open — ticking off a list is the point
+      render();
+      toast(wasDone ? 'Task reopened' : 'Task completed');
+    } catch (e) { toast(e.message, true); }
+  }
+
+  function bindShortcuts() {
+    document.addEventListener('keydown', ev => {
+      if (ev.defaultPrevented || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+
+      if (ev.key === 'Escape') {
+        const overlays = openOverlays();
+        if (overlays.length) { ev.preventDefault(); overlays[overlays.length - 1].remove(); return; }
+        if (state.drawerTaskId) { ev.preventDefault(); closeDrawer(); }
+        return;
+      }
+
+      if (isTyping(ev.target) || isTyping(document.activeElement)) return;
+
+      // `?` is always live (it is how anyone finds this list); every other
+      // single key is dropped while a dialog is open, because the fields in
+      // there need the keystrokes — a stray `n` behind a template picker is
+      // how junk tasks get born.
+      if (ev.key === '?') { ev.preventDefault(); openShortcutsHelp(); return; }
+      if (openOverlays().length) return;
+
+      if (ev.key === 'c' || ev.key === 'C') {
+        if (state.drawerTaskId) { ev.preventDefault(); void completeOpenTask(); }
+        return;
+      }
+      if (ev.key === 'n' || ev.key === 'N') { ev.preventDefault(); startQuickAdd(); return; }
+      if (ev.key === 't' || ev.key === 'T') { ev.preventDefault(); openTemplatesModal(); return; }
+
+      const idx = ['1', '2', '3', '4'].indexOf(ev.key);
+      if (idx > -1 && SECTIONS[idx]) {
+        ev.preventDefault();
+        if (SECTIONS[idx].view !== state.view) { state.view = SECTIONS[idx].view; render(); }
+      }
+    });
+  }
+
   function openModal(title, bodyEl, onSave) {
     const overlay = h('div', { class: 'overlay' });
     const close = () => overlay.remove();
@@ -1791,6 +1928,7 @@
     try {
       await loadBoard();
       render();
+      bindShortcuts();
       if (!IS_STAFF && !state.board?.shop?.onboarded) setTimeout(openTour, 300);   // first-run intro (admin only)
     } catch (e) {
       // Every branch renders something *specific*. Silently replacing the
