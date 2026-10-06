@@ -83,6 +83,7 @@ store** screen — a login step, not a crash.
 | …and "stripping the Authorization header" | shared-hosting SAPI ate `Authorization`; see **DEPLOYMENT.md § 3** |
 | "The board could not be loaded" + an SQL / HTTP message | real server-side failure — the message is the one from `/api/board`, plus `storage/logs/laravel.log` |
 | "TaskPe is not configured on this server yet" | `APP_KEY` / `SHOPIFY_API_KEY` / `SHOPIFY_API_SECRET` / `APP_URL` / unmigrated DB — listed on screen |
+| "Shopify has not approved this app for the store's order data yet" (in order search) | the protected customer data review is still pending — `read_all_orders` is granted to the *app*, not the store; see **DEPLOYMENT.md § 10** |
 
 Full deploy + failure-mode guide: **DEPLOYMENT.md**.
 

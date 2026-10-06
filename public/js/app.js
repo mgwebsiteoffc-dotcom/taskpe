@@ -37,14 +37,26 @@
     return SECTION_BY_VIEW[seg] ? seg : 'board';
   }
 
+  // A blocked-cookie browser (private mode, a partitioned iframe) can make even
+  // *reading* localStorage throw, and a lost preference is not worth a blank
+  // board — so every access in the app goes through these two.
+  function readPref(key) {
+    try { return localStorage.getItem(key); } catch { return null; }
+  }
+
+  function writePref(key, value) {
+    try { localStorage.setItem(key, String(value)); } catch { /* the preference is optional */ }
+  }
+
   const state = {
     board: null,          // /api/board payload
     view: viewFromLocation(),   // board | team | settings | plan
     settings: null,       // /api/settings payload (lazy)
-    me: Number(localStorage.getItem('taskpe_me') || 0),
+    me: Number(readPref('taskpe_me') || 0),
     drawerTaskId: null,
     quickAdd: null,      // column id whose "add task" editor should auto-open
     filter: null,        // stat cell the board is currently narrowed to (see STAT_FILTERS)
+    dashHidden: readPref('taskpe_dash') === 'off',   // overview band
     loading: false,
   };
 
@@ -527,7 +539,7 @@
           class: 'me-chip' + (state.me === m.id ? ' on' : ''),
           onclick: () => {
             state.me = state.me === m.id ? 0 : m.id;
-            localStorage.setItem('taskpe_me', state.me || '');
+            writePref('taskpe_me', state.me || '');
             render();
           },
           title: m.role + (m.whatsapp_verified ? ' · WhatsApp verified' : ''),
@@ -539,13 +551,38 @@
   // The five numbers a Shopify ops team actually scans for. Each cell is also a
   // filter, so the board needs no separate controls for the same questions —
   // that duplication (plus a pill on every card) is what read as clutter.
+  const isOpenTask = t => !t.completed_at;
+
   const STAT_FILTERS = [
-    { key: 'open', label: 'Open', test: t => !t.completed_at },
-    { key: 'overdue', label: 'Overdue', test: t => !t.completed_at && !!t.overdue, tone: 'crit' },
-    { key: 'due', label: 'Due today', test: t => !t.completed_at && !t.overdue && isToday(t.due_at), tone: 'warn' },
-    { key: 'unassigned', label: 'Unclaimed', test: t => !t.completed_at && !t.assignee },
-    { key: 'closed', label: 'Closed today', test: t => !!t.completed_at && isToday(t.completed_at), tone: 'ok' },
+    { key: 'open', label: 'Open', test: isOpenTask,
+      sub: st => st.cap ? st.open + ' of ' + st.cap + ' allowed' : st.total + ' on the board' },
+    { key: 'overdue', label: 'Overdue', tone: 'crit', test: t => isOpenTask(t) && !!t.overdue,
+      sub: st => st.oldestOverdue ? 'oldest waiting ' + st.oldestOverdue + 'd' : 'nothing past its date' },
+    { key: 'due', label: 'Due today', tone: 'warn', test: t => isOpenTask(t) && !t.overdue && isToday(t.due_at),
+      sub: st => st.dueUnclaimed ? st.dueUnclaimed + ' still unclaimed' : 'all claimed' },
+    { key: 'unclaimed', label: 'Unclaimed', test: t => isOpenTask(t) && !t.assignee,
+      sub: st => st.unclaimed ? 'nobody has picked these up' : 'everything is owned' },
+    { key: 'closed', label: 'Closed today', tone: 'ok', test: t => !!t.completed_at && isToday(t.completed_at),
+      sub: st => st.week + ' this week' + (st.weekDelta ? ' · ' + (st.weekDelta > 0 ? '+' : '') + st.weekDelta + ' vs last' : '') },
   ];
+
+  const daysAgoKey = n => {
+    const d = new Date();
+    d.setDate(d.getDate() - n);
+    return dateKey(d);
+  };
+
+  const dateKey = value => {
+    const d = value instanceof Date ? value : new Date(value);
+    if (isNaN(d.getTime())) return '';
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  };
+
+  const ageDays = value => {
+    const then = new Date(value);
+    if (isNaN(then.getTime())) return 0;
+    return Math.max(0, Math.floor((Date.now() - then.getTime()) / 86400000));
+  };
 
   function isToday(value) {
     if (!value) return false;
@@ -559,7 +596,39 @@
 
   function boardStats() {
     const all = allTasks();
-    const out = { total: all.length, open: all.filter(t => !t.completed_at).length };
+    const open = all.filter(isOpenTask);
+    const cap = state.board?.shop?.plan_cfg?.task_limit || 0;
+    const closedIn = n => all.filter(t => t.completed_at && ageDays(t.completed_at) < n).length;
+
+    const out = {
+      total: all.length,
+      open: open.length,
+      cap,
+      unclaimed: open.filter(t => !t.assignee).length,
+      dueUnclaimed: open.filter(t => !t.overdue && isToday(t.due_at) && !t.assignee).length,
+      oldestOverdue: open.filter(t => t.overdue).reduce((n, t) => Math.max(n, ageDays(t.created_at)), 0),
+      oldestOpen: open.reduce((n, t) => Math.max(n, ageDays(t.created_at)), 0),
+      week: closedIn(7),
+      weekDelta: closedIn(7) - (closedIn(14) - closedIn(7)),
+      // Closed on or before its due date — the number a team is actually judged on,
+      // and only shown once there are enough samples to mean something (one late task
+      // out of one is not a 0% track record, and a dashboard that lies once is ignored).
+      onTime: (() => {
+        const done = all.filter(t => t.completed_at && t.due_at);
+        if (done.length < 3) return null;
+        const late = done.filter(t => new Date(t.completed_at) > new Date(t.due_at.slice(0, 10) + 'T23:59:59')).length;
+        return Math.round(((done.length - late) / done.length) * 100);
+      })(),
+      series: Array.from({ length: 7 }, (_, i) => {
+        const key = daysAgoKey(6 - i);
+        return {
+          key,
+          today: i === 6,
+          label: (['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(key + 'T12:00:00').getDay()] || '').slice(0, 1),
+          n: all.filter(t => t.completed_at && dateKey(t.completed_at) === key).length,
+        };
+      }),
+    };
     for (const f of STAT_FILTERS) out[f.key] = all.filter(f.test).length;
     return out;
   }
@@ -578,45 +647,35 @@
 
     return h('header', { class: 'page-head' },
       h('div', { class: 'page-id' },
-        h('h1', null, IS_STAFF ? (state.board.shop.name || 'Your board') : 'Tasks'),
-        // One line of context, every part optional: a board that says "3 open ·
-        // Free plan" needs no banner explaining that the other numbers are zero.
+        h('h1', null, IS_STAFF ? (shop.name || 'Your board') : 'Tasks'),
+        // The store and the plan, nothing else — the counts belong to the KPI tiles
+        // below, and repeating them here is how a header turns into noise.
         h('div', { class: 'page-sub' },
-          [st.open + ' open',
-           st.overdue ? st.overdue + ' overdue' : null,
-           st.closed ? st.closed + ' closed today' : null,
-           shop.plan === 'free' ? 'Free plan' : shop.plan + ' plan',
-           limitLine(st)].filter(Boolean).join(' · '))),
+          [shop.name || shop.domain,
+           shop.plan === 'free' ? 'Free plan' : cap(shop.plan) + ' plan',
+           // Counts live in the tiles. They move up here only when the band is
+           // hidden, so nothing is stated twice while the overview is on screen.
+           state.dashHidden ? st.open + ' open · ' + st.week + ' closed this week' : null]
+            .filter(Boolean).join(' · '))),
       h('div', { class: 'page-actions' },
         IS_STAFF ? null : renderMeChips(),
         IS_STAFF ? null : iconButton('info-circle', { title: 'Keyboard shortcuts (?)', onClick: openShortcutsHelp }),
+        h('button', { class: 'btn plain sm', onclick: toggleDash, title: 'The overview band (KPIs, throughput, workload) — d' },
+          state.dashHidden ? 'Show overview' : 'Hide overview'),
         h('button', { class: 'btn sm', onclick: openTemplatesModal, title: 'One-click checklists for COD confirmation, NDR rescue and RTO — pick one and it is filed with its steps' },
           ...withIcon('stack', 'Task templates')),
         h('button', { class: 'btn primary sm', onclick: startQuickAdd }, ...withIcon('plus', 'Add task', { size: 15 }))));
   }
 
-  function limitLine(st) {
-    const cap = state.board.shop.plan_cfg?.task_limit;
-    return cap ? st.open + ' of ' + cap + ' allowed open' : null;
-  }
-
-  function startQuickAdd() {
-    const first = (state.board.columns || [])[0];
-    if (!first) { toast('Add a column first'); return; }
-    state.filter = null;          // the editor is in an unfiltered column
-    state.quickAdd = first.id;
-    render();
-  }
-
   function renderStats(st) {
-    return h('div', { class: 'stats', role: 'group', 'aria-label': 'Task counts — click a number to filter' },
+    return h('div', { class: 'kpis', role: 'group', 'aria-label': 'Task counts — click a tile to filter the board' },
       STAT_FILTERS.map(f => {
         const n = st[f.key] || 0;
         // Colour only when it means something: red for overdue, amber for due today,
-        // green for closed; and a zero greys out instead of shouting in black.
-        const cls = 'stat'
+        // green for closed; a zero greys out instead of shouting in black.
+        const cls = 'kpi'
           + (f.tone && n ? ' ' + f.tone : '')
-          + (!n && state.filter !== f.key ? ' empty' : '')
+          + (!n && state.filter !== f.key ? ' zero' : '')
           + (state.filter === f.key ? ' on' : '');
 
         return h('button', {
@@ -625,9 +684,111 @@
           title: state.filter === f.key ? 'Show every task again' : 'Show only ' + f.label.toLowerCase() + ' tasks',
           'aria-pressed': String(state.filter === f.key),
         },
-          h('span', { class: 'stat-n' }, String(n)),
-          h('span', { class: 'stat-l' }, f.label));
+          h('span', { class: 'kpi-l' }, f.label),
+          h('span', { class: 'kpi-v' }, String(n)),
+          h('span', { class: 'kpi-s' }, f.sub ? f.sub(st) : ''));
       }));
+  }
+
+  // Throughput on the left, people on the right, and the two or four tasks that
+  // deserve the next click underneath. Nothing here is decoration: each panel
+  // answers a question a manager asks in the first ten seconds of the day.
+  function renderTrends(st) {
+    return h('div', { class: 'panels' },
+      h('section', { class: 'panel' },
+        h('div', { class: 'p-head' },
+          h('h2', null, 'Closed per day'),
+          st.onTime === null ? null : h('span', { class: 'sub' }, st.onTime + '% on time'),
+          h('span', { class: 'spacer' }),
+          h('span', { class: 'pill ' + (st.weekDelta > 0 ? 'medium' : st.weekDelta < 0 ? 'high' : 'low') },
+            (st.weekDelta > 0 ? '+' : '') + st.weekDelta + ' vs last week')),
+        h('div', { class: 'p-body' }, renderChart(st))),
+      h('section', { class: 'panel' },
+        h('div', { class: 'p-head' },
+          h('h2', null, 'Who is carrying what'),
+          h('span', { class: 'sub' }, 'open vs closed this week')),
+        h('div', { class: 'p-body' }, renderWorkload())));
+  }
+
+  function renderChart(st) {
+    const max = Math.max(1, ...st.series.map(d => d.n));
+
+    return h('div', { class: 'chart', role: 'img', 'aria-label': st.week + ' tasks closed in the last 7 days' },
+      st.series.map(d => h('div', {
+        class: 'c-col' + (d.today ? ' today' : ''),
+        title: d.key + ' — ' + d.n + (d.n === 1 ? ' task closed' : ' tasks closed'),
+      },
+        h('span', { class: 'c-num' }, d.n ? String(d.n) : ''),
+        h('div', { class: 'c-bar' + (d.n ? '' : ' zero'), style: 'height:' + (d.n ? Math.max(12, Math.round((d.n / max) * 100)) : 3) + '%' }),
+        h('span', { class: 'c-cap' }, d.label))));
+  }
+
+  function renderWorkload() {
+    const all = allTasks();
+    const open = all.filter(isOpenTask);
+    const closed7 = all.filter(t => t.completed_at && ageDays(t.completed_at) < 7);
+    const rows = (state.board.members || []).filter(m => m.active).map(m => {
+      const mine = open.filter(t => t.assignee && t.assignee.id === m.id);
+      return {
+        m,
+        open: mine.length,
+        late: mine.filter(t => t.overdue).length,
+        closed: closed7.filter(t => t.assignee && t.assignee.id === m.id).length,
+      };
+    });
+    const unclaimed = open.filter(t => !t.assignee).length;
+
+    const max = Math.max(1, ...rows.map(r => r.open + r.closed), unclaimed);
+    const bar = (share, cls) => h('div', { class: 'wl-fill ' + cls, style: 'width:' + Math.round((share / max) * 100) + '%' });
+
+    return h('div', { class: 'wl' },
+      rows.length ? rows.map(r => h('div', { class: 'wl-row' + (r.late ? ' late' : ''), title: r.m.name + ' — ' + r.open + ' open' + (r.late ? ', ' + r.late + ' overdue' : '') + ', ' + r.closed + ' closed this week' },
+        h('span', { class: 'avatar' + (r.open ? '' : ' gray') }, r.m.initials),
+        h('span', { class: 'wl-name' }, r.m.name.split(' ')[0]),
+        h('span', { class: 'wl-track' }, r.closed ? bar(r.closed, 'done') : null, r.open ? bar(r.open, r.late ? 'late' : 'open') : null),
+        h('span', { class: 'wl-n' }, r.open + (r.closed ? ' · +' + r.closed : '')))) : null,
+      unclaimed ? h('div', { class: 'wl-row ghost', title: 'Nobody has these yet' },
+        h('span', { class: 'avatar gray' }, '·'),
+        h('span', { class: 'wl-name' }, 'Unclaimed'),
+        h('span', { class: 'wl-track' }, bar(unclaimed, 'open')),
+        h('span', { class: 'wl-n' }, String(unclaimed))) : null,
+      !rows.length && !unclaimed ? h('div', { class: 'muted small' }, 'No open tasks — the board is clear.') : null);
+  }
+
+  function renderAttention() {
+    const rows = allTasks().filter(isOpenTask).map(t => ({
+      t,
+      // Overdue first (and oldest among them), then urgent, then unclaimed, then age.
+      score: (t.overdue ? 1000 + ageDays(t.created_at) : 0)
+        + (t.priority === 'urgent' ? 400 : t.priority === 'high' ? 200 : 0)
+        + (t.due_at && isToday(t.due_at) && !t.overdue ? 300 : 0)
+        + (t.assignee ? 0 : 60)
+        + ageDays(t.created_at),
+    })).sort((x, y) => y.score - x.score).slice(0, 4);
+
+    return h('section', { class: 'panel at-panel' },
+      h('div', { class: 'p-head' },
+        h('h2', null, 'Needs attention'),
+        h('span', { class: 'sub' }, rows.length ? 'oldest and riskiest first — click to open' : 'nothing waiting')),
+      rows.length
+        ? h('div', { class: 'p-body flush' }, rows.map(({ t }) => h('button', {
+            class: 'at-row', onclick: () => openTaskDrawer(t.id),
+          },
+          h('span', { class: 'at-dot ' + (t.overdue ? 'late' : t.priority) }),
+          h('span', { class: 'at-title' }, t.title),
+          h('span', { class: 'at-when' + (t.overdue ? ' late' : '') },
+            t.overdue ? 'overdue' + (t.due_at ? ' · ' + fmtDate(t.due_at) : '')
+              : t.due_at ? 'due ' + fmtDate(t.due_at) : ageDays(t.created_at) + 'd old'),
+          t.assignee ? h('span', { class: 'avatar', title: t.assignee.name }, t.assignee.initials)
+            : h('span', { class: 'avatar gray', title: 'Unclaimed' }, '·'))))
+        : h('div', { class: 'p-body' }, h('div', { class: 'muted small' },
+            'Nothing open. Add a task, or tick one off the board above.')));
+  }
+
+  function toggleDash() {
+    state.dashHidden = !state.dashHidden;
+    writePref('taskpe_dash', state.dashHidden ? 'off' : 'on');
+    render();
   }
 
   function renderFilterBar(st) {
@@ -651,7 +812,7 @@
 
     return h('div', { class: 'board-page' },
       renderPageHead(),
-      renderStats(st),
+      state.dashHidden ? null : h('div', { class: 'dash' }, renderStats(st), renderTrends(st), renderAttention()),
       renderFilterBar(st),
       board);
   }
@@ -1057,7 +1218,7 @@
       results.replaceChildren(h('div', { class: 'res-empty' }, 'Searching…'));
       try {
         const data = await api('/resources/search?' + params);
-        results.replaceChildren(...(data.items.length ? data.items.map(item => h('div', {
+        const rows = (data.items || []).map(item => h('div', {
           class: 'res-item',
           onclick: ev => {
             selected = item;
@@ -1070,7 +1231,16 @@
             h('div', { class: 'ri-title' }, item.title || '(no title)'),
             h('div', { class: 'ri-sub' }, types.find(([k]) => k === item.type)?.[1] + (item.subtitle ? ' · ' + item.subtitle : '')),
           ),
-        )) : [h('div', { class: 'res-empty' }, 'No matches found')]));
+        ));
+
+        if (!rows.length) rows.push(h('div', { class: 'res-empty' }, 'No matches found'));
+        // The server adds a note when it had to narrow the search (Shopify only
+        // lets us read orders created after the install until the protected
+        // customer data review approves more). Without it, "no matches" reads as
+        // "this order does not exist".
+        if (data.note) rows.push(h('div', { class: 'res-note' }, data.note));
+
+        results.replaceChildren(...rows);
       } catch (e) {
         results.replaceChildren(h('div', { class: 'res-empty' }, e.message || 'Search failed'));
       }
@@ -2014,6 +2184,7 @@
     ['n', 'Add a task to the first open column'],
     ['t', 'Open the COD / NDR template pack'],
     ['c', 'Complete (or reopen) the task open in the drawer'],
+    ['d', 'Hide or show the overview band'],
     ['1 – 4', 'Board · Team · Settings · Plan'],
     ['?', 'This list'],
     ['Esc', 'Close the open dialog'],
@@ -2043,9 +2214,12 @@
     return cols.find(c => !c.is_done_stage) || cols[0] || null;
   }
 
+  const cap = word => String(word || '').replace(/[_-]+/g, ' ').replace(/^\w/, c => c.toUpperCase());
+
   function startQuickAdd() {
     const col = firstOpenColumn();
-    if (!col) return;
+    if (!col) { toast('Add a column first'); return; }
+    state.filter = null;          // else the new card can land in a filtered-out column
     state.quickAdd = col.id;
     state.drawerTaskId = null;
     render();
@@ -2090,6 +2264,7 @@
       }
       if (ev.key === 'n' || ev.key === 'N') { ev.preventDefault(); startQuickAdd(); return; }
       if (ev.key === 't' || ev.key === 'T') { ev.preventDefault(); openTemplatesModal(); return; }
+      if (ev.key === 'd' || ev.key === 'D') { ev.preventDefault(); toggleDash(); return; }
 
       const idx = ['1', '2', '3', '4'].indexOf(ev.key);
       if (idx > -1 && SECTIONS[idx]) {

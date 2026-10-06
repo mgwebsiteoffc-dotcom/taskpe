@@ -97,6 +97,38 @@ class Shop extends Model
         $this->settings = $settings;
     }
 
+    /**
+     * `read_all_orders` is what unlocks order history from before the install.
+     * Public apps only get it after Shopify approves the protected customer data
+     * review, so NOT having it is normal, not a broken install.
+     */
+    public function canReadAllOrders(): bool
+    {
+        $granted = trim((string) $this->scopes) !== ''
+            ? (string) $this->scopes
+            : (string) config('shopify.scopes', '');
+
+        return collect(strtolower(explode(',', $granted)))
+            ->contains(fn ($scope) => trim($scope) === 'read_all_orders');
+    }
+
+    /**
+     * Without that approval an offline token may only read orders created after
+     * the app was installed. Searching the whole history costs a GraphQL
+     * ACCESS_DENIED instead of an empty list, so callers bound the query by this
+     * date and say so in the UI. Null = no bound (approved, or no install date).
+     */
+    public function orderSearchSince(): ?string
+    {
+        if ($this->canReadAllOrders()) {
+            return null;
+        }
+
+        $since = $this->installed_at ?? $this->created_at;
+
+        return $since ? $since->toDateString() : null;
+    }
+
     public function isInstalled(): bool
     {
         return is_null($this->uninstalled_at) && $this->hasUsableToken();

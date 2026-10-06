@@ -220,3 +220,41 @@ What the app does on its own: the first rejection marks the shop (`uninstalled_a
 
 A successful OAuth callback clears the flag (`Shop::clearTokenRejection()`), so after reconnecting,
 `php artisan taskpe:doctor` should be all green with no extra step.
+
+## 10. `ACCESS_DENIED` on the `orders` field (protected customer data)
+
+```
+local.WARNING: Shopify GraphQL errors {"shop":"house-of-indha.myshopify.com",
+ "errors":"[{\"message\":\"This app is not approved to access the Order object ...\",
+ \"extensions\":{\"code\":\"ACCESS_DENIED\",\"path\":[\"orders\"]}}]"}
+```
+
+This is **not** the section above: the token authenticated (a dead token is a 401), Shopify refused
+the *field*. An app may read a store's orders only as far as its **Protected customer data** approval
+allows, and `read_orders` in `.env` is not that approval — a scope is what the app asks for, this is a
+review the *app* has to pass (Partner Dashboard → your app → **API access → Protected customer data**
+→ request `read_all_orders`). Until that is granted, an offline token can read orders created **after
+the install** and nothing older.
+
+Where it reached TaskPe: linking a task to an order (`Api\ResourceSearchController::searchOrders`)
+searched `orders(first: 10, query: "name:*#1001*")` with no date bound, so any pre-install order number
+raised instead of returning an empty list, and the modal said "Search failed".
+
+Now:
+
+* `Shop::canReadAllOrders()` reads the granted scopes (falling back to `SHOPIFY_SCOPES`), and
+  `Shop::orderSearchSince()` returns the install date when `read_all_orders` is absent. The order
+  search then appends `created_at:>=<install date>` — a query Shopify *will* answer — and the response
+  carries a `note`, which the "Link a Shopify object" modal prints under the results ("Showing orders
+  created since Taskpe was installed (2026-09-20)"). An unreachable order reads as out of reach, not
+  as "does not exist".
+* The bound is only a guess from the scope list, so a denial inside it gets **one unbounded retry**
+  before anything surfaces; that covers a store approved after `shops.scopes` was last synced.
+* An exact lookup (`?id=`, i.e. a pasted admin URL) stays unbounded. If even that is denied, the
+  message names the review instead of a stack trace (`hintFor()`).
+* Draft orders, products and blog posts are untouched — they are not protected objects — and customer
+  search keeps selecting only `name`, the one PCD field justified in the listing.
+
+No `.env` value fixes it. After Shopify approves the scope, add `read_all_orders` to the app's scopes
+(Partner Dashboard **and** `shopify.app.toml`; `SHOPIFY_SCOPES` is the env twin), re-install on the
+store, and the note disappears by itself because `orderSearchSince()` re-reads `shops.scopes`.

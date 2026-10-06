@@ -18,6 +18,13 @@ use Illuminate\Validation\Rule;
  */
 class ResourceSearchController extends Controller
 {
+    /**
+     * Set by a per-type query when the result set is deliberately narrower than it
+     * looks, so the UI can explain the gap instead of the merchant concluding that
+     * the order does not exist.
+     */
+    private ?string $notice = null;
+
     /** GET /api/resources/search?type=order&q=1001  (or &id=5123456789 for exact) */
     public function search(Request $request, ShopContext $ctx)
     {
@@ -29,6 +36,7 @@ class ResourceSearchController extends Controller
 
         $q  = trim((string) ($data['q'] ?? ''));
         $id = $data['id'] ?? null;
+        $this->notice = null;
 
         if ($q === '' && !$id) {
             return response()->json(['items' => []]);
@@ -43,15 +51,42 @@ class ResourceSearchController extends Controller
                 'article'     => $this->searchArticles($ctx, $q, $id),
             };
         } catch (\Throwable $e) {
-            $msg = $e->getMessage();
-            $hint = str_contains($msg, 'access') || str_contains($msg, 'ACCESS')
-                ? 'Missing API permission. Re-install the app or check scopes.'
-                : 'Search failed — try again.';
+            $hint = $this->hintFor($e->getMessage());
 
-            return response()->json(['error' => $hint], 502);
+            // `message` is the key the SPA reads out of a failed response; `error`
+            // is kept for anyone reading the endpoint directly.
+            return response()->json(['error' => $hint, 'message' => $hint], 502);
         }
 
-        return response()->json(['items' => $items]);
+        return $this->notice === null
+            ? response()->json(['items' => $items])
+            : response()->json(['items' => $items, 'note' => $this->notice]);
+    }
+
+    /**
+     * A protected-customer-data refusal is not a broken token and re-installing
+     * will not fix it — saying "missing permission" there sends the merchant off
+     * hunting the wrong switch, so name the actual one.
+     */
+    protected function isProtectedDataDenial(string $message): bool
+    {
+        return str_contains($message, 'ACCESS_DENIED')
+            || str_contains($message, 'protected customer data')
+            || str_contains($message, 'Order object');
+    }
+
+    protected function hintFor(string $msg): string
+    {
+        if ($this->isProtectedDataDenial($msg)) {
+            return "Shopify has not approved this app for the store's order data yet, so orders cannot be"
+                .' searched. In the Partner Dashboard → your app → API access → Protected customer'
+                ." data, request the `read_all_orders` scope, then re-install the app. Until that approval"
+                .' lands, only orders created after the install are readable.';
+        }
+
+        return str_contains($msg, 'access') || str_contains($msg, 'ACCESS')
+            ? 'Missing API permission. Re-install the app or check scopes.'
+            : 'Search failed — try again.';
     }
 
     // ---------------- per-type queries ----------------
@@ -66,7 +101,30 @@ class ResourceSearchController extends Controller
         }
         GQL;
 
-        $data   = (new ShopifyClient($ctx->shop()))->graphql($gql, ['query' => $this->orderQuery($q, $id)]);
+        $client  = new ShopifyClient($ctx->shop());
+        $base    = $this->orderQuery($q, $id);
+        $since   = $ctx->shop()->orderSearchSince();
+        // An exact id lookup stays unbounded — someone pasted an admin URL and
+        // expects that one order back, not a date filter.
+        $bounded = $since !== null && $id === null;
+
+        try {
+            $data = $client->graphql($gql, ['query' => $bounded ? $base.' created_at:>='.$since : $base]);
+        } catch (\RuntimeException $e) {
+            // The date bound is a guess from the granted scopes; if the store *can*
+            // read everything (approved after our scopes column was last synced),
+            // one unbounded retry answers the query instead of erroring.
+            if (!$bounded || !$this->isProtectedDataDenial($e->getMessage())) {
+                throw $e;
+            }
+
+            $bounded = false;
+            $data    = $client->graphql($gql, ['query' => $base]);
+        }
+
+        if ($bounded) {
+            $this->notice = 'Showing orders created since Taskpe was installed ('.$since.').';
+        }
 
         return collect($data['orders']['nodes'] ?? [])->map(fn ($o) => [
             'type'     => 'order',
