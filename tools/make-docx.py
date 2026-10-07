@@ -146,7 +146,7 @@ def heading(doc, text, level):
     par.paragraph_format.space_before = Pt(14 if level == 1 else 10)
     par.paragraph_format.space_after = Pt(4)
     par.paragraph_format.keep_with_next = True
-    rich(par, text, size=15 if level == 1 else (12 if level == 2 else 11), color=BRAND)
+    rich(par, text, size=15 if level == 1 else (13 if level == 2 else 11.5), color=BRAND)
     for run in par.runs:
         run.bold = True
     if level == 1:
