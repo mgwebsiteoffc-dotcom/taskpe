@@ -292,27 +292,137 @@ and lets the merchant link the order by hand, so nothing is misrepresented while
 
 ## 7. App review instructions (4.5) — paste as-is
 
-Shopify wants step-by-step instructions a reviewer can follow, and any screenshot that shows behaviour
-needs the click path that produces it. Screencast in English; third-party test credentials must be real.
+This is **`shopify-test-instructions.txt`, verbatim** — that file is what you paste into the *App review
+instructions* box, and it is the source of this section: edit the text file, then run
+`python3 tools/listing-copy.py && python3 tools/make-docx.py` and both documents follow. Every step states
+what to click **and** what to expect, because a reviewer who has to guess the expected result writes a
+question instead of an approval; the bracketed `[ ... ]` bits are the credentials only you can fill.
 
+```text
+TASKPE — APP REVIEW INSTRUCTIONS
+================================
 
-1. Install on a development store, then open the app from Shopify admin (Apps -> TaskPe). The board loads with four seeded columns.
-2. Run `php artisan taskpe:demo-store` on the dev store's app server (or use the seeded store we provide) so the cards below have data. Demo data is fabricated by us; no real customer exists behind it.
-3. Template pack: press `t` or the 'COD / NDR task templates' button. Click 'COD confirmation' -> pick an order from the search (search a number like 5123) -> Create task. Expect a task in To Do with a 6-item checklist.
-4. Checklist + assignee: open the task, tick two items, set assignee and due date, drag it to In Progress. The card shows 2/6 and the activity row names who ticked what.
-5. Link an object: open the task, 'Link' -> tabs for Orders / Draft orders / Products / Customers / Blog posts. Search an order number and pick it; the card now shows the order label and links to the order in Shopify admin.
-6. Older orders (documented limit): search an order created before install. The notice explains that the store's token can read only post-install orders until `read_all_orders` is approved, and offers 'Link an older order by number'. Type 101 and save: the task links with a 'not checked' pill - that pill is the point, not a bug.
-7. Admin extension: open any Shopify order page -> More actions -> 'Create task'. It opens the composer with that order pre-linked (no order read needed).
-8. Team: create a team, add a member with a phone number, send the portal link. In a private browser window open the link, sign in with the WhatsApp code, and confirm the staff board shows only that store's tasks. (No code arriving = the store has not connected Whatify; that is the plain in-app message.)
-9. Settings: connect a Whatify key (test key accepted), switch WhatsApp alerts on, send a test reminder, then check the delivery log rows.
-10. Billing: the Plan tab shows what Shopify bills for this store - it reads the subscription from Shopify and never quotes a price of its own. Choose a plan from Shopify's plan page; approve; return to the app and press 'Check again' - the plan and its limits update.
-11. Uninstall, then reinstall: expect a fresh board (data deleted on uninstall), and `shop/redact` hard-deletes the tenant row.
+WHAT THE APP IS
+TaskPe is an embedded Shopify admin app: the task board for the follow-ups a cash-on-delivery
+(COD) store has to do by hand — confirm a COD order before it ships, rescue a failed delivery
+(NDR), reconcile the COD remittance, fix an address. Tasks link to the Shopify order itself.
+Staff without a Shopify seat use the same board on a phone. Nothing is added to the storefront:
+no scripts, no theme files, no theme app embed, so storefront performance is unchanged.
 
-**Third-party credentials to include:** a Whatify test key (or mark the account as test in your notes) so
-the reviewer can exercise the WhatsApp path end-to-end, and the demo store's admin login.
+REVIEW STORE (provided for testing)
+  Store:       [DEV STORE].myshopify.com    collaborator/store password: [ ... ]
+  Staff portal: TaskPe in admin -> Team tab -> "Portal link" -> copy that personal link. Opening
+                it signs the member in, with no Shopify login.
+  WhatsApp step: needs a Whatify key connected in Settings (a test key is fine); skip step 8 if
+                you do not want to exercise delivery.
+  The store is pre-seeded so the board is not empty: columns, about ten tasks with checklists and
+  orders spread across several months. [adjust this line to whatever you seed] A brand-new install
+  instead shows one empty board with "+ Add column" — that is the intended empty state, not a bug.
 
-**Mapping screenshots → steps:** shot 1 = step 3 (board after seeding), shot 2 = step 3, shot 3 = step 3,
-shot 4 = step 4, shot 5 = step 5, shot 6 = step 3 (composer), mobile = step 8.
+1. INSTALL AND SCOPES
+   Install from the listing and approve the permission screen.
+   Expected: the scopes offered are read_orders, read_products, read_content (plus read_customers
+   while the picker still has a Customers tab). No write scope, no read_all_orders (see step 4).
+   After the redirect the board loads inside the admin from a single /api/board request, and
+   https://[HOST]/privacy is readable without a login.
+
+2. CREATE A TASK FROM A TEMPLATE
+   Press "t" (or the "COD / NDR task templates" button at the top of the board) -> "COD
+   confirmation" -> search an order number that exists in this store -> pick the result -> Create
+   task. Expected: a task titled "Confirm COD order #<number>" in the first column, showing 0/6
+   checklist steps, linked to that order; the card links straight to the order in admin; the
+   activity timeline records who created it.
+
+3. WORK THE TASK
+   Open the card, tick two checklist items, change priority and assignee, set a due date, drag the
+   card to "In Progress", then drag it to the column marked as the done stage.
+   Expected: the card shows 2/6 and the completion is timestamped (the card is struck through in the
+   done column); each action adds an activity row naming the person; ticking a checklist item from
+   the card does the same.
+
+4. LINKING AN ORDER OLDER THAN THE INSTALL (documented limit — please review this behaviour)
+   Search an order created before the app was installed. The picker states that this app may only
+   read orders created since the install (read_all_orders is not yet approved) and offers
+   "Link an older order by number". Type that order number and save.
+   Expected: the task is created with the number as its title, a small "not checked" pill on the
+   card, and an activity line saying the order was linked by hand and not verified against Shopify.
+   Nothing is invented: no status, total or customer detail is shown for an order we cannot read.
+   Pasting a full admin URL like /admin/orders/6123456789 instead links it verified, with no pill.
+
+5. ADMIN EXTENSIONS (three surfaces, all shipped)
+   a) Order detail page -> "More actions" -> "Create task". Fill only the title.
+      Expected: the task is created and pre-linked to that order with no order read; it appears on
+      the board with the order number. Same flow on the draft order, product and customer pages.
+   b) Orders list -> select three orders -> "Create TaskPe tasks" -> choose a template.
+      Expected: three tasks, one per selected order, each linked.
+   c) Order detail page -> the "TaskPe — this order" block. Per Shopify's block rules the merchant
+      must add and pin it once (Extensions -> pin); before that the page shows nothing, which is
+      expected. Once pinned: the open tasks for that order, tickable inline, plus "Mark done".
+
+6. WEBHOOKS: THE COD AUTO-TASK (off until the merchant turns it on)
+   Settings -> "COD / NDR automation" -> tick "Auto-create a confirmation task for every new COD
+   order" -> save. Then create a COD order in the admin (Orders -> Create order, payment method
+   Cash on Delivery) and save it.
+   Expected: within a few seconds a "Confirm COD order #<number>" task is on the board, created by
+   the orders/create webhook, with nobody having opened the app. Untick the box and create a second
+   COD order: no task appears, because the automation is off by design. Deliveries run through an
+   idempotency ledger keyed on the webhook id, so a duplicate retry from Shopify creates one task,
+   not two, and the endpoint answers 2xx fast with the work done in a queued job.
+
+7. TEAM AND THE STAFF PORTAL
+   Team tab -> add a member (name + phone) -> "Portal link" -> open the link in a private window.
+   Expected: the board for that store only; the member can complete and move tasks and add their
+   own; there is no Settings tab, no task delete, no billing and no member management. A task whose
+   order was linked by hand shows the number as plain text with no admin link, because that member
+   has no Shopify access to open it with. Then test phone sign-in on /staff: number -> 6-digit
+   WhatsApp code. Expected rate limiting: a 429 once five code requests are made in a minute.
+
+8. WHATSAPP ALERTS (merchant's own provider)
+   Settings -> paste a Whatify API key -> enable alerts -> send a test reminder to a member.
+   Expected: a delivery-log row with the status and channel, and a message on the member's WhatsApp.
+   With no key or a wrong key the panel states what to fix instead of failing silently. TaskPe
+   charges nothing here: messages are billed by the merchant's own Whatify account (about INR 0.12
+   per message), which is also disclosed in the pricing section of the listing.
+
+9. BILLING (plans and prices are managed by Shopify)
+   Plan tab -> "What Shopify bills you" -> "Check again".
+   Expected: plan name, amount, currency, billing interval and renewal date are read from the
+   store's live subscription through the Admin API, and it re-reads that subscription on the
+   app_subscriptions/update webhook, so a plan change made while the app is closed is picked up
+   without anyone reloading the tab. The app shows no price of its own and never
+   calls appSubscriptionCreate, because the plans are created in the Partner Dashboard; on a
+   development store the subscription is a test charge and the tab labels it "test charge".
+   Approving a plan on Shopify's page and returning to the app unlocks WhatsApp alerts and the
+   digest and raises the member and task limits; cancelling is done on Shopify's own page and the
+   app says where, rather than doing it itself.
+
+10. DATA, UNINSTALL AND GDPR
+   What a linked task stores: the order GID, the display label and an admin URL. No line items, no
+   customer contact fields, no documents, no analytics export.
+   Expected on uninstall: the app/uninstalled webhook clears the access token and the saved
+   Whatify key and reverts the store to the Free plan; shop/redact hard-deletes the store row and
+   cascades its columns, tasks, activity and links. customers/data_request and customers/redact
+   are handled (no customer PII is held, and the reply says so). A scheduled job prunes WhatsApp
+   delivery logs after 90 days and the webhook ledger after 7 days.
+
+KNOWN LIMITS, NOT BUGS
+  - Order search finds only orders created since the install until read_all_orders is approved;
+    step 4 is the honest fallback we built for that window.
+  - The order-page block stays invisible until the merchant pins it (Shopify's rule for blocks).
+  - WhatsApp needs the merchant's own Whatify account; TaskPe is not a BSP and sells no messages.
+  - Courier NDR events arrive on a signed token URL (POST /webhooks/ndr/{token}), so they cannot be
+    triggered from a browser; the app's own "create from order" flow covers the same task.
+
+SUPPORT
+  [SUPPORT EMAIL] · [HELP / DOCS URL] · emergency developer contact is current in the Partner
+  Dashboard. Screencast (2-3 min, English): [URL] — install, template to task, checklist, staff
+  portal on a phone, billing read-back.
+```
+
+**Screenshot → step mapping** (add it under the box if the form has room): shots 2 and 3 = step 2,
+shot 4 = step 3, shot 5 = step 2 and step 4, shot 6 = step 2, mobile shot = step 7.
+If you take option A in section 4 (no customer tab), re-capture shot 5 so the Customers tab is gone —
+a listing image must not show a picker entry the app no longer has.
 
 
 ## 8. Rejection radar (read this before you press submit)

@@ -1,5 +1,7 @@
 import io
 
+TEST = io.open('shopify-test-instructions.txt', encoding='utf8').read().rstrip('\n')
+
 L = {}
 L['name'] = "TaskPe"
 L['name_alt'] = "TaskPe Order Tasks"
@@ -128,19 +130,6 @@ DP = [
   "[CONFIRM a one-page policy and put its URL here] Minimum it must state: who is on call, severity scale, Shopify notification path (partner email) within 72 hours of a confirmed breach affecting Shopify data, evidence preservation, merchant notification template, post-incident review."),
 ]
 
-REVIEW = [
- "Install on a development store, then open the app from Shopify admin (Apps -> TaskPe). The board loads with four seeded columns.",
- "Run `php artisan taskpe:demo-store` on the dev store's app server (or use the seeded store we provide) so the cards below have data. Demo data is fabricated by us; no real customer exists behind it.",
- "Template pack: press `t` or the 'COD / NDR task templates' button. Click 'COD confirmation' -> pick an order from the search (search a number like 5123) -> Create task. Expect a task in To Do with a 6-item checklist.",
- "Checklist + assignee: open the task, tick two items, set assignee and due date, drag it to In Progress. The card shows 2/6 and the activity row names who ticked what.",
- "Link an object: open the task, 'Link' -> tabs for Orders / Draft orders / Products / Customers / Blog posts. Search an order number and pick it; the card now shows the order label and links to the order in Shopify admin.",
- "Older orders (documented limit): search an order created before install. The notice explains that the store's token can read only post-install orders until `read_all_orders` is approved, and offers 'Link an older order by number'. Type 101 and save: the task links with a 'not checked' pill - that pill is the point, not a bug.",
- "Admin extension: open any Shopify order page -> More actions -> 'Create task'. It opens the composer with that order pre-linked (no order read needed).",
- "Team: create a team, add a member with a phone number, send the portal link. In a private browser window open the link, sign in with the WhatsApp code, and confirm the staff board shows only that store's tasks. (No code arriving = the store has not connected Whatify; that is the plain in-app message.)",
- "Settings: connect a Whatify key (test key accepted), switch WhatsApp alerts on, send a test reminder, then check the delivery log rows.",
- "Billing: the Plan tab shows what Shopify bills for this store - it reads the subscription from Shopify and never quotes a price of its own. Choose a plan from Shopify's plan page; approve; return to the app and press 'Check again' - the plan and its limits update.",
- "Uninstall, then reinstall: expect a fresh board (data deleted on uninstall), and `shop/redact` hard-deletes the tenant row.",
-]
 
 RADAR = [
  ("App icon is 1600px or 1024px", "Shopify wants exactly 1200x1200. Use `assets/listing/app-icon-1200.png` (generated from the 1600 master). Corners are pre-rounded in the art; Shopify rounds its own, which is accepted, but if you can supply a full-bleed square that is cleaner."),
@@ -366,16 +355,19 @@ w("review notes if the request comes back with questions. Until approved, the ap
 w("and lets the merchant link the order by hand, so nothing is misrepresented while you wait.\n")
 w("")
 w("## 7. App review instructions (4.5) — paste as-is\n")
-w("Shopify wants step-by-step instructions a reviewer can follow, and any screenshot that shows behaviour")
-w("needs the click path that produces it. Screencast in English; third-party test credentials must be real.\n")
+w("This is **`shopify-test-instructions.txt`, verbatim** — that file is what you paste into the *App review")
+w("instructions* box, and it is the source of this section: edit the text file, then run")
+w("`python3 tools/listing-copy.py && python3 tools/make-docx.py` and both documents follow. Every step states")
+w("what to click **and** what to expect, because a reviewer who has to guess the expected result writes a")
+w("question instead of an approval; the bracketed `[ ... ]` bits are the credentials only you can fill.\n")
+w("```text")
+w(TEST)
+w("```")
 w("")
-for i, s in enumerate(REVIEW, 1):
-    w("%d. %s" % (i, s))
-w("")
-w("**Third-party credentials to include:** a Whatify test key (or mark the account as test in your notes) so")
-w("the reviewer can exercise the WhatsApp path end-to-end, and the demo store's admin login.\n")
-w("**Mapping screenshots → steps:** shot 1 = step 3 (board after seeding), shot 2 = step 3, shot 3 = step 3,")
-w("shot 4 = step 4, shot 5 = step 5, shot 6 = step 3 (composer), mobile = step 8.\n")
+w("**Screenshot → step mapping** (add it under the box if the form has room): shots 2 and 3 = step 2,")
+w("shot 4 = step 3, shot 5 = step 2 and step 4, shot 6 = step 2, mobile shot = step 7.")
+w("If you take option A in section 4 (no customer tab), re-capture shot 5 so the Customers tab is gone —")
+w("a listing image must not show a picker entry the app no longer has.\n")
 w("")
 w("## 8. Rejection radar (read this before you press submit)\n")
 w("")

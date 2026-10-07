@@ -6,6 +6,7 @@ filling the Shopify forms in a word processor: headings, real tables, shaded
 "paste exactly this" boxes, page numbers, and an appendix repeating every
 pasteable block in form order.
 
+Needs: python3 -m pip install --break-system-packages python-docx
 Run from the repo root:  python3 tools/make-docx.py
 """
 
@@ -161,15 +162,46 @@ def heading(doc, text, level):
         pPr.append(bottom)
 
 
+def mono_run(par, text, size=9.5):
+    par.paragraph_format.space_before = Pt(0)
+    par.paragraph_format.space_after = Pt(0)
+    run = par.add_run(text if text else ' ')
+    run.font.name = 'Consolas'
+    run.font.size = Pt(size)
+    run.font.color.rgb = INK
+
+
 def paste_box(doc, lines, title=None):
-    """A boxed, monospace block: select it, copy it, paste it into the form."""
+    """A boxed, monospace block: select it, copy it, paste it into the form.
+
+    Long blocks (the review instructions) become one real one-cell table instead of
+    sixty bordered paragraphs — same copy-verbatim look, and the document stays light
+    enough that Word lays it out without stalling.
+    """
+    body = list(lines)
+    while body and not body[0].strip():
+        body.pop(0)
+    while body and not body[-1].strip():
+        body.pop()
     if title:
         cap = doc.add_paragraph()
         cap.paragraph_format.space_after = Pt(2)
         rich(cap, title, size=9, color=MUTED)
         for run in cap.runs:
             run.bold = True
-    for ln in lines:
+    if len(body) > 22:
+        table = doc.add_table(rows=1, cols=1)
+        table.style = 'Table Grid'
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        cell = table.rows[0].cells[0]
+        cell.text = ''
+        shade_cell(cell._tc, BOX_FILL)
+        for n, ln in enumerate(body):
+            mono_run(cell.paragraphs[0] if n == 0 else cell.add_paragraph(), ln, size=9)
+        doc.add_paragraph().paragraph_format.space_after = Pt(4)
+        return
+
+    for ln in body:
         par = doc.add_paragraph()
         par.paragraph_format.space_before = Pt(0)
         par.paragraph_format.space_after = Pt(0)
@@ -384,6 +416,9 @@ def build():
                 'each box exactly; the number in brackets is the character count against the field limit.',
          size=10, color=MUTED)
 
+    # Only form fields get a second life in the appendix. The review instructions (7,000
+    # characters) live in their own section, and repeating them here would bury the short ones.
+    pasted = [x for x in pasted if sum(len(l) + 1 for l in x[1]) <= 2600]
     for n, (cap, buf) in enumerate(pasted, 1):
         lines = list(buf)
         while lines and not lines[0].strip():
