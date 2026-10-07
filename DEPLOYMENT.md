@@ -534,9 +534,51 @@ What was missing is a way out, so the search now carries one:
   and the search would have come back as `ACCESS_DENIED` instead of the honest bounded answer.
   Unknown scopes now mean "not granted", which is the safe reading.
 
-So: the approval is a Partner Dashboard action only they can take; everything after it is one
-`.env` line, `php artisan config:clear`, and a reinstall. The note in the picker disappears by
-itself, because it is computed from the granted scopes.
+So: the approval is a Partner Dashboard action only the app owner can take — it is a **review**,
+not a switch, and no deploy or code change can substitute for it. Everything after the approval
+is one `.env` line, `php artisan config:clear`, and a reinstall. The note in the picker
+disappears by itself, because it is computed from the granted scopes.
+
+**Where it stands right now, in one command:**
+
+```bash
+php artisan taskpe:doctor house-of-indha.myshopify.com --skip-api
+```
+
+The `order history` row names the step that is still missing, in the same words as the notice:
+
+| the row says | the state | what is left |
+| --- | --- | --- |
+| `every order, any date` | done | nothing |
+| `we ask for read_all_orders but this store granted: …` | approved and configured, **this store hasn't reinstalled** | Apps → TaskPe → reinstall (or let the merchant open the app once from admin and accept the new permissions) |
+| `orders created since <date> only — Shopify will not let this token read older ones until …` | never requested | the three steps below |
+
+**The three steps, with the words to paste.** Partner Dashboard → **Apps** → *TaskPe* →
+**API access** → *Protected customer data* → request **read access to all orders** (older than
+the install). Shopify asks why. Something in this shape is what the review needs:
+
+> The app creates follow-up tasks for store staff against specific orders (COD verification,
+> non-delivery reports, refunds). Merchants routinely work on orders placed before the app was
+> installed, so limiting reads to post-install orders breaks the core workflow: the merchant can
+> see the order in their own admin but the app cannot link it. We query only `Order.id`, `name`,
+> `created_at`, `display_financial_status`, `total_price` and line-item product titles — never
+> customer name, address, email, phone or payment details — and we store nothing but the order
+> number and title on the task record.
+
+Then, once approved:
+
+1. `.env` → `SHOPIFY_READ_ALL_ORDERS=true`, and if you deploy config from `shopify.app.toml`
+   (`include_config_on_deploy = true`), add the scope there too —
+   `scopes = "read_orders,read_products,read_customers,read_content,read_all_orders"`. The two
+   must match: the CLI pushes its own list to the Dashboard, so a toml without the scope quietly
+   removes it again on the next `shopify app deploy`.
+2. `php artisan config:clear` on the server (otherwise the cached config still asks for the old list).
+3. Each store **reinstalls** (or re-authorises from Apps → TaskPe) so its token is re-minted with
+   the scope. Existing tokens never gain a scope retroactively — this is the step people miss, and
+   the second row of the table above is exactly that state.
+
+Until all three are done, order search stays bounded and says so. That is Shopify protecting
+buyer data from every app by default, not a TaskPe setting we left off.
 
 ### Why the buttons still are not in the Orders list or on the order page
 

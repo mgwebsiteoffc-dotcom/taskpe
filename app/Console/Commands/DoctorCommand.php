@@ -28,6 +28,10 @@ use Illuminate\Support\Collection;
  *   php artisan taskpe:doctor house-of-indha.myshopify.com
  *   php artisan taskpe:doctor --skip-api               # local state only
  *   php artisan taskpe:doctor myshop.myshopify.com --register
+ *
+ * It also prints `order history`, which answers the other common report — "old orders
+ * are missing from search" — by naming whichever of the three steps is still outstanding
+ * (Shopify's approval, our scope request, or the store's reinstall).
  */
 class DoctorCommand extends Command
 {
@@ -109,6 +113,24 @@ class DoctorCommand extends Command
         // ---------- the row ----------
         $this->row('plan', 'OK', $shop->plan.' · limit '.($shop->planConfig()['task_limit'] ?? '?'));
         $this->row('installed_at', 'OK', (string) ($shop->installed_at ?? '—'));
+
+        // "Why can't I find my old orders?" is the number one report on a store that has
+        // had the app a short while, and the answer lives in three places at once: whether
+        // Shopify approved the scope, whether we ask for it, and whether this store has
+        // reinstalled since. So print all three — the row says which one is still missing
+        // instead of leaving the reader to guess between a review and a deploy.
+        $granted = collect(explode(',', strtolower(trim((string) $shop->scopes))))
+            ->map(fn ($scope) => trim($scope))->filter()->values();
+
+        if ($shop->canReadAllOrders()) {
+            $this->row('order history', 'OK', 'every order, any date (read_all_orders is on this token)');
+        } elseif ((bool) config('shopify.read_all_orders')) {
+            $this->row('order history', 'WARN',
+                'we ask for read_all_orders but this store granted: '.$granted->implode(', ').' — the scope only lands on a fresh install: open the app from Shopify admin once more (Apps → TaskPe → reinstall) after approval');
+        } else {
+            $this->row('order history', 'WARN',
+                'orders created since '.((string) ($shop->orderSearchSince() ?: ($shop->installed_at ?? 'the install date'))).' only — Shopify will not let this token read older ones until read_all_orders is approved (Partner Dashboard → your app → API access → Protected customer data), then set SHOPIFY_READ_ALL_ORDERS=true + php artisan config:clear');
+        }
 
         if ($rejection = $shop->tokenRejection()) {
             $this->row('token rejected', 'WARN', $rejection);
