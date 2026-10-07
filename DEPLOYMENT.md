@@ -269,18 +269,29 @@ store, and the note disappears by itself because `orderSearchSince()` re-reads `
 
 ## 11. One task database, three views (Notion's shape, Shopify's chrome)
 
-`Board · Table · Calendar` sit in one quiet row under the page title, and all three read
-the same filtered task set (the count tiles above them are the filter, `d` hides them).
+One segmented control — **Board · List · Month** — under the page title; all three read the same
+task set. There is deliberately nothing else in that row: no sort, no group-by, no fold. Sorting
+was removed because the order is already decided by the work (open before done, soonest date
+first), and every control that only half the people use is a control the other half has to
+ignore. `List` is what `Table` used to be, minus the machinery.
 
 | view | what it is for | what is in it |
 |---|---|---|
-| Board | the queue | one group per column, each with its own totals line (`3 open · 1 late · 1 unclaimed`; a done column reads `3 closed · 2 this week`), cards flat and bordered |
-| Table | scanning and sorting | every task as a row; click a heading to sort (click again to flip), group by Stage / Team / Person / Due via `By:` — the grouping is remembered |
-| Calendar | planning a week | due dates on a Monday-first month grid, `‹ October 2026 ›`, and a red `N overdue from earlier` button that jumps to the Table grouped by due date, because a month grid hides last month's misses by construction |
+| Board | the queue | one tinted well per column, white cards inside, and a totals line (`2 open`, `1 late`, `1 without an owner`; a done column reads `5 done · 3 this week`). A card shows its date as words (`2 days late`, `Due tomorrow`, `No date`) and a real **Done** button |
+| List | everything at once | rows grouped by column, open first and then by soonest date; owner, team, priority word and an **Open** button. Nothing to click in a heading |
+| Month | planning ahead | Monday-first grid with `‹ October 2026 ›`, **This month** to get back, and one amber line for tasks that were already late before the 1st — a month grid hides last month's misses by construction, so it says so |
 
-Nothing is stored for this: the mode lives in `localStorage` (`taskpe_mode`) like `taskpe_dash`,
-so there is no route, no column, no migration. Deep links keep working — `?view=` picks the
-*section* (dashboard/board/team/settings/plan), the view mode is a within-section choice.
+The count tiles above the bar (`Open`, `Late`, `Due today`, `No owner`, `Done today`) are the only
+filter: click one and the board shows just those, with a `Show all` way back. `d` hides the tiles
+for people who want the board alone.
+
+Column settings are one **Edit** button per column, visible only to the owner, opening a sheet with
+the name, the team and the done-stage tick — plus delete. It replaced three icon-only buttons that
+appeared on hover: invisible on a phone, and a guess for anyone who does not live in the app.
+
+Nothing is stored for any of this: the mode lives in `localStorage` (`taskpe_mode`) like
+`taskpe_dash`, so there is no route, no column, no migration. Deep links keep working — `?view=`
+picks the *section* (dashboard/board/team/settings/plan), the view mode is a within-section choice.
 
 To look at it without touching the store: open **`ui-preview.html`** from a checkout in any
 browser. It loads the real `public/js/app.js` + `public/css/app.css` against a stubbed
@@ -296,7 +307,7 @@ only new state the dashboard needs — nothing else is configured per team.
 php artisan migrate --force      # 2026_10_06_000001_add_team_to_columns_table
 ```
 
-* **Set it on the board**: the people icon in a column header (hover the header) → type
+* **Set it on the board**: **Edit** on a column header (owner only, always visible) → type
   `Accounting`, `Warehouse`, `Fulfilment`… Existing names are suggested, so one team is
   spelled one way. Empty = no team.
 * **What it drives**: the dashboard's **Teams** panel (open vs closed this week per team,

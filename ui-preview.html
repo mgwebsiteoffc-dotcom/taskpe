@@ -6,8 +6,10 @@
   only files in public/ are served, so this never reaches a merchant.
 
   What it fakes: window.shopify (a session token) and fetch (/api/board, /api/settings).
-  Everything rendered is the shipping code — click Board / Table / Calendar, filter
-  with the tiles, open a task, press d or ?.
+  Everything rendered is the shipping code: same app.js, same app.css. Click
+  Board / List / Month, tap a stat tile to filter, press ? for the shortcut list.
+  If something here looks different from the deployed app, the preview is lying and
+  should be fixed — it is only useful while the two are identical.
 -->
 <html lang="en">
 <head>

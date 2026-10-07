@@ -594,193 +594,283 @@ input, select, textarea { font: inherit; }
 @media (max-width: 1000px) { .panels { grid-template-columns: 1fr; } }
 
 /* ==========================================================================
-   Notion structure layer — one database, three views
+   Calm layer — Notion's shape, Polaris's controls.
    --------------------------------------------------------------------------
-   The board is Notion's grouped-list shape: quiet group header, a totals line,
-   flat bordered cards. Below it the Table (scan and sort everything) and the
-   Calendar (plan the week) read the same filtered task set. Property chips use
-   Notion's pastel geometry; the buttons and banners above them stay Shopify's.
+   Written for the person who opens this once a day on a phone in a godown:
+   readable at arm's length, every control labelled with a word, nothing that
+   only appears on hover, and no control that does not change the work.
+   Colours, focus rings and the button/pill palette stay in the sheet above;
+   this only retunes sizes, spacing and the three views. Later rule of the
+   same specificity wins, which is the whole mechanism — so anything here that
+   stops being true should be deleted rather than overridden again.
    ========================================================================== */
 
-/* --- the view bar: views, grouping, sort and filters in one quiet row --- */
-.view-bar {
-  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
-  padding: 0 20px 8px; border-bottom: 1px solid var(--border);
+:root {
+  --ink: #37352f;        /* Notion's near-black, warm */
+  --ink-2: #6b6a68;
+  --ink-3: #9b9a97;
+  --hair: #efeeec;       /* the only line the app draws */
+  --tint: #f7f7f6;
+  --tint-2: #f1f1ef;
+  --col-bg: #fafaf9;
+  --accent: #1f5fa8;     /* selection blue, softer than the Polaris CTA */
+  --late: #bf2031;
+  --done: #0d8050;
 }
-.vtabs { display: flex; align-items: center; gap: 2px; }
-.vtab {
-  display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border: 0;
-  border-radius: var(--radius-xs); background: transparent; color: var(--text-subdued);
-  font-size: 13px; font-weight: 500;
-}
-.vtab:hover { background: var(--subtle); color: var(--text); }
-.vtab.on { background: var(--subtle); color: var(--text); font-weight: 600; }
-.vtab .icon { opacity: .75; }
-.vtab.on .icon { opacity: 1; }
-.vbtn {
-  display: inline-flex; align-items: center; gap: 5px; margin-left: 6px; padding: 5px 8px;
-  border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--text-subdued);
-  font-size: 12.5px;
-}
-.vbtn b { color: var(--text); font-weight: 600; }
-.vbtn:hover { background: var(--subtle); color: var(--text); }
-.vbtn.late { color: var(--critical); }
-.vbtn.late:hover { background: var(--critical-bg); color: var(--critical); }
-.view-bar .filter-bar { margin-left: auto; padding: 2px 0 2px 10px; border: 0; background: transparent; }
 
-/* --- board: groups, their totals, and flatter cards --- */
-.board { gap: 12px; padding: 12px 20px 22px; min-height: 44vh; }
-.board-col {
-  width: 300px; flex: none; background: var(--subtle); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 6px 6px 4px;
-}
-.col-head { padding: 4px 6px 2px; gap: 7px; }
-.col-head h3 { font-size: 13.5px; font-weight: 600; letter-spacing: 0; }
-.col-count { background: rgba(55, 53, 47, .08); font-weight: 550; padding: 0 7px; }
-/* The group's own numbers — Notion's Σ row. Quiet, because it is read constantly. */
-.col-sum { display: flex; align-items: center; padding: 0 6px 7px; font-size: 11.5px; color: var(--text-subdued); }
-.col-sum b { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
-.col-sum .late { color: var(--critical); font-weight: 600; }
-.col-team { background: rgba(55, 53, 47, .07); font-weight: 500; padding: 1px 7px; border-radius: var(--radius-xs); }
-.card {
-  border: 1px solid var(--border); box-shadow: none; border-radius: 6px;
-  padding: 8px 10px; margin-bottom: 4px; background: var(--surface);
-}
-.card:hover { border-color: #d3d2cf; box-shadow: 0 1px 3px rgba(15, 15, 15, .07); }
-.card.priority-urgent { border-color: var(--border); }
-.card-title { font-size: 13.5px; font-weight: 500; line-height: 1.4; margin-bottom: 4px; }
-.card.is-done { opacity: .6; }
+body { font-size: 15px; line-height: 1.5; color: var(--ink); }
+h1, h2, h3, .card-title, .kpi-l, .col-head h3 { letter-spacing: -0.011em; }
+.muted, .small, .help, .page-sub { color: var(--ink-2); }
 
-/* --- property chips: Notion's geometry, still legible as status --- */
-.pill { border-radius: var(--radius-xs); padding: 1px 6px; font-weight: 500; font-size: 11.5px; letter-spacing: .01em; }
-.pill.urgent { background: #fdecec; color: #a4262c; }
-.pill.high { background: #fde9d9; color: #b05c0a; }
-.pill.medium { background: #fbf3db; color: #916a00; }
-.pill.low { background: #f1f1ef; color: #6b6a68; }
-.pill.due { background: #fbf3db; color: #916a00; }
-.pill.overdue { background: #fdecec; color: #a4262c; }
-.pill.done { background: #e3f1ea; color: #1a7a54; }
-.pill.link { background: #f1f1ef; color: #4c4b49; }
-.avatar.sm { width: 18px; height: 18px; font-size: 9.5px; }
-
-/* --- table view: the flat list, hairline rows, sticky heading --- */
-.table-wrap { padding: 0 20px 26px; }
-.table {
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
-  overflow: hidden; font-variant-numeric: tabular-nums;
-}
-.thead, .trow {
-  display: grid; align-items: center; gap: 10px; padding: 0 12px;
-  grid-template-columns: 24px minmax(220px, 2.4fr) 1fr .9fr 1.1fr .8fr .95fr .8fr;
-}
-.thead {
-  position: sticky; top: 0; z-index: 1; background: var(--surface); border-bottom: 1px solid var(--border);
-}
-.th {
-  display: inline-flex; align-items: center; gap: 3px; padding: 7px 0; border: 0; background: transparent;
-  font-size: 11.5px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--text-disabled);
-  text-align: left; white-space: nowrap;
-}
-button.th:hover { color: var(--text); }
-.th.on { color: var(--text); }
-.th.tick { justify-content: center; }
-.trow { border-top: 1px solid var(--border); cursor: pointer; min-height: 38px; }
-.trow:first-child { border-top: 0; }
-.thead + .trow, .thead + div > .trow:first-child { border-top: 0; }
-.trow:hover { background: var(--subtle); }
-.trow.is-done { opacity: .58; }
-.t-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.t-cell { font-size: 13px; color: var(--text-subdued); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.t-cell.who { display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
-.t-cell.when.late { color: var(--critical); font-weight: 550; }
-.tick {
-  width: 15px; height: 15px; padding: 0; border: 1px solid var(--border-strong); border-radius: 3px;
-  background: var(--surface); color: #fff; display: inline-grid; place-items: center; opacity: .35;
-}
-.trow:hover .tick, .tick:focus-visible { opacity: 1; }
-.tick:hover { border-color: var(--primary); }
-.tick.on { background: var(--success); border-color: var(--success); opacity: 1; }
-.tgroup {
-  display: flex; align-items: center; gap: 8px; padding: 7px 12px 6px; background: var(--subtle);
-  border-top: 1px solid var(--border); font-size: 12.5px;
-}
-.tgroup:first-child { border-top: 0; }
-.tg-caret { width: 20px; height: 20px; padding: 0; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--text-disabled); display: inline-grid; place-items: center; }
-.tg-caret:hover { background: rgba(55, 53, 47, .08); color: var(--text); }
-.tgroup.closed .tg-caret .icon { transform: rotate(-90deg); }
-.tgroup.closed { padding-bottom: 7px; }
-.tg-name { font-weight: 600; }
-.tg-count, .tg-late {
-  font-size: 11.5px; color: var(--text-subdued); background: rgba(55, 53, 47, .07);
-  border-radius: var(--radius-xs); padding: 0 6px;
-}
-.tg-late { color: var(--critical); background: #fdecec; font-weight: 550; }
-.t-empty { padding: 26px; text-align: center; color: var(--text-subdued); font-size: 13px; }
-
-/* --- calendar view: month grid of due dates --- */
-.cal { padding: 10px 20px 24px; }
-.cal-head { display: flex; align-items: center; gap: 6px; padding: 0 0 8px; }
-.cal-head h3 { font-size: 15px; font-weight: 600; margin-right: 2px; }
-.cal-head .vbtn { margin-left: 0; font-size: 14px; }
-.cal-grid {
-  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 1px;
-  background: var(--border); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden;
-}
-.cdow {
-  background: var(--subtle); padding: 5px 8px; font-size: 10.5px; font-weight: 600;
-  letter-spacing: .04em; text-transform: uppercase; color: var(--text-disabled);
-}
-.cday { background: var(--surface); min-height: 104px; padding: 5px 6px 6px; display: flex; flex-direction: column; gap: 3px; }
-.cday.out { background: var(--bg); }
-.cday.today { box-shadow: inset 0 0 0 1px var(--primary); }
-.cday-n { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-subdued); font-variant-numeric: tabular-nums; }
-.cday.today .cday-n { color: var(--primary); font-weight: 700; }
-.cday-c { background: rgba(55, 53, 47, .07); border-radius: var(--radius-xs); padding: 0 5px; font-size: 10.5px; }
-.c-task {
-  display: flex; align-items: center; gap: 5px; width: 100%; padding: 2px 4px; border: 0;
-  border-radius: var(--radius-xs); background: transparent; text-align: left;
-  font-size: 11.5px; color: var(--text); line-height: 1.35;
-}
-.c-task:hover { background: var(--subtle); }
-.c-task.is-done { color: var(--text-disabled); text-decoration: line-through; }
-.c-task { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.c-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--text-disabled); }
-.c-dot.late { background: var(--critical); }
-.c-dot.urgent { background: #d92d20; }
-.c-dot.high { background: #e58a2b; }
-.c-dot.medium { background: #d5ab1e; }
-.c-dot.low { background: #9b9a97; }
-.c-more { font-size: 11px; color: var(--text-disabled); padding-left: 4px; }
-
-/* --- the dashboard panels, same flat treatment --- */
-.dash-page .panel, .panel { box-shadow: none; border: 1px solid var(--border); }
-.dash-page .kpis, .kpis { box-shadow: none; border: 1px solid var(--border); }
-.kpi { padding: 11px 14px 12px; }
-.kpi-l { font-weight: 550; letter-spacing: .02em; text-transform: none; font-size: 11.5px; }
-.kpi-v { font-size: 24px; font-weight: 600; }
-.kpi.on { background: var(--subtle); box-shadow: inset 0 -2px 0 var(--text); }
-.kpi.on .kpi-l { color: var(--text); }
-.panel > .p-head { padding: 10px 14px; }
-.panel > .p-head h2 { font-size: 13.5px; font-weight: 600; }
-
-/* --- page head: Notion's big quiet title, Polaris's actions --- */
-.page-head { padding: 18px 20px 12px; }
-.page-head h1 { font-size: 22px; font-weight: 650; letter-spacing: -.01em; }
+/* --- one gutter for the whole page ------------------------------------- */
+.page { padding: 18px 22px 28px; }
+.board-page .page-head { padding: 18px 22px 10px; align-items: center; min-height: 52px; }
+.board-page .page-head h1, .page-id h1 { font-size: 20px; font-weight: 600; }
 .page-sub { font-size: 13px; margin-top: 2px; }
-.dash { padding: 4px 20px 12px; }
+.page-actions { gap: 8px; }
 
-@media (max-width: 1080px) {
-  .thead, .trow { grid-template-columns: 24px minmax(180px, 2fr) 1fr 1.1fr .9fr .9fr; }
-  .table .th-team, .table .trow > :nth-child(4), .table .th-closed, .table .trow > :nth-child(8) { display: none; }
+/* --- who you are acting as --------------------------------------------- */
+.me-chips { gap: 8px; margin-left: auto; }
+.me-chips .lbl { font-size: 12.5px; color: var(--ink-3); }
+
+/* --- the count band: sentence case, big figure, still a filter --------- */
+.dash { padding: 0 22px 12px; gap: 10px; }
+.kpis { background: #fff; border: 1px solid var(--hair); border-radius: 12px; box-shadow: none; }
+.kpi { padding: 10px 14px 11px; border-right: 1px solid var(--hair); gap: 0; }
+.kpi:hover { background: var(--tint); }
+.kpi:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.kpi-l { font-size: 12.5px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--ink-2); }
+.kpi-v { font-size: 24px; font-weight: 600; line-height: 1.2; margin-top: 1px; }
+.kpi-s { font-size: 12px; color: var(--ink-2); }
+.kpi.crit .kpi-v { color: var(--late); }
+.kpi.warn .kpi-v { color: #8a6100; }
+.kpi.ok .kpi-v { color: var(--done); }
+.kpi.zero .kpi-v { color: #cfcfcc; }
+.kpi.on { background: #f2f7fd; box-shadow: inset 0 -2px 0 var(--accent); }
+.kpi.on .kpi-l { color: #184a7d; }
+
+/* --- the view switcher: a real segmented control ----------------------- */
+.view-bar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px;
+  padding: 0 22px 12px;
 }
-@media (max-width: 720px) {
-  /* tick · task · assignee · priority · due — the rest is in the group header */
-  .thead, .trow { grid-template-columns: 24px minmax(140px, 1.7fr) 1fr .8fr .95fr; }
-  .table .trow > :nth-child(3), .table .th-stage { display: none; }
-  .view-bar { padding: 0 14px 8px; }
-  .table-wrap { padding: 0 14px 22px; }
-  .cal { padding: 8px 14px 20px; }
-  .cday { min-height: 76px; }
-  .c-task { font-size: 10.5px; }
-  .cal-grid { border-radius: 8px; }
+.vtabs { display: inline-flex; gap: 2px; padding: 2px; background: var(--tint-2); border-radius: 8px; }
+.vtab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 12px; border: 0; border-radius: 6px; background: transparent;
+  font-size: 13px; font-weight: 500; line-height: 1.5; color: var(--ink-2);
+  transition: background .12s ease, color .12s ease;
+}
+.vtab:hover { background: rgba(255, 255, 255, .7); color: var(--ink); }
+.vtab.on { background: #fff; color: var(--ink); box-shadow: 0 1px 2px rgba(15, 15, 15, .16); }
+.vtab .icon { width: 15px; height: 15px; opacity: .75; }
+.vtab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* The filter row only exists while something is filtered — a permanent
+   "filters" bar that always says "nothing" is the noise people complain about. */
+.filter-bar { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-2); }
+/* The base sheet gives a standalone toolbar its own margins; inside the view bar
+   it must sit flush, or the row lands out of alignment under 720px. */
+.view-bar .filter-bar { margin: 0; padding: 0; gap: 10px; flex-wrap: nowrap; }
+
+/* --- Board: tinted wells, white cards --------------------------------- */
+.board { display: flex; gap: 12px; align-items: flex-start; overflow-x: auto; padding: 0 22px 22px; }
+.board-col {
+  flex: 0 0 306px; width: 306px; background: var(--col-bg);
+  border: 1px solid var(--hair); border-radius: 12px; padding: 8px 8px 6px;
+}
+.col-head { padding: 2px 4px 4px; gap: 8px; }
+.col-head h3 { font-size: 14px; font-weight: 600; }
+.col-team {
+  padding: 1px 7px; border: 0; border-radius: 4px; background: #eceae7;
+  color: var(--ink-2); font-size: 11.5px; font-weight: 500;
+}
+.col-count {
+  min-width: 0; padding: 0; border-radius: 0; background: transparent;
+  font-size: 12.5px; font-weight: 500; color: var(--ink-3); font-variant-numeric: tabular-nums;
+}
+.col-edit {
+  margin-left: auto; padding: 3px 8px; border: 1px solid transparent; border-radius: 6px;
+  background: transparent; font-size: 12.5px; color: var(--ink-3);
+}
+.col-edit:hover { background: #eceae7; color: var(--ink); }
+.col-edit:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.col-sum { display: flex; flex-wrap: wrap; gap: 3px 10px; padding: 0 4px 8px; font-size: 12px; color: var(--ink-2); }
+.col-sum .late { color: var(--late); font-weight: 500; }
+.col-quiet { padding: 0 4px 6px; font-size: 12.5px; color: var(--ink-3); }
+.col-cards { display: flex; flex-direction: column; }
+
+.card {
+  background: #fff; border: 1px solid var(--hair); border-radius: 8px;
+  padding: 10px 12px; margin-bottom: 6px; box-shadow: none;
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+.card:hover { border-color: #dedcd9; box-shadow: 0 1px 4px rgba(15, 15, 15, .07); }
+.card.dragging { opacity: .5; box-shadow: none; }
+.card.priority-urgent { border-left: 3px solid #e0393e; padding-left: 10px; }
+.card.is-done { background: #fbfbfa; border-color: var(--hair); opacity: 1; }
+.card.is-done:hover { background: #f7f7f6; }
+.card.is-done .card-title { color: var(--ink-3); text-decoration: line-through; text-decoration-color: #d8d7d4; }
+.card-title { font-size: 14px; font-weight: 500; line-height: 1.4; margin-bottom: 4px; }
+.card-meta { gap: 8px; align-items: center; font-size: 12.5px; color: var(--ink-2); }
+.card-meta .when { font-variant-numeric: tabular-nums; }
+.card-meta .when.late { color: var(--late); font-weight: 500; }
+.card-meta .when.done { color: var(--done); }
+.pill { font-size: 11.5px; padding: 1px 7px; border-radius: 4px; font-weight: 500; }
+.card-foot { gap: 8px; margin-top: 8px; }
+.card-foot .avatar { margin-left: 0; }
+.card .res-line { margin-top: 7px; font-size: 12px; color: var(--accent); }
+.card .res-line .res-ic { display: inline-flex; opacity: .7; }
+.card .res-line a { color: inherit; }
+
+/* A written control you can see beats a circle you have to discover. */
+.btn { border-radius: 7px; }
+.btn.sm { font-size: 13px; padding: 5px 11px; }
+.btn.plain { color: var(--ink-2); }
+.btn.plain:hover { background: var(--tint-2); color: var(--ink); }
+.btn.tiny {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 9px; border: 1px solid var(--hair); border-radius: 6px; background: #fff;
+  font-size: 12.5px; font-weight: 500; line-height: 1.7; color: var(--ink-2);
+}
+.btn.tiny:hover { background: var(--tint-2); border-color: #e4e3e1; color: var(--ink); }
+.btn.tiny.done:hover { background: #eaf7f0; border-color: #b4dcc6; color: #0a6842; }
+.btn.tiny .icon { width: 13px; height: 13px; }
+.btn.danger { color: var(--late); border-color: #f0b5b8; background: #fff; }
+.btn.danger:hover { background: #fff4f5; color: #a3161f; }
+.grow { flex: 1 1 auto; }
+
+/* --- List: one line per task, everything you need to triage in six ----- */
+.table-wrap { padding: 0 22px 22px; }
+.table { background: #fff; border: 1px solid var(--hair); border-radius: 12px; overflow: hidden; }
+.tgroup {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 8px 12px 5px; background: var(--tint); border-top: 1px solid var(--hair);
+}
+.table > .tgroup:first-child, .table > div:first-child > .tgroup:first-child { border-top: 0; }
+.tg-name { font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.tg-count { font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.tg-late { font-size: 12px; color: var(--late); font-weight: 500; }
+.trow {
+  display: grid; align-items: center; gap: 10px;
+  grid-template-columns: 24px minmax(0, 1fr) 92px 122px 92px 64px;
+  min-height: 46px; padding: 4px 12px; border-top: 1px solid var(--hair); background: #fff;
+}
+.trow:hover { background: var(--tint); }
+.trow.is-done .t-title { color: var(--ink-3); }
+.trow.is-done { background: #fdfdfd; }
+.tcheck {
+  width: 18px; height: 18px; display: grid; place-items: center;
+  border: 1px solid #d8d7d4; border-radius: 50%; background: #fff; color: transparent; padding: 0;
+}
+.tcheck:hover { border-color: var(--done); background: #eaf7f0; color: #0a6842; }
+.tcheck.on { background: var(--done); border-color: var(--done); color: #fff; }
+.tcheck .icon { width: 12px; height: 12px; }
+.t-title { font-size: 14px; font-weight: 500; line-height: 1.35; min-width: 0; }
+.t-title > span, .t-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-when { display: block; font-size: 12px; font-weight: 400; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.t-when.late { color: var(--late); font-weight: 500; }
+.t-cell { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); min-width: 0; }
+.t-cell > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: #d8d7d4; }
+.dot.urgent { background: #e0393e; }
+.dot.high { background: #f0a92a; }
+.dot.medium { background: #c9c8c5; }
+.dot.low { background: transparent; box-shadow: inset 0 0 0 1px #d8d7d4; }
+.avatar.sm { width: 18px; height: 18px; font-size: 8.5px; }
+.t-empty { padding: 30px 16px; text-align: center; font-size: 13.5px; color: var(--ink-3); background: #fff; }
+
+/* --- Month: dates first, tasks as lines you can still tap ------------- */
+.cal { margin: 0 22px 22px; background: #fff; border: 1px solid var(--hair); border-radius: 12px; overflow: hidden; }
+.cal-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--hair); }
+.cal-head h3 { font-size: 15px; font-weight: 600; margin: 0 4px; }
+.cal-head .spacer { flex: 1 1 auto; }
+.navbtn {
+  width: 26px; height: 26px; display: grid; place-items: center; padding: 0;
+  border: 1px solid var(--hair); border-radius: 6px; background: #fff; color: var(--ink-2);
+}
+.navbtn:hover { background: var(--tint-2); color: var(--ink); }
+.navbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cal-late {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  padding: 8px 12px; border: 0; border-bottom: 1px solid var(--hair);
+  background: #fdf6f1; color: #8a4b12; font-size: 13px; text-align: left;
+}
+.cal-late:hover { background: #fbeee4; }
+.cal-late b { margin-left: auto; color: var(--accent); font-weight: 500; }
+.cal-late .icon { width: 14px; height: 14px; }
+.cal-scroll { overflow-x: auto; scrollbar-width: thin; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); min-width: 700px; }
+.cdow {
+  padding: 6px; text-align: center; font-size: 11.5px; font-weight: 500; color: var(--ink-3);
+  background: var(--tint); border-bottom: 1px solid var(--hair);
+}
+.cday {
+  display: flex; flex-direction: column; gap: 4px; align-items: stretch;
+  min-height: 92px; padding: 5px 6px 7px; border-top: 1px solid var(--hair);
+}
+.cday + .cday, .cal-grid .cday:nth-child(-n+7) { border-top: 1px solid var(--hair); }
+.cal-grid:first-child .cdow { border-top: 0; }
+.cday.out { background: #fcfcfb; }
+.cday.out .cday-n { color: #cfcecb; }
+.cday.today { background: #f4f8fd; box-shadow: inset 0 2px 0 var(--accent); }
+.cday-n { font-size: 12px; font-weight: 500; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.cday.today .cday-n { color: #184a7d; }
+.cday-c {
+  margin-left: 5px; padding: 0 4px; border-radius: 4px; background: #eceae7;
+  font-size: 10.5px; color: var(--ink-2);
+}
+.c-task {
+  display: flex; align-items: center; gap: 5px; width: 100%;
+  padding: 3px 6px; border: 1px solid var(--hair); border-left: 2px solid #d8d7d4;
+  border-radius: 5px; background: #fff; font-size: 12px; text-align: left; color: var(--ink);
+}
+.c-task:hover { background: var(--tint-2); }
+.c-task span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-task.is-done { opacity: .55; }
+.c-more { font-size: 11.5px; color: var(--ink-3); padding-left: 2px; }
+
+/* --- dashboard panels: hairlines, no floating cards ------------------- */
+.panel { background: #fff; border: 1px solid var(--hair); border-radius: 12px; box-shadow: none; }
+.panel > .p-head { padding: 11px 14px; }
+.panel > .p-head h2 { font-size: 14px; font-weight: 600; }
+.panel > .p-head .sub { font-size: 12.5px; color: var(--ink-2); }
+.dash-lede { font-size: 13.5px; line-height: 1.55; color: var(--ink-2); max-width: 74ch; }
+.tm-name { font-size: 13.5px; font-weight: 500; }
+.tm-n { font-size: 12.5px; color: var(--ink-2); }
+.wl-row { font-size: 13px; }
+.wl-name { font-weight: 500; }
+.c-cap { font-size: 10.5px; letter-spacing: 0; text-transform: none; color: var(--ink-3); }
+.c-bar { background: var(--accent); opacity: .85; }
+.at-title { font-weight: 500; font-size: 14px; }
+.at-when { font-size: 12.5px; color: var(--ink-2); }
+.at-when.late { color: var(--late); font-weight: 500; }
+
+/* --- sheets ---------------------------------------------------------- */
+.overlay { background: rgba(15, 15, 15, .4); }
+.modal { max-width: 580px; border-radius: 12px; }
+.modal-head { padding: 14px 18px; }
+.modal-head h2 { font-size: 16px; font-weight: 600; }
+.modal-body { padding: 4px 18px 18px; }
+.modal-foot { padding: 12px 18px; background: var(--tint); border-top: 1px solid var(--hair); }
+.sep { border: 0; border-top: 1px solid var(--hair); margin: 16px 0 12px; }
+.checkline { display: flex; align-items: flex-start; gap: 8px; font-size: 13.5px; color: var(--ink); }
+.help ul { font-size: 13px; }
+
+/* --- narrow screens: the board stays a board, the list sheds columns - */
+@media (max-width: 760px) {
+  .page { padding: 14px 14px 24px; }
+  .board-page .page-head { padding: 14px 14px 8px; align-items: flex-start; }
+  .dash, .view-bar, .board, .table-wrap { padding-left: 14px; padding-right: 14px; }
+  .cal { margin-left: 14px; margin-right: 14px; }
+  .me-chips { margin-left: 0; }
+  .board-col { flex-basis: 84vw; width: 84vw; }
+  .t-cell:not(.who) { display: none; }
+  .trow { grid-template-columns: 24px minmax(0, 1fr) 96px 64px; }
+  .t-cell.who { font-size: 12.5px; }
+  .cal-grid { min-width: 520px; }
+  .cday { min-height: 66px; }
+}
+@media (max-width: 1000px) {
+  .panels { grid-template-columns: 1fr; }
 }

@@ -375,7 +375,7 @@ const check = (name, fn) => {
     // Nothing asked for a section, so role decides — and an owner is the one who
     // opens the app for the numbers. (See `bareOwner` below for the same load as a
     // teammate.)
-    assert.ok(ownerRoot.includes('Closed per day'), 'owner did not land on the dashboard: ' + ownerRoot.slice(0, 160));
+    assert.ok(ownerRoot.includes('Done each day'), 'owner did not land on the dashboard: ' + ownerRoot.slice(0, 160));
     assert.equal(navOwner.children[1].attrs['aria-current'], 'page');
     assert.ok(bareRoot.includes('To Do'), 'teammate did not land on the board: ' + bareRoot.slice(0, 160));
   });
@@ -443,10 +443,14 @@ const check = (name, fn) => {
     assert.ok(env.root.text().includes('Checklist'), 'the drawer did not open at all');
     const bad = uiText(env).filter(t => EMOJI.test(t));
     assert.deepEqual(bad, [], 'emoji in drawer: ' + JSON.stringify(bad.slice(0, 4)));
-    const labels = env.root.find(n => n.tagName === 'BUTTON').map(b => b.attrs['aria-label']).filter(Boolean);
-    assert.ok(labels.length, 'icon-only buttons need accessible names');
+    // The app now has almost no icon-only buttons (they read as guesses to someone
+    // who uses this twice a week), so the rule is stated directly: if a button has
+    // no words, it must have a name.
+    const nameless = env.root.find(n => n.tagName === 'BUTTON' && !n.text().trim())
+      .filter(b => !b.attrs['aria-label'] && !b.attrs.title);
+    assert.deepEqual(nameless.map(b => b.attrs.class), [], 'icon-only buttons need accessible names');
   });
-  const tmpl = env.root.find(n => n.tagName === 'BUTTON' && n.text().includes('Task templates'))[0];
+  const tmpl = env.root.find(n => n.tagName === 'BUTTON' && /Templates/.test(n.text()))[0];
   tmpl.click();
   await settle();
   check('template picker renders with icons, no emoji', () => {

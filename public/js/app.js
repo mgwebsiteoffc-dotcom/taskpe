@@ -46,11 +46,17 @@
   // Owners open the app to read the numbers; everyone else opens it to work the
   // board. Only ever consulted when nothing asked for a section, so a sidebar
   // item or a deep link is never overridden.
-  function landingView() {
-    if (IS_STAFF) return 'board';
+  // Owners get the dashboard, and the few controls that reshape the board (column
+  // settings) belong to them alone.
+  function isOwnerActor() {
     const s = state.board;
-    const me = s && (s.members || []).find(m => m.id === (state.me || s.me));
-    return me && /owner|admin/i.test(String(me.role || '')) ? 'dashboard' : 'board';
+    if (!s || IS_STAFF) return false;
+    const me = (s.members || []).find(m => m.id === (state.me || s.me));
+    return !!(me && /owner|admin/i.test(String(me.role || '')));
+  }
+
+  function landingView() {
+    return IS_STAFF ? 'board' : (isOwnerActor() ? 'dashboard' : 'board');
   }
 
   // A blocked-cookie browser (private mode, a partitioned iframe) can make even
@@ -76,11 +82,11 @@
     // One database, three ways to read it (Notion's model): the board for the
     // queue, the table to scan and sort everything, the calendar to plan a week.
     mode: ['board', 'table', 'calendar'].includes(readPref('taskpe_mode')) ? readPref('taskpe_mode') : 'board',
-    group: readPref('taskpe_group') || 'stage',   // table grouping: stage|team|person|due|none
-    sort: null,           // { key, dir } — only meaningful in the table
-    collapsed: new Set(), // table groups folded away for this page load (see setGroup)
-    cal: null,            // 'YYYY-MM' being shown in the calendar
-    dashHidden: readPref('taskpe_dash') === 'off',   // overview band
+    cal: null,            // 'YYYY-MM' being shown in the month view
+    // `d` hides the count band for the session. It used to be remembered, and a
+    // store that had hidden it once could never find the tiles again — the tiles are
+    // the board filter, so a hidden band is a board with no filter.
+    dashHidden: false,
     loading: false,
   };
 
@@ -302,6 +308,7 @@
     reopen:     [['path', { d: 'M4.6 12a7.4 7.4 0 1 0 2.2-5.3' }], ['path', { d: 'M4.4 4.4v4.3h4.3' }]],
     'arrow-left': [['path', { d: 'M19 12H5.6' }], ['path', { d: 'M11.2 5.6L4.8 12l6.4 6.4' }]],
     'chevron-right': [['path', { d: 'M9.6 5.6L16 12l-6.4 6.4' }]],
+    'chevron-left':  [['path', { d: 'M14.4 5.6L8 12l6.4 6.4' }]],
     'chevron-down':  [['path', { d: 'M5.6 9.4L12 15.8l6.4-6.4' }]],
     globe:      [['circle', { cx: 12, cy: 12, r: 7.8 }],
                  ['path', { d: 'M4.2 12h15.6M12 4.2c2.2 2.2 3.3 5 3.3 7.8s-1.1 5.6-3.3 7.8c-2.2-2.2-3.3-5-3.3-7.8s1.1-5.6 3.3-7.8z' }]],
@@ -574,12 +581,16 @@
 
   function renderMeChips() {
     const s = state.board;
-    if (IS_STAFF || !s || !s.members.length) return h('div', { class: 'me-chips' });
+    if (IS_STAFF || !s) return h('div', { class: 'me-chips' });
+    // A deactivated login must not stay selectable as the author of a new task.
+    const people = (s.members || []).filter(m => m.active);
+    if (!people.length) return h('div', { class: 'me-chips' });
 
-    // No "Working as:" label any more: the avatar row is short, the tooltip says
-    // the rest, and every word removed here is a word less competing with the tasks.
-    return h('div', { class: 'me-chips', title: 'Working as — click to attribute a task to someone else' },
-      s.members.filter(m => m.active).map(m =>
+    // Three faces with no label is a riddle, so the row says what it is. It stays
+    // short because the alternative — a dropdown labelled "Act as" — is worse.
+    return h('div', { class: 'me-chips', title: 'New tasks are added for the highlighted person' },
+      h('span', { class: 'lbl' }, 'Working as'),
+      people.map(m =>
         h('button', {
           class: 'me-chip' + (state.me === m.id ? ' on' : ''),
           onclick: () => {
@@ -601,15 +612,15 @@
   const STAT_FILTERS = [
     { key: 'open', label: 'Open', test: isOpenTask,
       sub: st => state.team ? st.open + ' in ' + state.team
-        : st.cap ? st.open + ' of ' + st.cap + ' allowed' : st.total + ' on the board' },
-    { key: 'overdue', label: 'Overdue', tone: 'crit', test: t => isOpenTask(t) && !!t.overdue,
-      sub: st => st.oldestOverdue ? 'oldest waiting ' + st.oldestOverdue + 'd' : 'nothing past its date' },
+        : st.cap ? st.open + ' of ' + st.cap + ' used' : st.total + ' on the board' },
+    { key: 'overdue', label: 'Late', tone: 'crit', test: t => isOpenTask(t) && !!t.overdue,
+      sub: st => st.oldestOverdue ? 'worst is ' + st.oldestOverdue + ' days' : 'nothing is late' },
     { key: 'due', label: 'Due today', tone: 'warn', test: t => isOpenTask(t) && !t.overdue && isToday(t.due_at),
-      sub: st => st.dueUnclaimed ? st.dueUnclaimed + ' still unclaimed' : 'all claimed' },
-    { key: 'unclaimed', label: 'Unclaimed', test: t => isOpenTask(t) && !t.assignee,
-      sub: st => st.unclaimed ? 'nobody has picked these up' : 'everything is owned' },
-    { key: 'closed', label: 'Closed today', tone: 'ok', test: t => !!t.completed_at && isToday(t.completed_at),
-      sub: st => st.week + ' this week' + (st.weekDelta ? ' · ' + (st.weekDelta > 0 ? '+' : '') + st.weekDelta + ' vs last' : '') },
+      sub: st => st.dueUnclaimed ? st.dueUnclaimed + ' still need an owner' : 'all taken' },
+    { key: 'unclaimed', label: 'No owner', test: t => isOpenTask(t) && !t.assignee,
+      sub: st => st.unclaimed ? 'nobody has these yet' : 'every task has an owner' },
+    { key: 'closed', label: 'Done today', tone: 'ok', test: t => !!t.completed_at && isToday(t.completed_at),
+      sub: st => st.week + ' this week' + (st.weekDelta ? ' (' + (st.weekDelta > 0 ? '+' : '') + st.weekDelta + ' vs last)' : '') },
   ];
 
   const daysAgoKey = n => {
@@ -739,23 +750,19 @@
 
     return h('header', { class: 'page-head' },
       h('div', { class: 'page-id' },
-        h('h1', null, IS_STAFF ? (shop.name || 'Your board') : 'Tasks'),
-        // The store and the plan, nothing else — the counts belong to the KPI tiles
-        // below, and repeating them here is how a header turns into noise.
+        h('h1', null, IS_STAFF ? (shop.name || 'Your board') : 'Today\u2019s work'),
+        // Store and plan, and the counts only when the tiles are hidden — saying a
+        // number twice on one screen is how a header turns into noise.
         h('div', { class: 'page-sub' },
           [shop.name || shop.domain,
            shop.plan === 'free' ? 'Free plan' : cap(shop.plan) + ' plan',
-           // Counts live in the tiles. They move up here only when the band is
-           // hidden, so nothing is stated twice while the overview is on screen.
-           state.dashHidden ? st.open + ' open · ' + st.week + ' closed this week' : null]
-            .filter(Boolean).join(' · '))),
+           state.dashHidden ? st.open + ' open \u00b7 ' + st.week + ' done this week' : null]
+            .filter(Boolean).join(' \u00b7 '))),
       h('div', { class: 'page-actions' },
         IS_STAFF ? null : renderMeChips(),
-        IS_STAFF ? null : iconButton('info-circle', { title: 'Keyboard shortcuts (?)', onClick: openShortcutsHelp }),
-        h('button', { class: 'btn plain sm', onclick: toggleDash, title: 'The count tiles — they double as board filters (d). Charts live on the Dashboard.' },
-          state.dashHidden ? 'Show stats' : 'Hide stats'),
-        h('button', { class: 'btn sm', onclick: openTemplatesModal, title: 'One-click checklists for COD confirmation, NDR rescue and RTO — pick one and it is filed with its steps' },
-          ...withIcon('stack', 'Task templates')),
+        h('button', { class: 'btn sm', onclick: openTemplatesModal,
+          title: 'One-click checklists for COD confirmation, NDR rescue and RTO' },
+          ...withIcon('stack', 'Templates')),
         h('button', { class: 'btn primary sm', onclick: startQuickAdd }, ...withIcon('plus', 'Add task', { size: 15 }))));
   }
 
@@ -793,8 +800,8 @@
   function renderThroughput(st) {
     return h('section', { class: 'panel' },
       h('div', { class: 'p-head' },
-        h('h2', null, 'Closed per day'),
-        h('span', { class: 'sub' }, st.twoWeeks + ' in the last 14 days' + (st.onTime === null ? '' : ' · ' + st.onTime + '% on time')),
+        h('h2', null, 'Done each day'),
+        h('span', { class: 'sub' }, st.twoWeeks + ' in 2 weeks' + (st.onTime === null ? '' : ' · ' + st.onTime + '% on time')),
         h('span', { class: 'spacer' }),
         h('span', { class: 'pill ' + (st.weekDelta > 0 ? 'medium' : st.weekDelta < 0 ? 'high' : 'low') },
           (st.weekDelta > 0 ? '+' : '') + st.weekDelta + ' vs last week')),
@@ -822,7 +829,7 @@
 
     const head = h('div', { class: 'p-head' },
       h('h2', null, 'Teams'),
-      h('span', { class: 'sub' }, tagged.length ? 'open vs closed this week — click to work that board' : 'by department'));
+      h('span', { class: 'sub' }, tagged.length ? 'tap a team to see its board' : 'tag a column to split this up'));
 
     const row = r => {
       const cls = 'tm-row' + (state.team === r.team ? ' on' : '');
@@ -842,8 +849,8 @@
     const body = tagged.length
       ? h('div', { class: 'p-body flush' }, tagged.map(row))
       : h('div', { class: 'p-body' }, h('div', { class: 'muted small' },
-        'Nothing is grouped yet. On the board, the people icon on a column names its team — Accounting, Warehouse, '
-        + 'Fulfilment \u2026 and this panel fills itself in.'));
+        'No team has been named yet. On the board, each column has an Edit button — type '
+        + 'Accounting, Warehouse or Fulfilment there and this panel fills itself in.'));
 
     // A half-tagged board is the failure mode here, so say how much is untagged
     // instead of letting the totals quietly disagree with the rows above.
@@ -862,8 +869,8 @@
 
     return h('section', { class: 'panel' },
       h('div', { class: 'p-head' },
-        h('h2', null, 'How old the open work is'),
-        h('span', { class: 'sub' }, st.oldestOpen ? 'oldest waiting ' + st.oldestOpen + 'd' : 'nothing open')),
+        h('h2', null, 'How old the work is'),
+        h('span', { class: 'sub' }, st.oldestOpen ? 'the oldest open task is ' + st.oldestOpen + ' days' : 'nothing open')),
       h('div', { class: 'p-body' }, h('div', { class: 'wl' }, st.age.map(b => h('div', {
           class: 'wl-row' + (b.hot && b.n ? ' late' : ''),
         },
@@ -903,20 +910,20 @@
       renderStats(st),
       h('div', { class: 'panels' }, renderThroughput(st), renderTeams(st)),
       h('div', { class: 'panels' },
-        dashPanel('Who is carrying what', 'open vs closed this week', renderWorkload()),
+        dashPanel('Who is busy', 'open and done this week', renderWorkload()),
         renderAging(st)),
       renderAttention());
   }
 
   function dashLede(st) {
-    const bits = [st.open + (st.open === 1 ? ' task open' : ' tasks open')];
-    if (st.overdue) bits.push(st.overdue + ' overdue' + (st.oldestOverdue ? ' (oldest waiting ' + st.oldestOverdue + 'd)' : ''));
-    if (st.unclaimed) bits.push(st.unclaimed + ' nobody has picked up');
-    bits.push(st.week + ' closed in the last 7 days'
-      + (st.weekDelta ? ' (' + (st.weekDelta > 0 ? '+' : '') + st.weekDelta + ' vs the week before)' : ''));
+    const bits = [st.open
+      + (st.open === 1 ? ' task still open' : ' tasks still open')];
+    if (st.overdue) bits.push(st.overdue + ' late' + (st.oldestOverdue ? ' (worst ' + st.oldestOverdue + ' days)' : ''));
+    if (st.unclaimed) bits.push(st.unclaimed + ' with no owner');
+    bits.push(st.week + ' done this week' + (st.weekDelta ? ', ' + (st.weekDelta > 0 ? '+' : '') + st.weekDelta + ' on last week' : ''));
     const top = st.teams.find(r => r.team && r.open);
-    if (top) bits.push(top.team + ' is carrying the most (' + top.open + ')');
-    return bits.join(' \u00b7 ');
+    if (top) bits.push(top.team + ' has the most');
+    return bits.join(' \u00b7 ') + '.';
   }
 
   function openTeamBoard(team) {
@@ -970,26 +977,23 @@
 
     return h('section', { class: 'panel at-panel' },
       h('div', { class: 'p-head' },
-        h('h2', null, 'Needs attention'),
-        h('span', { class: 'sub' }, rows.length ? 'oldest and riskiest first — click to open' : 'nothing waiting')),
+        h('h2', null, 'Do these first'),
+        h('span', { class: 'sub' }, rows.length ? 'tap to open' : 'nothing waiting')),
       rows.length
         ? h('div', { class: 'p-body flush' }, rows.map(({ t }) => h('button', {
             class: 'at-row', onclick: () => openTaskDrawer(t.id),
           },
           h('span', { class: 'at-dot ' + (t.overdue ? 'late' : t.priority) }),
           h('span', { class: 'at-title' }, t.title),
-          h('span', { class: 'at-when' + (t.overdue ? ' late' : '') },
-            t.overdue ? 'overdue' + (t.due_at ? ' · ' + fmtDate(t.due_at) : '')
-              : t.due_at ? 'due ' + fmtDate(t.due_at) : ageDays(t.created_at) + 'd old'),
+          h('span', { class: 'at-when' + (t.overdue ? ' late' : '') }, whenText(t)),
           t.assignee ? h('span', { class: 'avatar', title: t.assignee.name }, t.assignee.initials)
-            : h('span', { class: 'avatar gray', title: 'Unclaimed' }, '·'))))
+            : h('span', { class: 'avatar gray', title: 'No owner yet' }, '·'))))
         : h('div', { class: 'p-body' }, h('div', { class: 'muted small' },
             'Nothing open. Add a task, or tick one off the board.')));
   }
 
   function toggleDash() {
     state.dashHidden = !state.dashHidden;
-    writePref('taskpe_dash', state.dashHidden ? 'off' : 'on');
     render();
   }
 
@@ -1014,64 +1018,20 @@
     render();
   }
 
-  function setGroup(group) {
-    state.group = group;
-    writePref('taskpe_group', group);
-    state.collapsed.clear();        // the old keys mean nothing in the new grouping
-    render();
-  }
+  const MODES = [['board', 'Board', 'board'], ['table', 'List', 'table'], ['calendar', 'Month', 'calendar']];
 
-  const MODES = [
-    ['board', 'Board', 'board'],
-    ['table', 'Table', 'table'],
-    ['calendar', 'Calendar', 'calendar'],
-  ];
-  // Same order the columns are clicked in; `priority` needs a rank, not a string.
-  const TCOLS = [['title', 'Task'], ['stage', 'Stage'], ['team', 'Team'], ['person', 'Assignee'],
-                 ['priority', 'Priority'], ['due', 'Due'], ['closed', 'Closed']];
-  const PRANK = { urgent: 0, high: 1, medium: 2, low: 3 };
-  const GROUPS = [['stage', 'Stage'], ['team', 'Team'], ['person', 'Person'], ['due', 'Due'], ['none', 'No grouping']];
-
-  // Notion puts the view switcher, the filters and the grouping in ONE quiet row,
-  // and every part of it is text rather than chrome. That is what keeps a data
-  // dense screen from looking like a toolbar.
+  // Views, and the only two filters there are, on one line. It is a segmented
+  // control rather than text links because the people using this app all day are
+  // warehouse and accounts staff, not people who read UI affordances.
   function renderViewBar(st) {
-    const shown = state.group !== 'none' && state.mode === 'table'
-      ? h('button', {
-          class: 'vbtn', title: 'Group the rows — click to cycle',
-          onclick: () => setGroup(GROUPS[(GROUPS.findIndex(g => g[0] === state.group) + 1) % GROUPS.length][0]),
-        }, 'By: ', h('b', null, GROUPS.find(g => g[0] === state.group)[1]), icon('chevron-down', { size: 12 }))
-      : null;
-
     return h('div', { class: 'view-bar' },
-      // Deliberately a group of pressed-buttons and not a tablist: the admin's own
-      // sidebar is this app's navigation, while these switch views of one database.
-      h('div', { class: 'vtabs', role: 'group', 'aria-label': 'Ways to view the tasks' },
+      h('div', { class: 'vtabs', role: 'group', 'aria-label': 'Ways to see the tasks' },
         MODES.map(([key, label, ic]) => h('button', {
           class: 'vtab' + (state.mode === key ? ' on' : ''),
           'aria-pressed': String(state.mode === key),
-          title: 'Show the same tasks as a ' + label.toLowerCase(),
           onclick: () => setMode(key),
-        }, icon(ic, { size: 14 }), label))),
-      shown,
-      state.mode === 'table' ? renderSortBtn() : null,
+        }, icon(ic, { size: 15 }), label))),
       renderFilterBar(st));
-  }
-
-  function sortOf(key) {
-    const cur = state.sort;
-    state.sort = cur && cur.key === key ? { key, dir: -cur.dir } : { key, dir: 1 };
-    render();
-  }
-
-  function renderSortBtn() {
-    const cur = state.sort || { key: 'due', dir: 1 };
-    const label = (TCOLS.find(c => c[0] === cur.key) || ['due', 'Due'])[1];
-
-    return h('button', {
-      class: 'vbtn', title: 'Click a column heading to sort by it; click again to flip',
-      onclick: () => sortOf(cur.key === 'due' ? 'priority' : cur.key),
-    }, 'Sort: ', h('b', null, label), cur.dir > 0 ? ' ↑' : ' ↓');
   }
 
   function renderBoard() {
@@ -1086,131 +1046,95 @@
         : renderColumnsView(st));
   }
 
-  // --- the board: one group per column, with the group's own totals underneath ---
   function renderColumnsView(st) {
     const board = h('div', { class: 'board' });
-
     for (const col of boardColumns()) board.append(renderColumn(col));
     board.append(h('button', { class: 'add-col-btn', onclick: promptAddColumn }, ...withIcon('plus', 'Add column', { size: 16 })));
-
     return board;
   }
 
-  /* ------------------------------------------------------------- table view */
-
-  const sortKey = t => {
-    const key = (state.sort || { key: 'due' }).key;
-    if (key === 'title') return String(t.title || '').toLowerCase();
-    if (key === 'stage') return String(colName(t.column_id) || '').toLowerCase();
-    if (key === 'team') return String(colTeam(t.column_id) || '~ none').toLowerCase();
-    if (key === 'person') return String(t.assignee ? t.assignee.name : '~ unclaimed').toLowerCase();
-    if (key === 'priority') return String(PRANK[t.priority] ?? 9) + '|' + String(t.title || '').toLowerCase();
-    if (key === 'closed') return String(t.completed_at || '');
-    return String(t.due_at || '');            // due: open tasks with no date sort last
-  };
-
-  const colName = id => (state.board.columns.find(c => c.id === id) || {}).name || '—';
+  const colName = id => (state.board.columns.find(c => c.id === id) || {}).name || 'No stage';
   const colTeam = id => (state.board.columns.find(c => c.id === id) || {}).team || null;
 
+  /* ------------------------------------------------------------------ words */
+
+  // A date is a puzzle for someone who opens this twice a week. "Due tomorrow" and
+  // "2 days late" are not, and they survive a phone screen with no tooltips.
+  const dayDelta = iso => Math.round(
+    (new Date(iso.slice(0, 10) + 'T12:00:00') - new Date(dateKey(new Date()) + 'T12:00:00')) / 864e5);
+
+  function whenText(t) {
+    if (t.completed_at) {
+      const n = dayDelta(t.completed_at);
+      return n === 0 ? 'Done today' : n === -1 ? 'Done yesterday' : 'Done ' + fmtDate(t.completed_at);
+    }
+    if (!t.due_at) return 'No date';
+    const n = dayDelta(t.due_at);
+    if (n < -1) return Math.abs(n) + ' days late';
+    if (n === -1) return '1 day late';
+    if (n === 0) return 'Due today';
+    if (n === 1) return 'Due tomorrow';
+    if (n <= 6) return 'Due in ' + n + ' days';
+    return 'Due ' + fmtDate(t.due_at);
+  }
+
+  const PRIORITY_WORDS = { urgent: 'Urgent', high: 'High', medium: 'Normal', low: 'Low' };
+
+  /* --------------------------------------------------------------- list view */
+
   function renderTable(st) {
-    const dir = (state.sort || { dir: 1 }).dir;
     const list = allTasks().slice().sort((a, b) => {
-      const x = sortKey(a); const y = sortKey(b);
-      // Done tasks sink to the bottom of any ordering — a list you have to skip
-      // them in is a list you stop reading.
-      if (!!a.completed_at !== !!b.completed_at) return a.completed_at ? 1 : -1;
-      return (x < y ? -1 : x > y ? 1 : 0) * dir;
+      if (!!a.completed_at !== !!b.completed_at) return a.completed_at ? 1 : -1;      // open first, always
+      const byDue = (a.due_at ? dayDelta(a.due_at) : 9999) - (b.due_at ? dayDelta(b.due_at) : 9999);
+      return byDue || String(a.title).localeCompare(String(b.title));
     });
 
-    const head = h('div', { class: 'thead' },
-      h('div', { class: 'th tick' }, icon('check', { size: 13 })),
-      TCOLS.map(([key, label]) => h('button', {
-        class: 'th th-' + key + (key === (state.sort || { key: 'due' }).key ? ' on' : ''),
-        title: 'Sort by ' + label,
-        onclick: () => sortOf(key),
-      }, label, key === (state.sort || { key: 'due' }).key ? (dir > 0 ? ' ↑' : ' ↓') : null)));
-
-    const rowsOf = items => items.map(t => h('div', { class: 'trow' + (t.completed_at ? ' is-done' : ''), onclick: () => openTaskDrawer(t.id) },
-      h('button', {
-        class: 'tick' + (t.completed_at ? ' on' : ''),
-        title: t.completed_at ? 'Reopen this task' : 'Mark done',
-        onclick: ev => { ev.stopPropagation(); void tickTask(t); },
-      }, t.completed_at ? icon('check', { size: 12 }) : null),
-      h('div', { class: 't-title' }, t.title),
-      h('div', { class: 't-cell' }, colName(t.column_id)),
-      h('div', { class: 't-cell' }, colTeam(t.column_id) || h('span', { class: 'muted' }, '—')),
-      h('div', { class: 't-cell who' }, ...(t.assignee
-        ? [h('span', { class: 'avatar sm' }, t.assignee.initials), t.assignee.name.split(' ')[0]]
-        : [h('span', { class: 'muted' }, 'Unclaimed')])),
-      h('div', { class: 't-cell' }, h('span', { class: 'pill ' + t.priority }, t.priority)),
-      h('div', { class: 't-cell when' + (t.overdue ? ' late' : '') },
-        t.due_at ? fmtDate(t.due_at) : h('span', { class: 'muted' }, '—')),
-      h('div', { class: 't-cell when' }, t.completed_at ? fmtDate(t.completed_at) : h('span', { class: 'muted' }, '—'))));
-
-    const groups = groupTable(list);
-
-    // A group header is Notion's fold: 60 tasks in 5 buckets are unreadable until
-    // the five you care about are the only ones open.
-    const header = g => {
-      const key = String(g.key);
-      const closed = state.collapsed.has(key);
-      return h('div', { class: 'tgroup' + (closed ? ' closed' : '') },
-        h('button', {
-          class: 'tg-caret', 'aria-expanded': String(!closed),
-          title: closed ? 'Show these ' + g.items.length : 'Hide these ' + g.items.length,
-          onclick: () => {
-            if (closed) state.collapsed.delete(key); else state.collapsed.add(key);
-            render();
-          },
-        }, icon('chevron-down', { size: 13 })),
+    const rows = groups => groups.map(g => [
+      h('div', { class: 'tgroup' },
         h('span', { class: 'tg-name' }, g.label),
         h('span', { class: 'tg-count' }, String(g.items.length)),
-        g.late ? h('span', { class: 'tg-late' }, g.late + ' late') : null);
-    };
-
-    return h('div', { class: 'table-wrap' },
-      h('div', { class: 'table' },
-        head,
-        groups.length
-          ? groups.map(g => [
-              g.key === null ? null : header(g),
-              state.collapsed.has(String(g.key)) ? null : rowsOf(g.items),
-            ])
-          : h('div', { class: 't-empty' }, state.filter || state.team
-            ? 'Nothing matches this filter.' : 'No tasks yet — add one and it appears here.')));
-  }
-
-  function groupTable(list) {
-    const by = state.group;
-    if (by === 'none') return [{ key: null, label: '', items: list, late: 0 }];
+        g.late ? h('span', { class: 'tg-late' }, g.late + ' late') : null),
+      g.items.map(t => h('div', { class: 'trow' + (t.completed_at ? ' is-done' : ''), onclick: () => openTaskDrawer(t.id) },
+        h('button', {
+          class: 'tcheck' + (t.completed_at ? ' on' : ''),
+          title: t.completed_at ? 'Open this task again' : 'Mark this done',
+          onclick: ev => { ev.stopPropagation(); void tickTask(t); },
+        }, t.completed_at ? icon('check', { size: 12 }) : null),
+        h('div', { class: 't-title' }, t.title,
+          h('span', { class: 't-when' + (t.overdue && !t.completed_at ? ' late' : '') }, whenText(t))),
+        h('div', { class: 't-cell' }, h('span', { class: 'dot ' + t.priority }), PRIORITY_WORDS[t.priority] || 'Normal'),
+        h('div', { class: 't-cell who' }, t.assignee
+          ? [h('span', { class: 'avatar sm' }, t.assignee.initials), t.assignee.name.split(' ')[0]]
+          : h('span', { class: 'muted' }, 'No owner')),
+        h('div', { class: 't-cell', title: colTeam(t.column_id) || '' }, colTeam(t.column_id) || h('span', { class: 'muted' }, '—')),
+        h('button', { class: 'btn tiny', onclick: ev => { ev.stopPropagation(); openTaskDrawer(t.id); } }, 'Open'))),
+    ]);
 
     const buckets = new Map();
-    const push = (key, label, t) => {
-      if (!buckets.has(key)) buckets.set(key, { key, label, items: [], late: 0 });
+    for (const t of list) {
+      const key = t.column_id;
+      if (!buckets.has(key)) buckets.set(key, { label: colName(key), items: [], late: 0 });
       buckets.get(key).items.push(t);
       if (!t.completed_at && t.overdue) buckets.get(key).late++;
-    };
-    for (const t of list) {
-      if (by === 'stage') push(t.column_id, colName(t.column_id), t);
-      else if (by === 'team') push(colTeam(t.column_id) || '~none', colTeam(t.column_id) || 'No team', t);
-      else if (by === 'person') push(t.assignee ? t.assignee.id : '~none', t.assignee ? t.assignee.name : 'Unclaimed', t);
-      else push(dueBucket(t), dueBucketLabel(t), t);
     }
-    return [...buckets.values()].sort((a, b) => b.items.length - a.items.length || String(a.label).localeCompare(String(b.label)));
-  }
+    const groups = [...buckets.values()];
 
-  const dueBucket = t => !t.due_at ? 'none' : t.overdue ? 'late' : isToday(t.due_at) ? 'today' : ageDays(t.due_at) < 0 && new Date(t.due_at) > new Date() ? 'week' : 'later';
-  const dueBucketLabel = t => ({ none: 'No due date', late: 'Overdue', today: 'Today', week: 'Next 7 days', later: 'Later' }[dueBucket(t)]);
+    return h('div', { class: 'table-wrap' },
+      groups.length
+        ? h('div', { class: 'table' }, rows(groups))
+        : h('div', { class: 't-empty' }, state.filter || state.team
+          ? 'Nothing matches this filter.' : 'No tasks yet — add one and it appears here.'));
+  }
 
   async function tickTask(t) {
     try {
       await api('/tasks/' + t.id + '/complete', { method: 'POST' });
       await refreshBoard();
-      toast(t.completed_at ? 'Reopened ' + t.title : 'Closed ' + t.title);
+      toast(t.completed_at ? 'Reopened: ' + t.title : 'Done: ' + t.title);
     } catch (e) { toast(e.message, true); }
   }
 
-  /* ---------------------------------------------------------- calendar view */
+  /* ------------------------------------------------------------- month view */
 
   function renderCalendar(st) {
     const now = new Date();
@@ -1219,14 +1143,14 @@
     const first = new Date(yy, mm - 1, 1);
     const shift = (first.getDay() + 6) % 7;                 // Monday first (en-IN shop weeks)
     const days = new Date(yy, mm, 0).getDate();
+    const monthKeys = new Set();
     const byDay = new Map();
     for (const t of allTasks()) {
       if (!t.due_at) continue;
       const k = dateKey(t.due_at);
-      if (!byDay.has(k)) byDay.set(k, []);
-      byDay.get(k).push(t);
+      (byDay.get(k) || byDay.set(k, []).get(k)).push(t);
     }
-    const monthName = new Intl.DateTimeFormat('en-IN', { month: 'long', year: 'numeric' }).format(first);
+
     const shiftMonth = delta => {
       const d = new Date(yy, mm - 1 + delta, 1);
       state.cal = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
@@ -1234,46 +1158,41 @@
     };
 
     const cells = [];
-    const monthKeys = new Set();
     for (let i = 0; i < shift; i++) cells.push(h('div', { class: 'cday out' }));
     for (let d = 1; d <= days; d++) {
       const key = cur + '-' + String(d).padStart(2, '0');
       monthKeys.add(key);
-      const items = (byDay.get(key) || []);
-      const open = items.filter(t => !t.completed_at);
+      const items = byDay.get(key) || [];
       const today = key === dateKey(now.toISOString());
 
       cells.push(h('div', { class: 'cday' + (today ? ' today' : '') },
-        h('div', { class: 'cday-n' }, String(d), open.length > 1 ? h('span', { class: 'cday-c' }, String(open.length)) : null),
+        h('div', { class: 'cday-n' }, String(d), items.length > 1 ? h('span', { class: 'cday-c' }, String(items.length)) : null),
         items.slice(0, 3).map(t => h('button', {
           class: 'c-task' + (t.completed_at ? ' is-done' : ''),
-          title: t.title + (t.assignee ? ' — ' + t.assignee.name : ' — unclaimed'),
+          title: t.title,
           onclick: () => openTaskDrawer(t.id),
-        }, h('span', { class: 'c-dot ' + (t.overdue ? 'late' : t.priority) }), t.title)),
+        }, h('span', { class: 'dot ' + t.priority }), t.title)),
         items.length > 3 ? h('div', { class: 'c-more' }, '+' + (items.length - 3) + ' more') : null));
     }
     while (cells.length % 7) cells.push(h('div', { class: 'cday out' }));
 
+    const late = allTasks().filter(t => !t.completed_at && t.overdue && t.due_at && !monthKeys.has(dateKey(t.due_at))).length;
     const undated = allTasks().filter(t => !t.due_at && !t.completed_at).length;
-    // A month grid hides the oldest overdue work by construction (it lives in the
-    // previous month), and overdue items are exactly the ones that must not be
-    // able to hide, so the header counts them and points at the sorted list.
-    const missed = allTasks().filter(t => !t.completed_at && t.overdue && t.due_at && !monthKeys.has(dateKey(t.due_at))).length;
 
     return h('div', { class: 'cal' },
       h('div', { class: 'cal-head' },
-        h('button', { class: 'vbtn', onclick: () => shiftMonth(-1), title: 'Previous month' }, '‹'),
-        h('h3', null, monthName),
-        h('button', { class: 'vbtn', onclick: () => shiftMonth(1), title: 'Next month' }, '›'),
-        h('button', { class: 'vbtn', onclick: () => { state.cal = null; render(); } }, 'Today'),
+        h('button', { class: 'navbtn', onclick: () => shiftMonth(-1), 'aria-label': 'Previous month' }, icon('chevron-left', { size: 15 })),
+        h('h3', null, new Intl.DateTimeFormat('en-IN', { month: 'long', year: 'numeric' }).format(first)),
+        h('button', { class: 'navbtn', onclick: () => shiftMonth(1), 'aria-label': 'Next month' }, icon('chevron-right', { size: 15 })),
+        h('button', { class: 'btn tiny', onclick: () => { state.cal = null; render(); } }, 'This month'),
         h('span', { class: 'spacer' }),
-        missed ? h('button', {
-          class: 'vbtn late', title: 'Open the list, grouped by due date',
-          onclick: () => { state.sort = { key: 'due', dir: 1 }; setGroup('due'); setMode('table'); },
-        }, icon('alert-circle', { size: 13 }), String(missed) + ' overdue from earlier') : null,
-        undated ? h('span', { class: 'muted small' }, undated + ' open task' + (undated === 1 ? '' : 's') + ' with no due date') : null),
-      h('div', { class: 'cal-grid' }, ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(d => h('div', { class: 'cdow' }, d))),
-      h('div', { class: 'cal-grid' }, cells));
+        undated ? h('span', { class: 'muted small' }, undated + ' task' + (undated === 1 ? '' : 's') + ' with no date') : null),
+      late ? h('button', { class: 'cal-late', onclick: () => setMode('table') },
+        icon('alert-circle', { size: 14 }), late + ' task' + (late === 1 ? '' : 's') + ' still late from before this month',
+        h('b', null, 'see them ›')) : null,
+      h('div', { class: 'cal-scroll' },
+        h('div', { class: 'cal-grid' }, ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(d => h('div', { class: 'cdow' }, d))),
+        h('div', { class: 'cal-grid' }, cells)));
   }
 
   function renderColumn(col) {
@@ -1286,14 +1205,9 @@
         h('h3', null, col.name),
         col.team && !state.team ? h('span', { class: 'col-team' }, col.team) : null,
         h('span', { class: 'col-count' }, tasks.length + (active && hidden ? '/' + col.tasks.length : '')),
-        h('div', { class: 'col-actions' },
-          iconButton('people', {
-            title: col.team ? 'Team: ' + col.team + ' — change which team works this column' : 'Assign this column to a team (Accounting, Warehouse…)',
-            onClick: () => promptColumnTeam(col),
-          }),
-          iconButton('edit', { title: 'Rename column', onClick: () => promptRenameColumn(col) }),
-          state.board.columns.length > 1
-            ? iconButton('delete', { title: 'Delete column', onClick: () => deleteColumn(col) }) : null)),
+        isOwnerActor() && !IS_STAFF
+          ? h('button', { class: 'col-edit', onclick: () => editColumnSheet(col) }, 'Edit')
+          : null),
       colSummary(tasks, col),
       h('div', { class: 'col-cards' }, tasks.map(t => renderCard(t, col))),
       active && !tasks.length && hidden ? h('div', { class: 'col-quiet' }, 'no ' + active.label.toLowerCase() + ' here') : null,
@@ -1336,11 +1250,11 @@
 
     if (col.is_done_stage) {
       const week = tasks.filter(t => t.completed_at && ageDays(t.completed_at) < 7).length;
-      bits.push(String(tasks.length) + ' closed' + (week ? '  ·  ' + week + ' this week' : ''));
+      bits.push(String(tasks.length) + ' done' + (week ? ' \u00b7 ' + week + ' this week' : ''));
     } else {
-      bits.push(open.length ? h('span', null, h('b', null, String(open.length)), ' open') : 'nothing open');
-      if (late) bits.push(h('span', { class: 'late' }, '  ·  ' + late + ' late'));
-      if (unclaimed) bits.push('  ·  ' + unclaimed + ' unclaimed');
+      bits.push(open.length ? h('span', null, h('b', null, String(open.length)), ' open') : 'nothing here yet');
+      if (late) bits.push(h('span', { class: 'late' }, late + ' late'));
+      if (unclaimed) bits.push(unclaimed + ' without an owner');
     }
 
     // An empty group needs no summary line: that is what being empty looks like.
@@ -1359,13 +1273,9 @@
       // date is plain text, and "closed" is a tick — three badges per card read as
       // noise when the board is the thing you are trying to scan.
       h('div', { class: 'card-meta' },
+        h('span', { class: 'when' + (t.completed_at ? ' done' : t.overdue ? ' late' : '') }, whenText(t)),
         (t.priority === 'urgent' || t.priority === 'high') && !t.completed_at
-          ? h('span', { class: 'pill ' + t.priority }, t.priority) : null,
-        t.completed_at
-          ? h('span', { class: 'mark done' }, icon('check', { size: 13 }), 'Closed' + (t.completed_at ? ' ' + fmtDate(t.completed_at) : ''))
-          : t.overdue
-            ? h('span', { class: 'mark late' }, icon('clock', { size: 13 }), 'Overdue' + (t.due_at ? ' · ' + fmtDate(t.due_at) : ''))
-            : t.due_at ? h('span', { class: 'mark' }, icon('clock', { size: 13 }), fmtDate(t.due_at)) : null),
+          ? h('span', { class: 'pill ' + t.priority }, PRIORITY_WORDS[t.priority]) : null),
       t.resource ? h('div', { class: 'res-line' },
         t.resource.image ? h('img', { src: t.resource.image, alt: '' }) : h('span', { class: 'res-ic' }, icon('link', { size: 14 })),
         IS_STAFF
@@ -1378,8 +1288,14 @@
           if (ck) return h('span', { class: 'muted small ck-count', title: 'Checklist progress' }, icon('check-circle', { size: 14 }), ck.items.filter(i => i.done).length + '/' + ck.items.length);
           return t.description ? h('span', { class: 'muted small', title: 'Has a description' }, icon('text', { size: 14 })) : null;
         })(),
+        h('span', { class: 'grow' }),
+        t.completed_at
+          ? h('button', { class: 'btn tiny', onclick: ev => { ev.stopPropagation(); void tickTask(t); } }, 'Reopen')
+          : h('button', { class: 'btn tiny done', onclick: ev => { ev.stopPropagation(); void tickTask(t); } },
+              icon('check', { size: 13 }), 'Done'),
         t.assignee ? h('span', { class: 'avatar', title: t.assignee.name }, t.assignee.initials)
-          : h('span', { class: 'avatar gray', title: 'Unassigned' }, '·')));
+          : h('span', { class: 'avatar gray', title: 'No owner yet' }, '·')
+      ));
 
     card.addEventListener('dragstart', e => {
       dragState = { taskId: t.id, moved: false };
@@ -1480,39 +1396,48 @@
       });
   }
 
-  function promptRenameColumn(col) {
-    openModal('Rename column', h('div', null,
-      h('div', { class: 'field' }, h('label', null, 'Column name'), h('input', { class: 'input', id: 'col-name', value: col.name, maxlength: 60 }))),
-      async () => {
-        const name = document.getElementById('col-name').value.trim();
-        if (!name) return false;
-        await api('/columns/' + col.id, { method: 'PATCH', body: { name } });
-        await refreshBoard();
-        return true;
-      });
-  }
-
-  function promptColumnTeam(col) {
-    // Existing tags are offered back as suggestions: a team is only useful on a
-    // dashboard if "Warehouse" is spelled one way across the columns.
+  // Rename, team and delete used to be three unlabelled icons that only appeared
+  // on hover — invisible on a phone, and guesswork for anyone who does not live in
+  // the app. One button, one sheet, all three choices in words.
+  function editColumnSheet(col) {
+    const nameInput = h('input', { class: 'input', id: 'col-edit-name', value: col.name, maxlength: 60 });
     const known = [...new Set((state.board.columns || []).map(c => c.team).filter(Boolean))].sort();
-    openModal('Team for ' + col.name, h('div', null,
+    const teamInput = h('input', { class: 'input', id: 'col-edit-team', value: col.team || '', maxlength: 40,
+      list: 'col-team-list', placeholder: 'Accounting, Warehouse, Packing\u2026' });
+
+    openModal('Edit ' + col.name, h('div', null,
+      h('div', { class: 'field' }, h('label', null, 'Column name'), nameInput),
       h('div', { class: 'field' },
         h('label', null, 'Which team works this column?'),
-        h('input', { class: 'input', id: 'col-team', value: col.team || '', maxlength: 40, list: 'col-team-list', placeholder: 'Accounting, Warehouse, Fulfilment\u2026' }),
+        teamInput,
         h('datalist', { id: 'col-team-list' }, known.map(t => h('option', { value: t }))),
-        h('div', { class: 'help' }, 'Free text, shown as its own row on the dashboard. Empty means no team.'))),
+        h('div', { class: 'help' }, 'Shown as its own row on the dashboard. Leave it empty for no team.')),
+      h('div', { class: 'field' },
+        h('label', null, 'This column is the \u201cdone\u201d stage'),
+        h('label', { class: 'checkline' },
+          h('input', { type: 'checkbox', id: 'col-done', checked: !!col.is_done_stage }),
+          ' Tasks moved here are marked as finished')),
+      h('hr', { class: 'sep' }),
+      h('button', { class: 'btn sm danger', onclick: () => { closeSheet(); void deleteColumn(col); } },
+        'Delete this column')),
       async () => {
-        const team = document.getElementById('col-team').value.trim();
-        await api('/columns/' + col.id, { method: 'PATCH', body: { team } });
+        const name = document.getElementById('col-edit-name').value.trim();
+        const team = document.getElementById('col-edit-team').value.trim();
+        const doneEl = document.getElementById('col-done');
+        const is_done_stage = !!(doneEl && doneEl.checked);
+        if (!name) return false;
         if (state.team === col.team && team !== state.team) state.team = null;   // it just left this filter
+        await api('/columns/' + col.id, { method: 'PATCH', body: { name, team, is_done_stage } });
         await refreshBoard();
-        toast(team ? col.name + ' is now ' + team : col.name + ' has no team');
+        toast('Column updated');
         return true;
-      });
+      },
+      close => { closeSheet = close; });
   }
+  let closeSheet = () => {};
 
   async function deleteColumn(col) {
+    if (!state.board.columns.find(c => c.id === col.id)) return;
     if (!confirm(`Delete "${col.name}"? Its ${col.tasks.length} task(s) move to the first remaining column.`)) return;
     await api('/columns/' + col.id, { method: 'DELETE' });
     await refreshBoard();
@@ -2780,7 +2705,7 @@
     });
   }
 
-  function openModal(title, bodyEl, onSave) {
+  function openModal(title, bodyEl, onSave, onMount) {
     const overlay = h('div', { class: 'overlay' });
     const close = () => overlay.remove();
 
@@ -2803,6 +2728,8 @@
 
     overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
     document.body.append(overlay);
+    if (onMount) onMount(close);   // sheets that need to dismiss themselves (delete)
+    return close;
   }
 
   // Footer-free modal variant (wizard-style flows manage their own buttons).
