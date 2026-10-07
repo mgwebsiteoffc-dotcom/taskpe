@@ -35,6 +35,9 @@ class BoardController extends Controller
             'plans' => config('shopify.plans'),   // localized price table for the Plan tab
             'task_templates' => config('task_templates'),   // COD/NDR one-click checklist pack
             'columns' => $columns,
+            // The shop's own list of team names. Columns carry a `team` tag, but the
+            // list is what lets a department exist before anyone remembers to use it.
+            'teams' => array_values($shop->setting('teams', [])),
             'members' => $shop->members()->orderBy('name')->get()->map(fn ($m) => [
                 'id'                => $m->id,
                 'name'              => $m->name,

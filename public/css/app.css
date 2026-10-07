@@ -857,6 +857,57 @@ h1, h2, h3, .card-title, .kpi-l, .col-head h3 { letter-spacing: -0.011em; }
 .checkline { display: flex; align-items: flex-start; gap: 8px; font-size: 13.5px; color: var(--ink); }
 .help ul { font-size: 13px; }
 
+/* --- wide screens: use the page, don't strand it ------------------------ */
+/* The dashboard used to be capped at 1220px and pinned left, so on a 1900px screen
+   the right third of the page was empty wall — which reads as a broken layout, not
+   as margin. Content is capped wider and centred, and the panels flow into as many
+   columns as fit, with the chart taking two. */
+.page, .board-page { max-width: 1560px; margin-inline: auto; }
+.dash-page { max-width: 1560px; }
+.panels {
+  display: grid; gap: 12px; align-items: stretch;
+  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+}
+.panels > .panel { margin: 0; height: 100%; display: flex; flex-direction: column; }
+.panels > .panel > .p-body { flex: 1 1 auto; }
+.panels > .panel.sp2 { grid-column: span 2; }
+
+/* A team that exists but has no column yet is a fact, not a destination — so it is
+   a row, not a button, and it must not light up or take an inset rail. */
+div.tm-row { cursor: default; }
+div.tm-row:hover { background: transparent; }
+.tm-name.quiet, .tm-n.quiet { color: var(--ink-3); font-weight: 400; }
+
+/* --- Team page: the list of department names --------------------------- */
+.team-panel { margin-bottom: 16px; }
+.team-row {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  border-top: 1px solid var(--hair);
+}
+.panel > .p-body.flush > .team-row:first-child { border-top: 0; }
+.team-row:hover { background: var(--tint); }
+.team-id { flex: 1 1 auto; display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.team-id b { font-size: 14px; font-weight: 600; }
+.team-id .small { font-size: 12.5px; color: var(--ink-2); }
+
+/* Fourteen bars in a panel 600px wide want day numbers, not initials, and a cap
+   line that does not fight the number above it. */
+.dash-page .chart { height: 96px; gap: 6px; }
+.c-cap { font-size: 11px; font-variant-numeric: tabular-nums; }
+.c-col.today .c-cap { color: var(--accent); font-weight: 600; }
+.c-bar { max-width: 26px; border-radius: 4px; }
+
+@media (max-width: 1240px) {
+  /* Two columns: the wide chart stops spanning, and the task list takes the row. */
+  .panels > .panel.sp2 { grid-column: span 1; }
+  .panels > .at-panel { grid-column: 1 / -1; }
+}
+@media (max-width: 900px) {
+  .panels { grid-template-columns: 1fr; }
+  .team-row { flex-wrap: wrap; }
+  .team-id { flex-basis: 100%; }
+}
+
 /* --- narrow screens: the board stays a board, the list sheds columns - */
 @media (max-width: 760px) {
   .page { padding: 14px 14px 24px; }

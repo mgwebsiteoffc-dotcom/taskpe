@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\DigestController;
 use App\Http\Controllers\Api\MemberController;
 use App\Http\Controllers\Api\ResourceSearchController;
 use App\Http\Controllers\Api\SettingController;
+use App\Http\Controllers\Api\TeamController;
 use App\Http\Controllers\Api\TaskController;
 use Illuminate\Support\Facades\Route;
 
@@ -44,6 +45,14 @@ Route::middleware('shopify.token')->group(function () {
     Route::post('/members/{id}/portal-link', [MemberController::class, 'portalLink']);
     Route::delete('/members/{id}/portal-link', [MemberController::class, 'revokePortalLink']);
     Route::post('/members/{id}/test', [MemberController::class, 'sendTest']);
+
+    // Teams are the department names columns are tagged with (see TeamController).
+    // The name rides in the URL, so it is constrained to one path segment — a team
+    // called "a/b" would otherwise reach a route that is not its own.
+    Route::get('/teams', [TeamController::class, 'index']);
+    Route::post('/teams', [TeamController::class, 'store']);
+    Route::patch('/teams/{name}', [TeamController::class, 'update'])->where('name', '[^/]+');
+    Route::delete('/teams/{name}', [TeamController::class, 'destroy'])->where('name', '[^/]+');
 
     Route::get('/settings', [SettingController::class, 'show']);
     Route::put('/settings', [SettingController::class, 'update']);

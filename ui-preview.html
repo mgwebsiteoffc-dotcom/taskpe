@@ -51,6 +51,7 @@
       { id: 3, name: 'Imran Sheikh', initials: 'IS', phone: '919876500003', role: 'teammate', active: true, whatsapp_verified: false, portal_active: true },
       { id: 4, name: 'Neha Gupta', initials: 'NG', phone: '919876500004', role: 'teammate', active: false, whatsapp_verified: false, portal_active: false },
     ],
+    teams: ['Accounting', 'Warehouse'],
     me: 1,
     whatsapp: { plan_allowed: true, master_on: true, has_key: true, enabled: true },
     columns: [
@@ -90,6 +91,28 @@
     logs: [],
   };
 
+  const mutateTeams = async (body) => {
+    const name = String(body.name || '').trim();
+    const at = board.teams.findIndex(t => t.toLowerCase() === name.toLowerCase());
+    if (body.method === 'POST') {
+      if (at > -1) throw new Error('"' + name + '" is already one of your teams.');
+      board.teams.push(name);
+    } else if (body.method === 'PATCH') {
+      const from = decodeURIComponent(body.__from);
+      const i = board.teams.findIndex(t => t.toLowerCase() === from.toLowerCase());
+      if (i < 0) throw new Error('No team called ' + from + '.');
+      board.teams[i] = name;
+      for (const c of board.columns) if ((c.team || '').toLowerCase() === from.toLowerCase()) c.team = name;
+    } else {
+      const from = decodeURIComponent(body.__from);
+      const used = board.columns.filter(c => (c.team || '').toLowerCase() === from.toLowerCase()).length;
+      if (used) throw new Error(used + ' column' + (used === 1 ? '' : 's') + ' still use ' + from + '. Edit those columns first.');
+      board.teams = board.teams.filter(t => t.toLowerCase() !== from.toLowerCase());
+    }
+    board.teams.sort((a, b) => a.localeCompare(b));
+    return { ok: true };
+  };
+
   const payload = {
     '/api/board': board,
     '/api/settings': settings,
@@ -102,6 +125,24 @@
 
   window.fetch = async (url, init) => {
     const path = String(url).split('?')[0];
+    if (path === '/api/teams' || path.startsWith('/api/teams/')) {
+      const json = JSON.parse(init.body || '{}');
+      try {
+        await mutateTeams({ ...json, method: init.method, __from: path.split('/').pop() });
+        return { ok: true, status: 201, json: async () => ({ ok: true, teams: board.teams }) };
+      } catch (e) {
+        return { ok: false, status: 422, json: async () => ({ message: e.message }) };
+      }
+    }
+    // Column tags flow back into the team list, as they do on the server.
+    if (path.startsWith('/api/columns/') && init.method === 'PATCH') {
+      const json = JSON.parse(init.body || '{}');
+      const col = board.columns.find(c => String(c.id) === path.split('/').pop());
+      if (col) col.team = json.team || null;
+      const t = (json.team || '').trim();
+      if (t && !board.teams.some(x => x.toLowerCase() === t.toLowerCase())) board.teams.push(t);
+      board.teams.sort((a, b) => a.localeCompare(b));
+    }
     const body = payload[path] ?? (path.includes('/complete') || path.includes('/tasks') ? { ok: true } : { items: [] });
     await new Promise(r => setTimeout(r, 60));         // let the loading states be seen
     return { ok: true, status: 200, json: async () => body };

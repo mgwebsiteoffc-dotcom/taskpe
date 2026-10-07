@@ -128,6 +128,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://taskpe.example.in/up           
 curl -s https://taskpe.example.in/api/board                                        # JSON 401 = routing + middleware alive
 curl -s https://taskpe.example.in/privacy | head -5                                # HTML renders, views writable
 curl -s https://taskpe.example.in/api/task-templates?type=order  # 401 JSON = extension endpoints deployed; 404 = old routes/api.php
+curl -s https://taskpe.example.in/api/teams                          # 401 JSON = team routes live; 404 = routes cached → php artisan route:clear
 curl -s -o /dev/null -w '%{http_code}\n' https://taskpe.example.in/team     # 200 = section paths serve the shell (the admin sidebar links to these)
 php artisan taskpe:doctor demo.myshopify.com   # install state, token, config, live API probe, webhooks
 php artisan taskpe:demo-store demo.myshopify.com --force   # fill a dev store's board
@@ -289,8 +290,15 @@ Column settings are one **Edit** button per column, visible only to the owner, o
 the name, the team and the done-stage tick — plus delete. It replaced three icon-only buttons that
 appeared on hover: invisible on a phone, and a guess for anyone who does not live in the app.
 
-Nothing is stored for any of this: the mode lives in `localStorage` (`taskpe_mode`) like
-`taskpe_dash`, so there is no route, no column, no migration. Deep links keep working — `?view=`
+**Width**: the dashboard and the board are capped at 1560px and centred, and the panels
+flow `auto-fit minmax(400px,1fr)` with the chart panel spanning two. A 1900px screen used to
+get a 1220px column pinned to the left with a third of the page empty, which reads as a broken
+layout rather than as air; the grid now fills it, and drops to two columns then one as the width
+goes. Panels in a row stretch to the same height, because boxes that end at different lines look
+unfinished even when the numbers inside them are identical.
+
+Nothing is stored for any of the view choices: the mode lives in `localStorage` (`taskpe_mode`)
+like `taskpe_dash`, so there is no route, no column, no migration for them. Deep links keep working — `?view=`
 picks the *section* (dashboard/board/team/settings/plan), the view mode is a within-section choice.
 
 To look at it without touching the store: open **`ui-preview.html`** from a checkout in any
@@ -298,18 +306,30 @@ browser. It loads the real `public/js/app.js` + `public/css/app.css` against a s
 `/api/board`, so the design can be judged offline, and it never ships (only `public/` is
 served). Fake data, real code — including the drawer, the templates modal and `?`.
 
-## 12. Teams on the dashboard (Accounting, Warehouse, …)
+## 12. Teams (Accounting, Warehouse, …) — the list, and the tag on a column
 
-`columns.team` is a free-text tag: which part of the shop works that column. It is the
-only new state the dashboard needs — nothing else is configured per team.
+Two halves, and they answer different questions:
+
+* **the list** — the departments this shop recognises. Stored as `teams` in the shop's JSON
+  `settings`, so there is no table and no migration for it; `TeamController` owns add / rename /
+  remove and caps the list at 12.
+* **the tag** — `columns.team`, free text on a column, saying which of those departments works it.
 
 ```bash
-php artisan migrate --force      # 2026_10_06_000001_add_team_to_columns_table
+php artisan migrate --force      # 2026_10_06_000001_add_team_to_columns_table  (the tag)
+php artisan route:clear         # /api/teams is new; a cached route file would 404 it
 ```
 
-* **Set it on the board**: **Edit** on a column header (owner only, always visible) → type
-  `Accounting`, `Warehouse`, `Fulfilment`… Existing names are suggested, so one team is
-  spelled one way. Empty = no team.
+* **Name them**: **Team → Teams → Add a team**. A team may exist before any work uses it — that
+  gap is the useful finding, and such a team shows on the dashboard as `nothing tagged yet`
+  rather than being invisible.
+* **Rename** retags every column carrying the old spelling in the same request, because a rename
+  that leaves columns behind splits one department down the middle of every chart.
+* **Remove** is refused while columns still use the name (`2 columns still use Store…`) rather
+  than quietly untagging them and making that work disappear from the dashboard.
+* **Set the tag on the board**: **Edit** on a column header (owner only, always visible) → type
+  `Accounting`, `Warehouse`, `Fulfilment`… The shop list is offered as suggestions, and a name you
+  type that is not on it is filed as a new team, so the vocabulary stays in one place. Empty = no team.
 * **What it drives**: the dashboard's **Teams** panel (open vs closed this week per team,
   oldest item, who is on it) and clicking a team narrows the board to that team's columns
   — the count tiles above the board follow the same filter, so "Warehouse: 2 open, 1 late"

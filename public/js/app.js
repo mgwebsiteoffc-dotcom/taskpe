@@ -694,18 +694,16 @@
     return out;
   }
 
-  // Closed tasks per day, oldest first. Above a week the labels thin out to every
-  // other day, because 14 single letters in a half-width panel is a smear.
+  // Closed tasks per day, oldest first. The label is the day of the month rather
+  // than a weekday letter: 14 single letters is a puzzle, while "6" under a bar of 3
+  // is the whole sentence. Today is picked out in CSS.
   function seriesFor(list, days) {
-    const step = days > 7 ? 2 : 1;
     return Array.from({ length: days }, (_, i) => {
       const key = daysAgoKey(days - 1 - i);
       return {
         key,
         today: i === days - 1,
-        label: i % step === (days - 1) % step
-          ? (['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(key + 'T12:00:00').getDay()] || '').slice(0, 1)
-          : '',
+        label: String(Number(key.slice(8, 10))),
         n: list.filter(t => t.completed_at && dateKey(t.completed_at) === key).length,
       };
     });
@@ -728,6 +726,17 @@
         if (t.overdue) r.overdue++;
         r.oldest = Math.max(r.oldest, ageDays(t.created_at));
         if (t.assignee && t.assignee.name) r.people.add(String(t.assignee.name).split(' ')[0]);
+      }
+    }
+
+    // The shop's own list of names is merged in even when no column carries one yet:
+    // "we will have a Returns desk" is a thing an owner wants to say before the work
+    // exists, and a team defined but never used is exactly the finding a dashboard
+    // should surface rather than hide.
+    for (const name of state.board?.teams || []) {
+      const key = String(name).toLowerCase();
+      if (![...rows.keys()].some(k => String(k).toLowerCase() === key)) {
+        rows.set(name, { team: name, columns: [], open: 0, overdue: 0, week: 0, oldest: 0, people: new Set() });
       }
     }
 
@@ -798,7 +807,7 @@
   // decoration: each panel answers a question a shop owner asks in the first ten
   // seconds of the day, and every row is a way into the board that holds the work.
   function renderThroughput(st) {
-    return h('section', { class: 'panel' },
+    return h('section', { class: 'panel sp2' },
       h('div', { class: 'p-head' },
         h('h2', null, 'Done each day'),
         h('span', { class: 'sub' }, st.twoWeeks + ' in 2 weeks' + (st.onTime === null ? '' : ' · ' + st.onTime + '% on time')),
@@ -823,38 +832,55 @@
 
   function renderTeams(st) {
     const tagged = st.teams.filter(r => r.team);
+    const used = tagged.filter(r => r.columns.length);
     const untagged = st.teams.find(r => !r.team);
     const max = Math.max(1, ...tagged.map(r => r.open + r.week));
     const bar = (share, cls) => h('div', { class: 'wl-fill ' + cls, style: 'width:' + Math.round((share / max) * 100) + '%' });
+    const named = (state.board.teams || []).length;
 
     const head = h('div', { class: 'p-head' },
       h('h2', null, 'Teams'),
-      h('span', { class: 'sub' }, tagged.length ? 'tap a team to see its board' : 'tag a column to split this up'));
+      h('span', { class: 'sub' }, used.length
+        ? 'tap a team to see its board'
+        : named ? 'nothing is tagged yet' : 'no teams named yet'),
+      h('span', { class: 'spacer' }),
+      // The panel only reads; the list is kept on the Team page, where the rest of
+      // the people settings live, so this stays a way in rather than a second editor.
+      IS_STAFF ? null : h('button', { class: 'btn plain sm', onclick: () => goView('team') },
+        named ? 'Manage teams' : 'Add teams'));
 
     const row = r => {
-      const cls = 'tm-row' + (state.team === r.team ? ' on' : '');
-      const title = r.columns.join(' · ') + (r.people.length ? ' — ' + r.people.join(', ') : '');
-      const bits = [r.open + ' open'];
-      if (r.overdue) bits.push(r.overdue + ' late');
-      if (r.week) bits.push('+' + r.week);
-
-      return h('button', { class: cls, title, onclick: () => openTeamBoard(r.team) },
-        h('span', { class: 'tm-name' }, r.team),
+      const empty = !r.columns.length;
+      const title = empty
+        ? 'No column carries this name yet — tag one on the board'
+        : r.columns.join(' \u00b7 ') + (r.people.length ? ' \u2014 ' + r.people.join(', ') : '');
+      const bits = empty
+        ? ['nothing tagged yet']
+        : [r.open + ' open'].concat(r.overdue ? [r.overdue + ' late'] : [], r.week ? ['+' + r.week] : []);
+      const inner = [
+        h('span', { class: 'tm-name' + (empty ? ' quiet' : '') }, r.team),
         h('span', { class: 'wl-track' },
-          r.week ? bar(r.week, 'done') : null,
-          r.open ? bar(r.open, r.overdue ? 'late' : 'open') : null),
-        h('span', { class: 'tm-n' }, bits.join(' · ')));
+          empty || !r.week ? null : bar(r.week, 'done'),
+          empty || !r.open ? null : bar(r.open, r.overdue ? 'late' : 'open')),
+        h('span', { class: 'tm-n' + (empty ? ' quiet' : '') }, bits.join(' \u00b7 ')),
+      ];
+
+      // A team with no work behind it is not a filter, so it must not look like one.
+      return empty
+        ? h('div', { class: 'tm-row', title }, inner)
+        : h('button', { class: 'tm-row' + (state.team === r.team ? ' on' : ''), title, onclick: () => openTeamBoard(r.team) }, inner);
     };
 
     const body = tagged.length
       ? h('div', { class: 'p-body flush' }, tagged.map(row))
       : h('div', { class: 'p-body' }, h('div', { class: 'muted small' },
-        'No team has been named yet. On the board, each column has an Edit button — type '
-        + 'Accounting, Warehouse or Fulfilment there and this panel fills itself in.'));
+        IS_STAFF
+          ? 'Nobody has named a team for this store yet — an owner adds them under Team.'
+          : 'Add a team (Accounting, Warehouse, Returns) under Team, then tag a column with it. This panel fills itself in.'));
 
     // A half-tagged board is the failure mode here, so say how much is untagged
     // instead of letting the totals quietly disagree with the rows above.
-    const foot = untagged && tagged.length
+    const foot = untagged && used.length
       ? h('div', { class: 'p-foot' },
         h('span', { class: 'muted small' }, untagged.open + ' open in ' + untagged.columns.length
           + ' column' + (untagged.columns.length === 1 ? '' : 's') + ' with no team'),
@@ -908,11 +934,15 @@
 
       h('p', { class: 'dash-lede' }, dashLede(st)),
       renderStats(st),
-      h('div', { class: 'panels' }, renderThroughput(st), renderTeams(st)),
+      // One grid, five panels, and the wide chart spans two columns: on a 1900px
+      // screen two rows of two left a third of the page empty, which reads as a
+      // broken layout rather than as breathing room.
       h('div', { class: 'panels' },
+        renderThroughput(st),
+        renderTeams(st),
         dashPanel('Who is busy', 'open and done this week', renderWorkload()),
-        renderAging(st)),
-      renderAttention());
+        renderAging(st),
+        renderAttention()));
   }
 
   function dashLede(st) {
@@ -1401,7 +1431,10 @@
   // the app. One button, one sheet, all three choices in words.
   function editColumnSheet(col) {
     const nameInput = h('input', { class: 'input', id: 'col-edit-name', value: col.name, maxlength: 60 });
-    const known = [...new Set((state.board.columns || []).map(c => c.team).filter(Boolean))].sort();
+    // The shop's own list first, then anything a column already carries, so a board
+    // tagged before teams existed still suggests the spelling in use.
+    const known = [...new Set([...(state.board.teams || []),
+      ...(state.board.columns || []).map(c => c.team).filter(Boolean)])].sort();
     const teamInput = h('input', { class: 'input', id: 'col-edit-team', value: col.team || '', maxlength: 40,
       list: 'col-team-list', placeholder: 'Accounting, Warehouse, Packing\u2026' });
 
@@ -1411,7 +1444,8 @@
         h('label', null, 'Which team works this column?'),
         teamInput,
         h('datalist', { id: 'col-team-list' }, known.map(t => h('option', { value: t }))),
-        h('div', { class: 'help' }, 'Shown as its own row on the dashboard. Leave it empty for no team.')),
+        h('div', { class: 'help' }, 'The dashboard gets a row per team. Leave it empty for no team; '
+          + 'a name you type that is not on the list is added to your teams.')),
       h('div', { class: 'field' },
         h('label', null, 'This column is the \u201cdone\u201d stage'),
         h('label', { class: 'checkline' },
@@ -1428,6 +1462,12 @@
         if (!name) return false;
         if (state.team === col.team && team !== state.team) state.team = null;   // it just left this filter
         await api('/columns/' + col.id, { method: 'PATCH', body: { name, team, is_done_stage } });
+        // Register the name too, so the vocabulary lives in one place and a new
+        // spelling shows up under Team the same day. A clash is not an error here:
+        // the column is saved, which is what the owner asked for.
+        if (team && !known.some(t => String(t).toLowerCase() === team.toLowerCase())) {
+          await api('/teams', { method: 'POST', body: { name: team } }).catch(() => null);
+        }
         await refreshBoard();
         toast('Column updated');
         return true;
@@ -2038,6 +2078,96 @@
 
   /* -------------------------------------------------------------- team view */
 
+  // Teams are the one thing an owner asks for that this page could not do: the board
+  // tags a column with a free-text name, but nothing let you say the list of
+  // departments first — so "Warehouse" and "warehouse" both appeared, and the
+  // dashboard split down the middle. Names live in the shop's settings (no table,
+  // no migration) and columns reference them.
+  function renderTeamPanel() {
+    const teams = (state.board.teams || []).slice();
+    const rows = teamRows().filter(r => r.team);
+    const statsFor = name => {
+      const r = rows.find(x => String(x.team).toLowerCase() === String(name).toLowerCase());
+      return r ? { cols: r.columns.length, open: r.open, late: r.overdue } : { cols: 0, open: 0, late: 0 };
+    };
+
+    const line = name => {
+      const c = statsFor(name);
+      const meta = c.cols
+        ? c.cols + ' column' + (c.cols === 1 ? '' : 's') + ' \u00b7 '
+          + (c.open ? c.open + ' open' : 'nothing open') + (c.late ? ' \u00b7 ' + c.late + ' late' : '')
+        : 'no column uses this name yet';
+
+      return h('div', { class: 'team-row' },
+        h('div', { class: 'team-id' }, h('b', null, name), h('span', { class: 'small' }, meta)),
+        h('button', { class: 'btn sm', onclick: () => renameTeamModal(name) }, 'Rename'),
+        h('button', {
+          class: 'btn sm plain',
+          title: 'Removes the name only. Work is never deleted, and nothing loses a column.',
+          onclick: async () => {
+            if (!confirm('Remove the team "' + name + '"?')) return;
+            try {
+              await api('/teams/' + encodeURIComponent(name), { method: 'DELETE' });
+              await refreshBoard();
+              toast('Team removed');
+            } catch (e) { toast(e.message, true); }
+          },
+        }, 'Remove'));
+    };
+
+    return h('div', { class: 'panel team-panel' },
+      h('div', { class: 'p-head' },
+        h('h2', null, 'Teams'),
+        h('span', { class: 'sub' }, teams.length
+          ? teams.length + ' named \u00b7 the dashboard groups columns by these'
+          : 'nothing named yet'),
+        h('span', { class: 'spacer' }),
+        h('button', { class: 'btn sm', onclick: addTeamModal }, ...withIcon('plus', 'Add a team', { size: 15 }))),
+      teams.length
+        ? h('div', { class: 'p-body flush' }, teams.map(line))
+        : h('div', { class: 'p-body' }, h('div', { class: 'muted small' },
+          'A team is only a name — Accounting, Warehouse, Returns. Add one, then tag a column '
+          + 'with it on the board (every column has an Edit button). The dashboard and the board '
+          + 'then split by team.')));
+  }
+
+  /** One field, two uses: the whole of what a team is. */
+  function teamNameModal(title, label, value, help, run) {
+    const input = h('input', { class: 'input', id: 'team-name', value: value || '', maxlength: 40,
+      placeholder: 'Accounting, Warehouse, Returns\u2026' });
+
+    openModal(title, h('div', null,
+      h('div', { class: 'field' }, h('label', { for: 'team-name' }, label), input),
+      h('div', { class: 'help' }, help)),
+      async () => {
+        const name = String(document.getElementById('team-name').value || '').trim();
+        if (!name) { toast('Give the team a name', true); return false; }
+        try {
+          await run(name);
+          await refreshBoard();
+          toast('Saved');
+        } catch (e) {
+          // The API answers these with a sentence meant for the merchant
+          // ("2 columns still use Store"), so it goes up as it was written.
+          toast(e.message, true);
+          return false;
+        }
+        return true;
+      });
+  }
+
+  function addTeamModal() {
+    teamNameModal('Add a team', 'Team name', '',
+      'Up to 12 per store. Naming a team does not move any work — tag a column with it to do that.',
+      name => api('/teams', { method: 'POST', body: { name } }));
+  }
+
+  function renameTeamModal(from) {
+    teamNameModal('Rename team', 'New name', from,
+      'Columns using \u201c' + from + '\u201d are retagged in the same step, so none of that work falls out of the dashboard.',
+      name => api('/teams/' + encodeURIComponent(from), { method: 'PATCH', body: { name } }));
+  }
+
   function renderTeam() {
     const s = state.board;
     const rows = s.members.map(m => h('div', { class: 'mem-row' },
@@ -2087,10 +2217,13 @@
         }, 'Remove'))));
 
     return h('div', { class: 'page' },
+      renderTeamPanel(),
       h('div', { class: 'two-col' },
         h('div', null,
           h('div', { class: 'panel' },
-            h('div', { class: 'p-head' }, h('h2', null, 'Team members'),
+            // "People", not "Team members": the panel above owns the word "Teams"
+            // now, and two near-identical headings on one page is its own small maze.
+            h('div', { class: 'p-head' }, h('h2', null, 'People'),
               h('span', { class: 'sub' }, `${s.members.filter(m => m.active).length} active`)),
             h('div', { class: 'p-body flush' },
               s.members.length ? rows : h('div', { class: 'empty-state' }, icon('people', { size: 34, class: 'big' }), 'Add your first team member — your VA, packer, or yourself.')))),
