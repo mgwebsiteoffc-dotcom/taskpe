@@ -7,6 +7,8 @@
 
   What it fakes: window.shopify (a session token) and fetch (/api/board, /api/settings,
   /api/resources/search). Add ?boot=1200 to the URL to see the loading screens.
+  ?billing=shopify (default) shows the Plan tab quoting Shopify; ?billing=api shows the
+  legacy in-app price table; ?billing=free drops the store to Free to read that banner.
   Everything rendered is the shipping code: same app.js, same app.css. Click
   Board / List / Month, tap a stat tile to filter, press ? for the shortcut list.
   If something here looks different from the deployed app, the preview is lying and
@@ -25,6 +27,13 @@
   window.__TASKPE__ = { appUrl: '', shop: 'demo-store.myshopify.com', host: '', embedded: true, view: 'board' };
   window.shopify = { idToken: async () => 'a.b.c' };
 
+  const params = new URLSearchParams(location.search);
+  // Who owns the price, for the Plan tab and the Free banner. Shopify's mode carries no
+  // `prices` at all — the payload really has no number to lie with — and the amount in the
+  // "What Shopify bills you" panel is the subscription's own, currency and all.
+  const BILLING_MODE = params.get('billing') === 'api' ? 'api' : 'shopify';
+  const ON_FREE = params.get('billing') === 'free';
+
   const iso = days => new Date(Date.now() - days * 864e5).toISOString();
   const todayAt = (h) => { const d = new Date(); d.setHours(h, 0, 0, 0); return d.toISOString(); };
 
@@ -36,11 +45,23 @@
 
   const board = {
     shop: {
-      domain: 'demo-store.myshopify.com', name: 'House of Indha', plan: 'starter',
+      domain: 'demo-store.myshopify.com', name: 'House of Indha', plan: ON_FREE ? 'free' : 'starter',
       plan_cfg: { task_limit: 50, whatsapp: true, digest: true },
       timezone: 'Asia/Kolkata', currency: 'INR', onboarded: true,
     },
-    plans: { starter: { name: 'Starter', prices: { INR: 499 }, trial_days: 7 } },
+    billing: {
+      mode: BILLING_MODE,
+      plans_url: '',
+      shopify: ON_FREE || BILLING_MODE === 'api'
+        ? { available: true, subscribed: false }
+        : { available: true, subscribed: true, name: 'TaskPe Starter', amount: '499.00', currency: 'INR',
+            interval: 'EVERY_30_DAYS', renews_at: iso(-30), trial_days: 7, test: false },
+    },
+    plans: BILLING_MODE === 'api'
+      ? { free: { name: 'Free', prices: {} },
+          starter: { name: 'Starter', prices: { USD: 5.99, INR: 499 }, trial_days: 7 },
+          growth: { name: 'Growth', prices: { USD: 11.99, INR: 999 }, trial_days: 7 } }
+      : { free: { name: 'Free' }, starter: { name: 'Starter', trial_days: 7 }, growth: { name: 'Growth', trial_days: 7 } },
     task_templates: {
       cod_confirm: { icon: 'phone', name: 'COD confirmation', tagline: 'Verify before ship',
         resource_type: 'order', priority: 'high', due_in_hours: 24,
@@ -162,7 +183,7 @@
   // the same file as the board they come before: ?boot=1200 for the skeleton, ?boot=9000
   // to watch the "still waiting?" line appear at eight seconds. The blade renders the
   // identical markup before app.js exists, so what you see here is what the merchant sees.
-  const latency = Number(new URLSearchParams(location.search).get('boot')) || 60;
+  const latency = Number(params.get('boot')) || 60;
 
   window.confirm = () => true;
   window.alert = m => console.log('[alert]', m);

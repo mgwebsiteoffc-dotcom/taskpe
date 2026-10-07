@@ -328,6 +328,8 @@ input, select, textarea { font: inherit; }
 .res-manual-form .btn { grid-column: 2; }
 .res-manual-hint { grid-column: 1 / -1; font-size: 11.5px; color: var(--text-subdued); }
 .pill.warn { background: var(--warning-bg); color: var(--warning); font-weight: 600; }
+/* What Shopify bills you: one line, so the amount, the currency and the date read together. */
+.bill-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; color: var(--text); }
 .res-current { display: flex; align-items: center; gap: 10px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; background: var(--surface-hover); }
 
 /* ---------------- template cards ---------------- */

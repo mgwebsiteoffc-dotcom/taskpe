@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\Shop;
+use App\Services\BillingService;
 use App\Services\ShopifyClient;
 use App\Services\WebhookRegistrar;
 use Illuminate\Console\Command;
@@ -131,6 +132,27 @@ class DoctorCommand extends Command
             $this->row('order history', 'WARN',
                 'orders created since '.((string) ($shop->orderSearchSince() ?: ($shop->installed_at ?? 'the install date'))).' only — Shopify will not let this token read older ones until read_all_orders is approved (Partner Dashboard → your app → API access → Protected customer data), then set SHOPIFY_READ_ALL_ORDERS=true + php artisan config:clear');
         }
+
+        // Billing is the other question a merchant asks that has nothing to do with tokens:
+        // who sets the price, and does the app know what Shopify is actually charging? One row,
+        // both answers, and it says so out loud when nothing has ever been read back.
+        $bill = (array) $shop->setting('billing', []);
+        $says = !$bill
+            ? 'nothing read from Shopify yet — open the Plan tab and press "Check again"'
+            : (empty($bill['subscribed'])
+                ? 'no active subscription as of '.($bill['read_at'] ?? '—').' → plan stays '.config('shopify.default_plan')
+                : trim(($bill['name'] ?? 'unnamed plan').' · '
+                    .(isset($bill['amount']) && $bill['amount'] !== null
+                        ? $bill['amount'].' '.($bill['currency'] ?? '?')
+                        : 'amount not readable from this plan type (usage/one-time pricing)')
+                    .' · renews '.($bill['renews_at'] ?? '—')
+                    .(($bill['test'] ?? false) ? ' · TEST charge' : '')));
+
+        $this->row('billing', BillingService::shopifyManaged() ? 'OK' : 'WARN',
+            (BillingService::shopifyManaged()
+                ? 'priced and billed by Shopify (Partner Dashboard); appSubscriptionCreate refused here on purpose'
+                : 'SHOPIFY_BILLING_MODE=api — this app creates the charge, so config prices must match the Dashboard plan')
+            .' · '.$says);
 
         if ($rejection = $shop->tokenRejection()) {
             $this->row('token rejected', 'WARN', $rejection);

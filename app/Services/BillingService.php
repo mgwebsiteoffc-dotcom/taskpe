@@ -11,17 +11,49 @@ use Illuminate\Support\Facades\Log;
  * Public apps MUST charge through Shopify's Billing API — third-party
  * payment links for the app subscription are a review rejection.
  *
+ * Two modes, and they must not be mixed (config/shopify.php → billing.mode):
+ *   shopify — plans and prices live in the Partner Dashboard. We neither create
+ *             charges nor show our own numbers; we report what Shopify bills.
+ *   api     — this class is the price table, and appSubscriptionCreate does the
+ *             charging in the store's currency (or USD when we have no local price).
+ *
  * Currencies: since API 2023-04, charges can be created in the merchant's
- * BILLING currency. We price Indian stores directly in INR (₹499/₹999 — the
- * approval screen shows rupees, zero FX fee, predictable price). Stores whose
- * billing currency has no explicit price fall back to USD; if Shopify still
- * rejects the charge over currency, we retry once in USD (handles shops
- * whose billing currency differs from their shop currency).
+ * BILLING currency, and in `api` mode we price Indian stores directly in INR from
+ * the config table, so the approval screen shows rupees with no FX fee. Stores whose
+ * billing currency has no explicit price fall back to USD; if Shopify still rejects
+ * the charge over currency, we retry once in USD (handles shops whose billing
+ * currency differs from their shop currency).
+ *
+ * In `shopify` mode none of that applies and none of it is displayed: the amount on
+ * the invoice is whatever the plan created in the Partner Dashboard says, in the
+ * store's currency, and the only honest thing this app can show is the figure read
+ * back from the subscription (readBilling). The config table is stripped from the
+ * board payload in that mode so no screen can quote a price nobody will be charged.
  * During development set SHOPIFY_BILLING_TEST=true (fake-approvable charges).
  */
 class BillingService
 {
     public function __construct(protected Shop $shop) {}
+
+    /** True when the Partner Dashboard owns the prices (Shopify App Pricing). */
+    public static function shopifyManaged(): bool
+    {
+        return config('shopify.billing.mode', 'shopify') === 'shopify';
+    }
+
+    /** The one sentence both endpoints and both mutations use when Shopify owns the billing. */
+    public static function managedMessage(): string
+    {
+        return 'Plans, prices and billing for this app are managed by Shopify, so the app neither charges, cancels, nor quotes a price. '
+            .'Change the plan where the price lives: Shopify admin → Settings → Apps and sales channels → '
+            .config('app.name').' → plan / billing.';
+    }
+
+    /** Where the merchant goes to pick or cancel a plan in that mode. */
+    public static function plansUrl(): string
+    {
+        return (string) config('shopify.billing.plans_url', '');
+    }
 
     public function isDevMode(): bool
     {
@@ -53,6 +85,8 @@ class BillingService
     /** Create a subscription charge, returns the Shopify confirmation URL. */
     public function createSubscription(string $planKey): string
     {
+        abort_if(static::shopifyManaged(), 422, static::managedMessage());
+
         abort_unless(static::isPaidPlan($planKey), 422, 'Unknown or free plan');
 
         $shopCurrency = $this->resolveShopCurrency();
@@ -159,8 +193,10 @@ class BillingService
 
         if (!$active) {
             $this->shop->forceFill(['plan' => config('shopify.default_plan'), 'charge_id' => null])->save();
+            $this->shop->setSetting('billing', ['available' => true, 'subscribed' => false, 'read_at' => now()->toIso8601String()]);
+            $this->shop->save();
 
-            return ['plan' => $this->shop->plan, 'active' => false];
+            return ['plan' => $this->shop->plan, 'active' => false, 'billing' => $this->shop->setting('billing')];
         }
 
         $planKey = collect(config('shopify.plans'))
@@ -171,12 +207,108 @@ class BillingService
 
         $this->shop->forceFill(['plan' => $planKey, 'charge_id' => $active['id']])->save();
 
-        return ['plan' => $planKey, 'active' => true];
+        // Remember what Shopify charges, and say so if our price table (used in `api`
+        // mode, and by nothing at all here) disagrees. The log line is for the developer
+        // who edits one and not the other; the merchant just sees Shopify's number.
+        $bill = $this->readBilling();
+        $this->shop->setSetting('billing', $bill + ['plan_key' => $planKey]);
+        $this->shop->save();
+
+        $ours = static::resolvePrice($planKey, (string) ($bill['currency'] ?? ($this->shop->currency ?: 'USD')));
+        if ($bill['available'] && ($bill['subscribed'] ?? false) && $bill['amount'] !== null
+            && abs((float) $ours[0] - (float) $bill['amount']) > 0.009) {
+            Log::info('Billing: Shopify plan price differs from config/shopify.php plans', [
+                'shop'            => $this->shop->domain,
+                'plan'            => $planKey,
+                'shopify'         => $bill['amount'].' '.$bill['currency'],
+                'config'          => $ours[0].' '.$ours[1],
+                'managed_by'      => static::shopifyManaged() ? 'shopify (config is display-only)' : 'app',
+            ]);
+        }
+
+        return ['plan' => $planKey, 'active' => true, 'billing' => $bill, 'managed_by' => static::shopifyManaged() ? 'shopify' : 'app'];
+    }
+
+    /**
+     * What Shopify says this store is billed, in the currency Shopify uses. This is the
+     * only price the Plan tab may present when the Dashboard owns the plans: the store's
+     * currency, the amount off the subscription, and the renewal date — never our config's
+     * number with the store's currency symbol glued onto it.
+     *
+     * Tolerant by design: a failed read must not turn the Plan tab into an error screen, so
+     * callers get ['available' => false] and fall back to "we could not read it".
+     */
+    public function readBilling(): array
+    {
+        $query = <<<'GQL'
+        {
+          currentAppInstallation {
+            activeSubscriptions {
+              id
+              name
+              status
+              test
+              trialDays
+              createdAt
+              currentPeriodEnd
+              lineItems {
+                plan {
+                  pricingDetails {
+                    ... on AppRecurringPricing {
+                      price { amount currencyCode }
+                      interval
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        GQL;
+
+        try {
+            $data = (new ShopifyClient($this->shop))->graphql($query);
+        } catch (\Throwable $e) {
+            Log::info('Billing: could not read the subscription from Shopify', [
+                'shop' => $this->shop->domain, 'err' => $e->getMessage(),
+            ]);
+
+            return ['available' => false];
+        }
+
+        $subs = $data['currentAppInstallation']['activeSubscriptions'] ?? [];
+        $active = collect($subs)->firstWhere('status', 'ACTIVE') ?? collect($subs)->first();
+
+        if (!$active) {
+            return ['available' => true, 'subscribed' => false, 'test' => false];
+        }
+
+        $price = collect($active['lineItems'] ?? [])
+            ->map(fn ($li) => $li['plan']['pricingDetails'] ?? null)
+            ->filter(fn ($p) => is_array($p) && isset($p['price']['amount']))
+            ->first();
+
+        return [
+            'available'    => true,
+            'subscribed'   => true,
+            'name'         => (string) ($active['name'] ?? ''),
+            'status'       => (string) ($active['status'] ?? ''),
+            'test'         => (bool) ($active['test'] ?? false),
+            'trial_days'   => (int) ($active['trialDays'] ?? 0),
+            'started_at'   => $active['createdAt'] ?? null,
+            'renews_at'    => $active['currentPeriodEnd'] ?? null,
+            'amount'       => isset($price['price']['amount']) ? (float) $price['price']['amount'] : null,
+            'currency'     => $price['price']['currencyCode'] ?? null,
+            'interval'     => $price['interval'] ?? null,
+            'read_at'      => now()->toIso8601String(),
+        ];
     }
 
     /** Cancel the paid plan (back to Free). */
     public function cancelSubscription(): bool
     {
+        abort_if(static::shopifyManaged(), 422, static::managedMessage());
+
         if (!$this->shop->charge_id) {
             return true;
         }

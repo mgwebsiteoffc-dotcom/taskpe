@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Task;
+use App\Services\BillingService;
 use App\Support\ShopContext;
 
 class BoardController extends Controller
@@ -22,7 +23,22 @@ class BoardController extends Controller
             'tasks'         => $col->tasks->map(fn (Task $t) => $this->taskJson($t))->values(),
         ])->values();
 
+        // Who owns the price. When the Partner Dashboard owns it, the `prices` table is
+        // stripped out of the payload: those numbers are what THIS app would charge, and
+        // showing them beside a plan Shopify priced is how a store ends up reading ₹499
+        // for a $5.99 plan. What is left is what Shopify says it bills, already in the
+        // store's own billing currency.
+        $managed = BillingService::shopifyManaged();
+        $plans = collect(config('shopify.plans'))
+            ->map(fn ($p) => $managed ? array_except($p, 'prices') : $p)
+            ->all();
+
         return response()->json([
+            'billing' => [
+                'mode'      => $managed ? 'shopify' : 'api',
+                'plans_url' => BillingService::plansUrl(),
+                'shopify'   => (array) $shop->setting('billing', []),
+            ],
             'shop' => [
                 'domain'   => $shop->domain,
                 'name'     => $shop->name,
@@ -32,7 +48,7 @@ class BoardController extends Controller
                 'currency' => $shop->currency ?: config('shopify.billing_fallback_currency', 'USD'),
                 'onboarded' => !is_null($shop->setting('onboarded_at')),   // first-run tour
             ],
-            'plans' => config('shopify.plans'),   // localized price table for the Plan tab
+            'plans' => $plans,   // price table for the Plan tab — only when this app sets prices
             'task_templates' => config('task_templates'),   // COD/NDR one-click checklist pack
             'columns' => $columns,
             // The shop's own list of team names. Columns carry a `team` tag, but the

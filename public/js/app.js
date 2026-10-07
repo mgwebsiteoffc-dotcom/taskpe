@@ -586,7 +586,7 @@
       wrap.append(h('div', { class: 'banner warn' },
         h('div', null,
           h('div', { class: 'b-title' }, 'You are on the Free plan'),
-          h('div', { class: 'b-body' }, 'Starter (₹499/mo) adds WhatsApp alerts, unlimited tasks and the daily digest.')),
+          h('div', { class: 'b-body' }, planBannerBody(s))),
         h('button', { class: 'btn primary sm', onclick: () => goView('plan') }, 'View plans')));
       return wrap;
     }
@@ -2856,6 +2856,19 @@
     return { amount: Number(prices[code] ?? 0), code };
   }
 
+  // Never a figure the app made up. Where Shopify owns the pricing, the banner says what
+  // the plan does and points at the tab that reads the real amount off the store's own
+  // subscription — a hardcoded ₹499 in the sentence was the exact bug merchants reported.
+  function planBannerBody(s) {
+    if (((s.billing && s.billing.mode) || 'api') !== 'shopify') {
+      const p = planPrice('starter');
+      if (p.amount > 0) return 'Starter (' + fmtMoney(p.amount, p.code) + '/mo) adds WhatsApp alerts, unlimited tasks and the daily digest.';
+    }
+
+    return 'Starter adds WhatsApp alerts, unlimited tasks and the daily digest. '
+      + 'Shopify sets the price and sends the invoice — the Plan tab shows what it bills this store.';
+  }
+
   function fmtMoney(amount, code) {
     try {
       return new Intl.NumberFormat(window.navigator.language || 'en', {
@@ -2866,64 +2879,141 @@
     } catch { return code + ' ' + amount; }
   }
 
+  /*
+   * The Plan tab. One rule: a price is printed only where the app can be certain of it.
+   * When Shopify owns the plans (Partner Dashboard pricing, the default), every number here
+   * is read back from the store's own subscription — same currency, same amount, the thing
+   * that lands on the invoice — and this app's own price table is not shown at all, because
+   * it is not what the merchant pays. Charges are never created from here either: Shopify
+   * rejects appSubscriptionCreate for Dashboard-priced apps, and a merchant should never have
+   * to read that API's error text as if it were our advice.
+   */
   function renderPlan() {
     const s = state.board;
     const cur = s.shop.currency || 'USD';
+    const bill = (s.billing && s.billing.shopify) || {};
+    const byShopify = ((s.billing && s.billing.mode) || 'api') === 'shopify';
+    const plansUrl = (s.billing && s.billing.plans_url) || '';
     const features = {
       free: ['2 team members', '50 open tasks', 'Board + activity timeline', 'In-app only (no WhatsApp)'],
       starter: ['5 team members', 'Unlimited tasks', 'WhatsApp alerts to staff', 'Daily owner digest', '7-day free trial'],
       growth: ['Everything in Starter', 'Unlimited team members', 'Priority support', '7-day free trial'],
     };
 
-    return h('div', { class: 'page' },
-      h('div', { class: 'plans' },
-        Object.entries(s.plans || {}).map(([key, cfg]) => {
-          const p = planPrice(key);
-          const paid = p.amount > 0;
+    async function recheck(btnEl) {
+      if (btnEl) btnEl.disabled = true;
+      try {
+        const r = await api('/billing/sync', { method: 'POST' });
+        await refreshBoard();
+        render();
+        toast(r && r.billing && r.billing.available === false
+          ? 'Shopify did not answer — the amount on your invoice still stands.'
+          : 'Checked with Shopify');
+      } catch (e) {
+        toast(e.message, true);
+        await refreshBoard(); render();
+      } finally { if (btnEl) btnEl.disabled = false; }
+    }
 
-          const cta = (() => {
-            if (s.shop.plan === key) {
-              return paid ? h('button', {
+    const billLine = bill.available === false
+      ? h('p', { class: 'muted' }, 'Shopify could not be read just now. Whatever amount is on your Shopify invoice is the one that counts — this page does not set it.')
+      : !bill.subscribed
+        ? h('p', null, 'Nothing is being charged: this store is on the Free plan.')
+        : h('div', { class: 'bill-row' },
+            h('b', null, bill.name || 'Shopify plan'),
+            bill.amount != null
+              ? h('span', null, fmtMoney(Number(bill.amount), String(bill.currency || cur))
+                  + (bill.interval === 'ANNUAL' ? ' per year' : ' every 30 days'))
+              : null,
+            bill.renews_at ? h('span', { class: 'muted' }, 'renews ' + fmtDate(bill.renews_at)) : null,
+            bill.trial_days ? h('span', { class: 'muted' }, bill.trial_days + '-day trial included') : null,
+            bill.test ? h('span', { class: 'pill warn' }, 'test charge') : null);
+
+    const billPanel = h('div', { class: 'panel' },
+      h('div', { class: 'p-head' },
+        h('h2', null, 'What Shopify bills you'),
+        h('button', { class: 'btn plain sm', onclick: ev => recheck(ev.currentTarget) }, 'Check again')),
+      h('div', { class: 'p-body small' },
+        billLine,
+        h('p', { class: 'mt muted' }, byShopify
+          ? 'The plan, its price and its trial are created at Shopify, so Shopify shows the price in your store\u2019s billing currency ('
+            + cur + ') and bills it on your Shopify invoice. This app cannot set or change that amount.'
+          : 'The amounts below are set in this app and charged through Shopify Billing on your Shopify invoice.'),
+        byShopify && plansUrl
+          ? h('div', { class: 'row-flex mt' },
+              h('button', { class: 'btn primary sm', onclick: () => open(plansUrl, '_top') }, 'Open Shopify\u2019s plan page'))
+          : null,
+        byShopify && !plansUrl
+          ? h('p', { class: 'mt small' }, 'To change the plan: Shopify admin \u2192 Settings \u2192 Apps and sales channels \u2192 '
+            + (s.shop.name || 'this app') + ' \u2192 plan / billing. That page cancels it too, so the refund and the invoice stay with Shopify.')
+          : null));
+
+    const cards = h('div', { class: 'plans' },
+      Object.entries(s.plans || {}).map(([key, cfg]) => {
+        const p = planPrice(key);
+        const paid = byShopify ? key !== 'free' : p.amount > 0;
+
+        const cta = (() => {
+          if (s.shop.plan === key) {
+            if (!paid) return null;
+            // Cancelling belongs to whoever charges the money.
+            return byShopify
+              ? h('span', { class: 'muted small' }, 'Change or cancel at Shopify \u2192 Settings \u2192 Apps and sales channels')
+              : h('button', {
                 class: 'btn danger',
                 onclick: async () => {
                   if (!confirm('Cancel the paid plan and go back to Free?')) return;
                   try { await api('/billing/cancel', { method: 'POST' }); await refreshBoard(); toast('Plan cancelled'); }
                   catch (e) { toast(e.message, true); }
                 },
-              }, 'Cancel plan') : null;
-            }
-            if (!paid) return null;
-            return h('button', {
-              class: 'btn primary',
-              onclick: async e => {
-                e.target.disabled = true;
-                try {
-                  const r = await api('/billing/subscribe', { method: 'POST', body: { plan: key } });
-                  open(r.confirmation_url, '_top');   // Shopify-hosted approve page
-                } catch (err) { toast(err.message, true); e.target.disabled = false; }
-              },
-            }, 'Choose ' + cfg.name);
-          })();
+              }, 'Cancel plan');
+          }
+          if (!paid) return null;
+          if (byShopify) {
+            return plansUrl
+              ? h('button', { class: 'btn primary', onclick: () => open(plansUrl, '_top') }, 'Choose at Shopify')
+              : h('span', { class: 'muted small' }, 'Chosen on Shopify\u2019s plan page');
+          }
 
-          return h('div', { class: 'plan-card' + (s.shop.plan === key ? ' current' : '') },
-            s.shop.plan === key ? h('span', { class: 'cur-badge' }, 'CURRENT') : null,
-            h('h3', null, cfg.name),
-            h('div', { class: 'price' },
-              paid ? fmtMoney(p.amount, p.code) : 'Free',
-              paid ? h('span', null, ' /month (' + p.code + ')') : null),
-            h('ul', null, (features[key] || []).map(f => h('li', null, f))),
-            cta);
-        })),
-      h('p', { class: 'muted small mt' },
-        cur === 'INR'
-          ? 'Prices are shown and charged in Indian Rupees (₹) — your store\'s billing currency. Shopify bills your card/RuPay/UPI directly; no USD conversion and no forex fees on this subscription.'
-          : 'Prices are shown in your store\'s billing currency (' + cur + '). Indian stores see plans directly in ₹ (INR). All charges run through Shopify Billing — nothing is charged outside Shopify.'));
+          return h('button', {
+            class: 'btn primary',
+            onclick: async e => {
+              e.target.disabled = true;
+              try {
+                const r = await api('/billing/subscribe', { method: 'POST', body: { plan: key } });
+                open(r.confirmation_url, '_top');   // Shopify-hosted approve page
+              } catch (err) { toast(err.message, true); e.target.disabled = false; }
+            },
+          }, 'Choose ' + cfg.name);
+        })();
+
+        return h('div', { class: 'plan-card' + (s.shop.plan === key ? ' current' : '') },
+          s.shop.plan === key ? h('span', { class: 'cur-badge' }, 'CURRENT') : null,
+          h('h3', null, cfg.name),
+          h('div', { class: 'price' },
+            byShopify ? (paid ? 'Set at Shopify' : 'Free') : (paid ? fmtMoney(p.amount, p.code) : 'Free'),
+            !byShopify && paid ? h('span', null, ' /month (' + p.code + ')') : null,
+            !byShopify && paid && p.code !== cur
+              ? h('span', { class: 'muted small' }, ' — this app has no ' + cur + ' price for the plan, so Shopify bills the ' + p.code + ' amount and converts it at its own rate')
+              : null,
+            byShopify && paid ? h('span', null, ' in ' + cur) : null),
+          h('ul', null, (features[key] || []).map(f => h('li', null, f))),
+          cta);
+      }));
+
+    const note = h('p', { class: 'muted small mt' }, byShopify
+      ? 'Amount, currency, trial, invoices and cancelling all belong to Shopify. A plan created in US dollars is billed in US dollars; a plan with a rupee price is billed in \u20b9. This page only mirrors what Shopify reports.'
+      : cur === 'INR'
+        ? 'Indian stores are shown and charged in \u20b9 (INR) on their Shopify invoice — no USD conversion and no forex fee on this subscription.'
+        : 'Prices are shown in your store\u2019s billing currency (' + cur + ') where this app has a price for it; otherwise the US price is used and Shopify converts it at its own rate on the invoice.');
+
+    return h('div', { class: 'page' }, billPanel, cards, note);
   }
 
   function handleBillingFlag(flag) {
     if (flag === 'active') { toast('Plan activated — WhatsApp features unlocked.'); void api('/billing/sync', { method: 'POST' }).then(refreshBoard).catch(() => {}); }
     else if (flag === 'declined') toast('Plan not approved — still on Free settings.', true);
-    else if (flag === 'error') toast('Could not confirm the charge — hit "Sync" on Plan tab.', true);
+    else if (flag === 'error') toast('Could not confirm the charge — use "Check again" on the Plan tab once the invoice page is closed.', true);
   }
 
   /* ----------------------------------------------------------------- modal */

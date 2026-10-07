@@ -78,6 +78,7 @@ return [
         'CUSTOMERS_REDACT',         // mandatory GDPR
         'SHOP_REDACT',              // mandatory GDPR
         'ORDERS_CREATE',            // optional COD auto-task (gated in-app by automation.cod_auto)
+        'APP_SUBSCRIPTIONS_UPDATE', // the Dashboard may change or cancel the plan with nobody in the app
     ],
 
     /*
@@ -85,6 +86,11 @@ return [
     | Billing (Shopify Billing API — mandatory for public apps; never charge
     | through Razorpay/Stripe/etc. for the app subscription itself)
     |--------------------------------------------------------------------------
+    | Read the "Who owns the price" block below first: when billing.mode is
+    | `shopify` (the default) none of this table is displayed or sent anywhere,
+    | because the Partner Dashboard already priced the plan in the store's own
+    | currency. It only means money in `api` mode.
+    |
     | Since the 2023-04 API, app charges may be created in the MERCHANT'S
     | BILLING CURRENCY — so Indian stores approve "₹499/mo" directly, with no
     | FX conversion on their Shopify invoice. For every other currency the
@@ -120,6 +126,29 @@ return [
             'digest'           => true,
         ],
     ],
+    /*
+    |--------------------------------------------------------------------------
+    | Who owns the price
+    |--------------------------------------------------------------------------
+    | `shopify` (default) — the plans, their prices and their trials are created
+    | in the Partner Dashboard (Shopify App Pricing). Shopify then bills the
+    | merchant in the store's own currency, and the app must not create charges
+    | OR display its own numbers: a card that reads ₹499 while the Dashboard plan
+    | says $5.99 is not a rounding detail, it is a price the merchant will never
+    | be charged. In this mode the Plan tab reports what Shopify says it bills,
+    | and `appSubscriptionCreate` is never called (Shopify rejects it for apps
+    | with Dashboard-managed plans, and the merchant would only see their API's
+    | error text).
+    |
+    | `api` — legacy: the `prices` map under each plan IS the price table and the
+    | app creates the subscription itself. Kept for apps whose plans are not
+    | registered in the Dashboard.
+    */
+    'billing' => [
+        'mode'      => strtolower((string) env('SHOPIFY_BILLING_MODE', 'shopify')),
+        'plans_url' => rtrim((string) env('SHOPIFY_APP_PLANS_URL', ''), '/'),
+    ],
+
     'default_plan' => 'free',
 
     // Currency used when a plan has no entry for the shop's billing currency.

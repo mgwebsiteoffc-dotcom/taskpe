@@ -664,3 +664,113 @@ and reads are the thing Shopify gates. That stays true until the `read_all_order
 `public/js/app.js`, `public/css/app.css`. No migration, no `.env` change, no extension redeploy.
 `ui-preview.html` ships a hand-typed link on task 21 with the matching activity row, so the
 look can be judged without a store (`?boot` still controls the fake latency).
+
+---
+
+## 17. Billing: the price on screen is Shopify's, in the store's currency
+
+The complaint, in the merchant's words: the app was showing **₹499** for a plan whose price was
+created **at Shopify**. So the number was neither Shopify's amount nor necessarily Shopify's
+currency — a price the store would never be charged, wearing a currency it would never pay in.
+Three separate things made that possible, and the rupee sign was the least of them.
+
+1. `config/shopify.php → plans.*.prices` was the source of truth for money, keyed by currency:
+   `{USD: 5.99, INR: 499}`. `BillingService::resolvePrice()` picks the store's currency if the
+   map has it and **silently falls back to the USD amount** otherwise — so a CAD store is charged
+   $5.99 and an INR store ₹499, both invented by this repo.
+2. The Free-plan banner hardcoded `Starter (₹499/mo)` in `public/js/app.js` — a rupee figure for
+   every store on every currency, whatever its plan actually cost.
+3. The app created the charge itself with `appSubscriptionCreate`. For an app whose plans live in
+   the Partner Dashboard (Shopify App Pricing) that mutation is the wrong API: Shopify creates the
+   subscription when the merchant approves a plan on Shopify's own page, and an app that also
+   creates one is asking for a second charge — and relaying Shopify's rejection as our advice.
+
+### The switch
+
+    SHOPIFY_BILLING_MODE=shopify      # plans/prices/trials created at Shopify (default)
+    SHOPIFY_APP_PLANS_URL=            # optional: https://apps.shopify.com/<your-handle>
+
+**`shopify`** — the config price table stops being displayed *and* stops being sent.
+`BoardController` strips `prices` out of the `plans` payload (there is then nothing on the client
+to quote), `BillingApiController::subscribe()` and `::cancel()` answer **422 `billing_managed_by_shopify`**
+with one plain sentence before anything is validated, `BillingService::createSubscription()` /
+`::cancelSubscription()` carry the same guard for any other caller, and the Plan tab has no
+Choose/Cancel buttons: one **Open Shopify's plan page** when `SHOPIFY_APP_PLANS_URL` is set, and
+otherwise the admin path written out in words (`Settings → Apps and sales channels → <app> → plan /
+billing`). A button to a URL we guessed would be worse than a sentence — that is why the env value is
+optional instead of derived.
+
+**`api`** — the old behaviour for an app that really does own its price table: same cards, same
+mutation, currency per store. The note under the cards is now conditional instead of promising INR
+to everyone: with no price for the store's currency it says the US price is used and Shopify converts
+it at its own rate on the invoice.
+
+### What the Plan tab shows instead
+
+`BillingService::readBilling()` reads the subscription back from the store:
+
+    currentAppInstallation { activeSubscriptions {
+      name status test trialDays createdAt currentPeriodEnd
+      lineItems { plan { pricingDetails {
+        ... on AppRecurringPricing { price { amount currencyCode } interval } } } } } }
+
+and the tab renders exactly that — `TaskPe Starter · ₹499 every 30 days · renews 6 Nov 2026` —
+so the amount and the currency come from the same record as the invoice and cannot drift from it.
+Above the cards, in a panel called **What Shopify bills you**, with **Check again** (POST
+`/api/billing/sync`, then a clean re-read of the board). The result is cached in
+`shops.settings.billing` — a JSON column, no migration — and refreshed on install, on
+`GET /billing/callback`, on any sync, and by that button.
+
+Three honesty rules in that panel: a store whose subscription was never read shows *"Shopify could
+not be read just now…"* and **no number**; a store with no active subscription is told *nothing is
+being charged*; and a `test: true` subscription gets a **test charge** pill, because a store that
+is paying nothing must not be shown a price as if it were real.
+
+### Drift is logged, not displayed
+
+`syncActiveSubscription()` compares both sources when it syncs:
+
+    Billing: Shopify plan price differs from config/shopify.php plans
+      {"shop":"…","plan":"starter","shopify":"4.99 USD","config":"499 INR","managed_by":"shopify (config is display-only)"}
+
+That log line is the one to act on: fix the Dashboard plan (mode `shopify`) or the config table
+(mode `api`). The merchant sees neither number nor argument — they see the invoice's amount.
+
+### What still has to line up by hand
+
+`Shop->plan` (which gates WhatsApp, member limits and the digest) is mapped from the subscription's
+**name** — `stripos($name, 'growth')` / `'starter'`. On the Dashboard a merchant may name the plan
+anything, so name them `TaskPe Starter` and `TaskPe Growth` (or keep the mapping in
+`syncActiveSubscription()` in step with whatever they are called); otherwise Shopify bills and the
+app still enforces Free limits. The key the app concluded is stored as `plan_key` inside
+`shops.settings.billing`, so a wrong mapping is readable without guessing.
+
+Limits of this change: it fixes who is believed about price, not what Shopify lets us read. The
+renewal date and amount appear only after the first successful sync (an install that never synced
+shows the "could not be read" line until **Check again** runs), and a plan created at Shopify with a
+non-recurring or usage-based price shows its name and period with the amount left blank rather than
+estimated — `AppUsagePricing` and one-time `AppOneTimePricing` are deliberately not summed into a
+fake monthly figure.
+
+### Deploy
+
+`config/shopify.php`, `app/Services/BillingService.php`, `app/Http/Controllers/Api/BoardController.php`,
+`app/Http/Controllers/Api/BillingApiController.php`, `app/Jobs/ProcessShopifyWebhook.php`,
+`app/Console/Commands/DoctorCommand.php`, `public/js/app.js`, `public/css/app.css`, `.env.example`,
+`ui-preview.html`. Set `SHOPIFY_BILLING_MODE=shopify` (the default if unset) and, if the app is
+listed, `SHOPIFY_APP_PLANS_URL`. Then `php artisan config:clear` and `queue:restart` (the new
+webhook topic is handled by a queued job). No migration — `shops.settings` is JSON.
+
+**Per installed store**, the new topic has to be registered once, and the cache has to be filled once:
+
+    php artisan taskpe:register-webhooks mystore.myshopify.com   # adds APP_SUBSCRIPTIONS_UPDATE
+    php artisan taskpe:doctor mystore.myshopify.com              # the `billing` row shows what Shopify says
+
+After that `taskpe:doctor` prints one `billing` row that answers both merchant questions at
+once — who prices the store (`priced and billed by Shopify … appSubscriptionCreate refused here
+on purpose`, or the `WARN` telling you the app still owns the price table) and what the store is
+actually charged (`TaskPe Starter · 499.0 INR · renews 2026-11-06`, or *"nothing read from Shopify
+yet — open the Plan tab and press "Check again""*).
+
+No merchant-side action beyond that: cancelling, refunds and invoices stay with Shopify, which is
+the point — the app cannot misquote a number it does not own.
