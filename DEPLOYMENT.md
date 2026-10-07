@@ -608,3 +608,59 @@ change, so no `shopify app deploy` is required for it.
 
 `npm run test:all` green, plus 9 checks on the note (it must explain, must not offer a useless
 retry, must stay quiet for products/customers, and its steps must toggle).
+
+---
+
+## 16. Older orders: linking what the app is not allowed to read
+
+The bounded-search notice came back in a report — this time from the **template** flow, where
+it is worse than in the picker: no result means no selection, and no selection means the
+Create button stays disabled. The merchant was holding the order open in their own admin while
+TaskPe claimed it could not find it.
+
+So the notice now carries a way in, in both places: **Link an older order by number**. One
+button, one field, and either of two answers:
+
+* a typed number (`101`, `#101`) → stored as `resource_type='order'`, `resource_title='#101'`,
+  **`resource_id` stays null**, and the card's link opens the merchant's own order list with
+  that number in the search box (`/admin/…/orders?query=101`). Reading is the part Shopify
+  refuses; pointing at their admin is not.
+* a pasted admin link (`…/orders/6123456789`) → the id is *in* the URL, so it is stored as a
+  normal link: `resource_id` set, GID and deep link built by `normalizeResource()`, and
+  `fillOrderTitle()` may even resolve the number for a recent order.
+
+### What makes this safe to store
+
+An unverified link must not look verified. Three things say otherwise, deliberately:
+
+| where | what the merchant sees |
+| --- | --- |
+| the task card | a grey **not checked** pill next to the order pill (`resource.verified === false`, which the API derives from `resource_id` being null — no new column) |
+| the activity timeline | *"Linked order #101 by hand — this app may only read orders created since <date>, so nobody checked the number against Shopify"* with the actor's name and time |
+| the staff board | the number as plain text, no admin link (they have no admin) |
+
+Deriving "unverified" from `resource_id IS NULL` is the whole trick: there is no schema
+change, and the state cannot disagree with itself — a link without an id *is* a link nobody
+checked. The activity row is what a manager reads six weeks later when the number turns out
+to be a typo.
+
+Refused by the API, not silently accepted: `resource_ref` must match `/^#?\d{1,12}$/`, and an
+`id` is only optional *when the ref is there* — otherwise the message is
+"Pick a result from the list, or type the order number if Shopify will not let us read that
+order." Both surfaces go through the same `PATCH/POST /api/tasks` body, so the extension, the
+picker and the template flow cannot drift apart. `resource_ref` is unset inside
+`normalizeResource()` because `store()` spreads the array straight into `create()` and it is
+not a column.
+
+### What it still cannot do
+
+It cannot tell you the order's total, status, or whether it exists at all — those are reads,
+and reads are the thing Shopify gates. That stays true until the `read_all_orders` approval in
+§ 15; this change only stops the limit from blocking the *workflow*.
+
+### Deploy
+
+`app/Http/Controllers/Api/TaskController.php`, `app/Http/Controllers/Api/BoardController.php`,
+`public/js/app.js`, `public/css/app.css`. No migration, no `.env` change, no extension redeploy.
+`ui-preview.html` ships a hand-typed link on task 21 with the matching activity row, so the
+look can be judged without a store (`?boot` still controls the fake latency).

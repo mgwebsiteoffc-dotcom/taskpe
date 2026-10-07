@@ -84,6 +84,10 @@ class BoardController extends Controller
                 'label' => $t->resourceLabel(),
                 'title' => $t->resource_title,
                 'url'   => $t->resource_url,
+                // false only for a hand-typed order number: the link is real, the fact
+                // that the order exists is not something this app could confirm. The card
+                // marks it, and the task's activity says who typed it.
+                'verified' => !is_null($t->resource_id),
             ] : null,
         ];
     }

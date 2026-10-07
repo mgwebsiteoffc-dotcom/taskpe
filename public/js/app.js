@@ -1662,6 +1662,10 @@
       case 'moved': return 'Moved to ' + (m.to || '');
       case 'assigned': return 'Assigned to ' + (m.to || '');
       case 'completed': return 'Marked as done';
+      // The manual case is the one worth reading months later, so it says what it says:
+      // a human typed this number and Shopify would not let us confirm it.
+      case 'linked': return (m.manual ? 'Linked order #' + m.manual + ' by hand' : 'Linked to a Shopify object')
+        + (m.note ? ' \u2014 ' + m.note : '');
       case 'reopened': return 'Reopened';
       default: return a.action;
     }
@@ -1678,6 +1682,11 @@
     if (t.resource) {
       wrap.append(h('div', { class: 'res-current' },
         h('span', { class: 'pill link' }, t.resource.label),
+        // 'not checked' is the whole difference between this link and every other one, so
+        // it sits on the card and not only in the activity log: staff act on cards.
+        t.resource.verified === false
+          ? h('span', { class: 'pill warn', title: 'Number typed by hand. This app may not read orders from before it was installed, so nobody checked it.' }, 'not checked')
+          : null,
         IS_STAFF
           ? h('span', { class: 'small' }, t.resource.title || 'Linked object')
           : h('a', { href: t.resource.url || '#', class: 'small', onclick: e => { e.preventDefault(); if (t.resource.url) openAdmin(t.resource.url); } }, t.resource.title || 'Open'),
@@ -1699,17 +1708,18 @@
   /* -------------------------------------------------------- resource picker */
 
   /*
-   * A limited search, explained where it was hit. Two things a merchant can act on, not a
-   * dead end: how to lift the limit for good, and the one route that needs no permission at
-   * all — creating a task from the order page links that order by its id, so it works for
-   * orders from before the install date. (Only orders can be bounded this way, so only
-   * order searches get the extra lines.)
+   * A limited search, explained where it was hit — never a dead end. Three things, in the
+   * one place the merchant is already reading: the reason, how to lift the limit for good
+   * (the steps), and a link they can make right now without any permission, by typing the
+   * order number. `onPick` is what the calling surface does with that number: the task
+   * picker saves it, the template flow files the task with it. Only orders can be bounded
+   * this way, so only order searches get the extra lines.
    */
-  function resNote(text, type) {
+  function resNote(text, type, onPick, cta) {
     if (type !== 'order') return h('div', { class: 'res-note' }, text);
 
     let open = false;
-    const steps = h('div', { class: 'res-note-steps', },
+    const steps = h('div', { class: 'res-note-steps' },
       h('div', null, '1. In the Partner Dashboard, open your app → API access → Protected customer data, and request access to read all orders. Shopify reviews this once per app.'),
       h('div', null, '2. Once it is approved, set SHOPIFY_READ_ALL_ORDERS=true in this app\u2019s .env and run php artisan config:clear.'),
       h('div', null, '3. Ask the store to reinstall TaskPe so the new permission is granted. This notice disappears by itself after that.'));
@@ -1729,37 +1739,56 @@
           ev.currentTarget.textContent = open ? 'Hide the steps' : 'How to open the full order history';
         },
       }, 'How to open the full order history'),
-      steps);
+      steps,
+      // And the thing that needs no approval, right here instead of three screens away.
+      onPick ? manualOrderRow(cta || 'Save', onPick) : null);
   }
 
   /*
-   * A limited search, explained where it was hit. Two things a merchant can act on, not a
-   * dead end: how to lift the limit for good, and the one route that needs no permission at
-   * all — creating a task from the order page links that order by its id, so it works for
-   * orders from before the install date. (Only orders can be bounded this way, so only
-   * order searches get the extra lines.)
+   * Link an order by its number, typed. Shopify does not let this app READ an order from
+   * before the install, but a task may still LINK one: the merchant is looking at the order
+   * in their own admin, and the number is theirs, not ours. So the row is honest in both
+   * directions — the card carries a "not checked" mark and the task gets an activity line
+   * naming who typed it, because a link that looks verified when it is not is worse than no
+   * link at all. A pasted admin URL is better than a number: it carries the order's real id,
+   * and then the link goes straight to that order.
    */
-  function resNote(text, type) {
-    if (type !== 'order') return h('div', { class: 'res-note' }, text);
+  function manualOrderRow(cta, onPick) {
+    const input = h('input', { class: 'input', placeholder: 'Order number, e.g. 101 — or paste the order link' });
+    const hint = h('div', { class: 'res-manual-hint' });
+    const form = h('div', { class: 'res-manual-form' },
+      input,
+      h('button', { class: 'btn sm', onclick: () => use() }, 'Use this number'),
+      hint);
 
-    const steps = h('div', { class: 'res-note-steps', hidden: '' },
-      h('div', null, '1. In the Partner Dashboard, open your app → API access → Protected customer data, and request access to read all orders. Shopify reviews this once per app.'),
-      h('div', null, '2. Once it is approved, set SHOPIFY_READ_ALL_ORDERS=true in this app\u2019s .env and run php artisan config:clear.'),
-      h('div', null, '3. Ask the store to reinstall TaskPe so the new permission is granted. This notice disappears by itself after that.'));
+    function use() {
+      const raw = input.value.trim();
+      const pasted = raw.match(/\/orders\/(\d+)/);
+      const num = pasted ? null : raw.replace(/^#/, '');
 
-    return h('div', { class: 'res-note' },
-      h('div', null, text),
-      h('div', { class: 'res-note-now' },
-        'Meanwhile: open the order in Shopify and use ', h('b', null, 'More actions \u2192 Create task'),
-        '. That links the order itself, so it works for old orders too.'),
+      if (!pasted && !/^\d{1,12}$/.test(num)) {
+        hint.textContent = 'A number like 101, or a link like …/orders/6123456789';
+        return;
+      }
+
+      onPick(pasted
+        ? { type: 'order', id: Number(pasted[1]), ref: null, gid: null, title: 'order ' + pasted[1], url: null }
+        : { type: 'order', id: null, ref: num, gid: null, title: '#' + num, url: null });
+      hint.textContent = 'Now press “' + cta + '”. TaskPe could not check this number against Shopify, so the task says so.';
+    }
+
+    let open = false;
+    return h('div', { class: 'res-manual' },
       h('button', {
         class: 'btn plain sm',
         onclick: (ev) => {
-          steps.hidden = !steps.hidden;
-          ev.currentTarget.textContent = steps.hidden ? 'How to open the full order history' : 'Hide the steps';
+          open = !open;
+          form.className = 'res-manual-form' + (open ? ' open' : '');
+          ev.currentTarget.textContent = open ? 'Cancel' : 'Link an older order by number';
+          if (open) input.focus();
         },
-      }, 'How to open the full order history'),
-      steps);
+      }, 'Link an older order by number'),
+      form);
   }
 
   function openResourcePicker(task) {
@@ -1823,7 +1852,12 @@
         // read orders created after the install until the protected customer data review
         // approves more). Without it, "no matches" reads as "this order does not exist" —
         // and the merchant concludes the app is broken.
-        if (data.note) rows.push(resNote(data.note, activeType));
+        if (data.note) rows.push(resNote(data.note, activeType, (item) => {
+          // Same `selected` a search result sets, so there is still exactly one way this
+          // dialog writes: the button at the bottom. Fewer moving parts, no second flow.
+          selected = item;
+          [...results.children].forEach(c2 => (c2.style.background = ''));
+        }));
 
         results.replaceChildren(...rows);
       } catch (e) {
@@ -1860,6 +1894,10 @@
             resource_gid: selected.gid,
             resource_title: selected.title,
             resource_url: selected.url,
+            // Only set for a hand-typed number. The server builds the title and the link
+            // from it and records the activity line — never trust the browser to label its
+            // own unverified input.
+            resource_ref: selected.ref || null,
           },
         });
         await refreshBoard();
@@ -1968,7 +2006,12 @@
           // The order line says "No matches found" and nothing else, which for an older
           // order is simply wrong — Shopify has not let us read it. The server's note is
           // the difference between "search harder" and "go approve the scope".
-          const note = data.note ? h('div', { class: 'res-note' }, data.note) : null;
+          const note = data.note ? resNote(data.note, tpl.resource_type, (item) => {
+            // A typed number is a real selection here: without it this template could not
+            // be filed against an older order at all, which is the flow merchants asked for.
+            selected = item;
+            createBtn.disabled = false;
+          }, 'Create task') : null;
           results.replaceChildren(...(data.items.length ? data.items.map(item => h('div', {
             class: 'res-item',
             onclick: ev => {
@@ -2008,6 +2051,7 @@
           resource_gid: selected?.gid || null,
           resource_title: selected?.title || null,
           resource_url: selected?.url || null,
+          resource_ref: selected?.ref || null,
         };
         try {
           const created = await api('/tasks', { method: 'POST', body: payload });

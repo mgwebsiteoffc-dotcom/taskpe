@@ -28,6 +28,7 @@ class TaskController extends Controller
         }
 
         $data = $request->validate($this->rules($shop));
+        $manual = $this->manualOrderRef($data);   // before normalize strips the ref
         $data = $this->normalizeResource($shop, $data);
         $data = $this->fillOrderTitle($shop, $data);
 
@@ -56,6 +57,18 @@ class TaskController extends Controller
         ]);
 
         TaskActivity::record($task, 'created', ['column' => $column->name], $ctx->actorName());
+
+        if ($manual) {
+            // The link stands, but it is unverified and must READ as unverified months
+            // later: whoever reviews this task has to be able to tell "Shopify confirmed
+            // order #101" from "someone typed 101 and we could not check it".
+            TaskActivity::record($task, 'linked', [
+                'manual' => $manual,
+                'note'   => 'this app may only read orders created since '
+                    .((string) ($shop->orderSearchSince() ?: 'the install date')).', so nobody checked the number against Shopify',
+            ], $ctx->actorName());
+        }
+
         $this->maybeNotifyAssignee($task, $ctx);
 
         return response()->json(BoardController::taskJson($task->load('assignee')), 201);
@@ -68,7 +81,9 @@ class TaskController extends Controller
         $task = $this->findTask($ctx, $id);
 
         $data = $request->validate($this->rules($shop, partial: true));
+        $manual = null;
         if (array_key_exists('resource_type', $data)) {
+            $manual = $this->manualOrderRef($data);   // before normalize strips the ref
             $data = $this->normalizeResource($shop, $data);
         }
 
@@ -81,6 +96,14 @@ class TaskController extends Controller
             $this->maybeNotifyAssignee($task, $ctx);
         } else {
             TaskActivity::record($task, 'updated', [], $ctx->actorName());
+        }
+
+        if ($manual) {
+            TaskActivity::record($task, 'linked', [
+                'manual' => $manual,
+                'note'   => 'this app may only read orders created since '
+                    .((string) ($shop->orderSearchSince() ?: 'the install date')).', so nobody checked the number against Shopify',
+            ], $ctx->actorName());
         }
 
         return response()->json(BoardController::taskJson($task->fresh('assignee')));
@@ -419,6 +442,27 @@ class TaskController extends Controller
     // ---------------- internals ----------------
 
     /**
+     * The order NUMBER a merchant typed instead of picking a result, or null. Shopify
+     * limits this app to orders created after the install, so on any store that has been
+     * running a while, an old order cannot be searched even though the merchant is looking
+     * at it in their own admin. Refusing to link it would just move the work to a notebook.
+     *
+     * Deliberately narrow: orders only, only when there is no id, and only digits. That is
+     * also how the board tells an unverified link from a real one — `resource_id` is null —
+     * which is why no extra column was needed to mark it.
+     */
+    protected function manualOrderRef(array $data): ?string
+    {
+        if (($data['resource_type'] ?? null) !== 'order' || !empty($data['resource_id'])) {
+            return null;
+        }
+
+        $ref = ltrim(trim((string) ($data['resource_ref'] ?? '')), '#');
+
+        return preg_match('/^\d{1,12}$/', $ref) ? $ref : null;
+    }
+
+    /**
      * One order, looked up by id, when the client did not know its number. A task linked
      * to an order but titled only "Order" is a dead end: you cannot tell which order from
      * the card, and the card is where the work gets read. Cheap when it works, silent when
@@ -508,7 +552,17 @@ class TaskController extends Controller
             // required." A missing column falls through to the first open one below.
             'column_id'      => [$partial ? 'sometimes' : 'nullable', 'integer', $columnExists],
             'resource_type'  => ['nullable', Rule::in(Task::RESOURCE_TYPES)],
-            'resource_id'    => ['nullable', 'integer', 'required_with:resource_type'],
+            // An id is normally mandatory with a type — except for `resource_ref`, the
+            // order NUMBER a merchant typed because Shopify will not let this app read
+            // orders from before the install (see manualOrderRef()). Demanding an id there
+            // is what turned a platform limit into a dead end: no search result, no task.
+            'resource_id'    => ['nullable', 'integer', function ($attribute, $value, $fail) {
+                if ($value === null && request()->filled('resource_type')
+                    && trim((string) request('resource_ref')) === '') {
+                    $fail('Pick a result from the list, or type the order number if Shopify will not let us read that order.');
+                }
+            }],
+            'resource_ref'   => ['nullable', 'string', 'regex:/^#?\d{1,12}$/'],
             'resource_gid'   => ['nullable', 'string', 'max:120'],
             'resource_title' => ['nullable', 'string', 'max:190'],
             'resource_url'   => ['nullable', 'url', 'max:512', 'starts_with:https://admin.shopify.com,https://'],
@@ -518,6 +572,11 @@ class TaskController extends Controller
     /** Drop all resource fields when type is cleared; coerce id to int. */
     protected function normalizeResource($shop, array $data): array
     {
+        // Read the hand-typed number BEFORE the key goes away: it is validated input
+        // that is not a column, and store() spreads this array into create().
+        $typed = $this->manualOrderRef($data);
+        unset($data['resource_ref']);
+
         if (empty($data['resource_type'])) {
             $data['resource_type'] = $data['resource_id'] = $data['resource_gid'] = $data['resource_title'] = $data['resource_url'] = null;
 
@@ -535,6 +594,16 @@ class TaskController extends Controller
         if (empty($data['resource_url']) && !empty($data['resource_id'])) {
             $path = ['order' => 'orders', 'draft_order' => 'draft_orders', 'product' => 'products', 'customer' => 'customers', 'article' => 'articles'][$data['resource_type']];
             $data['resource_url'] = $shop->adminBaseUrl().'/'.$path.'/'.$data['resource_id'];
+        }
+
+        // No id, but a typed number: link it to the merchant's OWN order search rather
+        // than to an order we cannot read. The button on the card then opens a list where
+        // that number is already in the search box — which always works, because it is
+        // their admin, not our token. Nothing here claims the order exists: the card keeps
+        // its 'not checked' mark and the activity line says who typed it.
+        if (empty($data['resource_id']) && $typed !== null) {
+            $data['resource_title'] = '#'.$typed;
+            $data['resource_url'] = $shop->adminBaseUrl().'/orders?query='.$typed;
         }
 
         return $data;

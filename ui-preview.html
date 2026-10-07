@@ -57,7 +57,7 @@
     whatsapp: { plan_allowed: true, master_on: true, has_key: true, enabled: true },
     columns: [
       { id: 1, name: 'COD confirmations', position: 0, team: 'Accounting', is_done_stage: false, tasks: [
-        task(21, 'Call the buyer about the failed payment', { priority: 'urgent', overdue: true, due_at: iso(2), created_at: iso(6), assignee: { id: 2, name: 'Rahul Kumar', initials: 'RK' }, resource: { type: 'order', id: 1042, label: 'Order', title: '#1042', url: '#' } }),
+        task(21, 'Call the buyer about the failed payment', { priority: 'urgent', overdue: true, due_at: iso(2), created_at: iso(6), assignee: { id: 2, name: 'Rahul Kumar', initials: 'RK' }, resource: { type: 'order', id: null, label: 'Order', title: '#101', url: '#', verified: false } }),
         task(22, 'Verify the UPI screenshot before dispatch', { priority: 'high', due_at: todayAt(18), created_at: iso(1), assignee: { id: 1, name: 'Priya Sharma', initials: 'PS' }, description: '- [x] Open the screenshot\n- [ ] Match the UTR number\n- [ ] Note it on the order' }),
         task(23, 'Release the payment hold on 3 orders', { priority: 'medium', created_at: iso(4), assignee: { id: 2, name: 'Rahul Kumar', initials: 'RK' } }),
       ] },
@@ -123,11 +123,15 @@
       { type: 'order', id: 1043, title: '#1043', subtitle: '\u20b94,850.00 INR \u00b7 pending', url: '#' },
     ], note: 'Shopify only lets this app read orders created since TaskPe was installed (2026-09-01), so anything older than that cannot appear here.' },
     '/api/settings': settings,
-    '/api/tasks/activity': { entries: [
-      { kind: 'created', text: 'Priya Sharma added this task', at: iso(6) },
-      { kind: 'assigned', text: 'Assigned to Rahul Kumar', at: iso(5) },
-      { kind: 'comment', text: 'Buyer promised payment by evening — keep looking', at: iso(4), author: 'Rahul Kumar' },
-    ], comments: [] },
+    // The shape the drawer actually reads (`GET /api/tasks/{id}/activity`), so the
+    // activity timeline and the hand-typed link can be judged here rather than only on a
+    // live store: task 21 is deliberately an UNVERIFIED link (id null, verified false).
+    '/api/tasks/21/activity': [
+      { action: 'created', actor_name: 'Priya Sharma', created_at: iso(6), meta: { column: 'To Do' } },
+      { action: 'assigned', actor_name: 'Priya Sharma', created_at: iso(5), meta: { to: 'Rahul Kumar' } },
+      { action: 'linked', actor_name: 'Priya Sharma', created_at: iso(2),
+        meta: { manual: '101', note: 'this app may only read orders created since 2026-09-01, so nobody checked the number against Shopify' } },
+    ],
   };
 
   window.fetch = async (url, init) => {
