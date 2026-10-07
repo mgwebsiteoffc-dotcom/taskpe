@@ -19,6 +19,7 @@ Route::get('/{section}', [AppController::class, 'section'])
     ->name('app.section');
 
 Route::get('/privacy', [AppController::class, 'privacy'])->name('privacy');
+Route::get('/terms', [AppController::class, 'terms'])->name('terms');
 
 // OAuth (top-level navigation, outside the iframe)
 Route::get('/auth/shopify', [AuthController::class, 'redirect'])->name('shopify.auth');

@@ -111,15 +111,15 @@ DP = [
  ("L1.7 Privacy / data protection agreement available to all merchants",
   "Published at [YOUR PRIVACY POLICY URL] and linked from the listing; a DPA on request at [SUPPORT EMAIL]. Same document for every merchant, every country."),
  ("L1.8 Retention periods applied",
-  "Scheduled `taskpe:prune`: WhatsApp delivery logs 90 days, webhook ledger rows 7 days. Task rows (which carry an order id and a label) live until the merchant deletes the task or the store is redacted. No historical backlog survives uninstall."),
+  "Scheduled `taskpe:prune`: WhatsApp delivery logs 90 days, webhook ledger rows 7 days. Task rows (which carry an order id and a label) live until the merchant deletes the task or the store is redacted. The API credentials are dropped on uninstall - access token, refresh token and the merchant's messaging key - and `shop/redact` deletes the store's whole row, so no historical backlog survives uninstall."),
  ("L1.9 Encrypted at rest and in transit",
-  "HTTPS forced for every generated URL (OAuth and webhook callbacks), webhooks verified by HMAC, staff portal cookies httpOnly + SameSite=Lax, Shopify access tokens encrypted in the database with APP_KEY, disk-level encryption at the host [CONFIRM the provider and enable if not already], backups encrypted at the provider [CONFIRM]."),
+  "HTTPS forced for every generated URL (OAuth and webhook callbacks), webhooks verified by HMAC, staff portal cookies httpOnly + SameSite=Lax. Shopify credentials are the **expiring offline kind Shopify now requires of public apps**: the access token lives about an hour and is renewed from a refresh token, both encrypted in the database with APP_KEY and neither ever sent to the browser or written to a log (a SHA-256 fingerprint is what appears there), so a leaked row stops working on its own. Disk-level encryption at the host [CONFIRM the provider and enable if not already], backups encrypted at the provider [CONFIRM]."),
  ("L2 Encrypt backups",
   "[CONFIRM] - if the host's snapshots are not encrypted, either enable provider-side encryption or state that no backups contain customer data because no customer data is stored beyond an order id and a label."),
  ("L2 Test and production data separate",
   "Separate app (client ID/secret), separate database and a `config('app.env')`-gated demo seeder (`php artisan taskpe:demo-store`) that writes only fabricated orders to a development store. Production data is never copied down."),
  ("L2 Data loss prevention strategy",
-  "Least-privilege scopes; per-tenant queries always filtered by shop id so one store can never read another; no bulk export endpoint; no order data in logs (we log order ids at most); access to the server is key-only [CONFIRM SSO/MFA on the host panel]; deploy access limited to named people."),
+  "Least-privilege scopes; per-tenant queries always filtered by shop id so one store can never read another; no bulk export endpoint; no order data in logs (we log order ids at most); no long-lived API credential to exfiltrate (expiring access token + rotating refresh token, both encrypted, `app/Services/TokenVault.php`); access to the server is key-only [CONFIRM SSO/MFA on the host panel]; deploy access limited to named people."),
  ("L2 Limit staff access to protected customer data",
   "The app has no admin console holding customer data - our staff see the database only under break-glass conditions, and there is nothing there to browse. On the merchant side, staff portal users see only their own store's tasks, and the link opens the order inside Shopify, under their own Shopify permissions."),
  ("L2 Strong passwords for staff accounts",
@@ -132,6 +132,8 @@ DP = [
 
 
 RADAR = [
+ ("**The Admin API token is the wrong kind for a public app** (the listing looks fine, then every store starts failing one hour after install)",
+  "Shopify refuses **non-expiring** offline tokens for GraphQL Admin API calls from public apps - now for new apps, for all of them after **1 January 2027**. The app asks for the expiring pair (`expiring=1` at the token exchange), stores the refresh token and both expiry dates, and renews them itself (`app/Services/TokenVault.php`, `php artisan taskpe:tokens`, DEPLOYMENT.md section 19). Check before submitting: `php artisan taskpe:tokens --probe` must print `expiring` for every store, and the merchant must never see “re-install the app” for what is only a login problem."),
  ("App icon is 1600px or 1024px", "Shopify wants exactly 1200x1200. Use `assets/listing/app-icon-1200.png` (generated from the 1600 master). Corners are pre-rounded in the art; Shopify rounds its own, which is accepted, but if you can supply a full-bleed square that is cleaner."),
  ("Screenshots contain pricing or a plan card", "Deliberately excluded - listing images must not carry pricing (4.4.x). Keep the Plan tab out of screenshots and let the Pricing section hold the numbers."),
  ("Screenshots look like mockups or show browser chrome", "All six are real captures at exactly 1600x900 with no chrome, no overlays, unique content per image (4.4.4/4.4.5 from 26 March 2026)."),
@@ -140,7 +142,7 @@ RADAR = [
  ("`read_all_orders` not yet approved", "Order search outside the install window returns nothing. The reason text below is written for that request; the app already explains the limit in-app, so no merchant is misled while the request is open."),
  ("Trial promised but not delivered", "The listing must match what Shopify's plan page offers. Dashboard trial is 7 days; Shopify's guidance recommends 14 - set it in the Dashboard if you want the recommendation, and keep the copy honest either way."),
  ("Charges outside Shopify billing hidden", "WhatsApp messages are billed by the merchant's own Whatify account. That belongs in the plan's 'additional charges' line with a link to a page that explains it (4.2)."),
- ("Support and legal links", "Privacy policy URL is required; add Terms of Service and a support/docs URL. `/privacy` exists in-app; `/terms` does not yet - publish one or link your marketing site's ToS."),
+ ("Support and legal links", "Privacy policy URL is required; add Terms of Service and a support/docs URL. `/privacy` and `/terms` are both served by the app (`AppController::privacy|terms`, public, no login). Two things still have to go into `resources/views/terms.blade.php` before that link is quoted anywhere: the legal entity and the governing law - both are marked with `[` on the page, and the page prints a note telling you to delete it afterwards."),
  ("Storefront performance", "Nothing is injected into the storefront (no scripts, no theme edits), so the Lighthouse delta is zero. Say so in the review instructions; it removes a whole class of questions."),
 ]
 
@@ -247,7 +249,7 @@ w("### Links, support and eligibility\n")
 w("| Field | Value |")
 w("| --- | --- |")
 w("| Privacy policy (required) | `https://<your-host>/privacy` — this route exists in the app. Shopify also wants it reachable without auth; `/privacy` is outside the embedded-app route group ✓ |")
-w("| Terms of service | **Missing — add it.** There is no `/terms` route or page. Publish one (or your marketing site's ToS) before submitting. |")
+w("| Terms of service | `https://[HOST]/terms` — the app serves it (`routes/web.php` → `AppController::terms`). Replace the two bracketed placeholders in `resources/views/terms.blade.php` (operating entity, governing law) before that URL goes in the form. |")
 w("| Help / docs URL | [YOUR DOCS] — write Shopify-specific steps, per Polaris help-documentation guidance; the in-app Setup guide can be mirrored there |")
 w("| Support email / phone | [SUPPORT EMAIL] / [PHONE] — also keep *emergency developer contact* current in the dashboard; Shopify pages that contact from there, not from the listing |")
 w("| Demo store URL | [YOUR DEV STORE] — link **directly to the page that shows the app**, e.g. `https://<dev-store>.myshopify.com/admin/apps/taskpe`, and put the click path in the instructions below |")
@@ -389,7 +391,8 @@ w("")
 w("---")
 w("")
 w("### Still to fill before submitting\n")
-w("1. Privacy policy is live at `https://<host>/privacy`; **publish a Terms of Service page** and link both.")
+w("1. Both legal pages exist — `https://<host>/privacy` and `https://<host>/terms`. Fill the two placeholders in `resources/views/terms.blade.php` (operating entity, governing law), then link both.")
+w("placeholders in `resources/views/terms.blade.php` (operating entity, governing law), then link both.")
 w("2. Support email, docs URL, demo store URL, emergency developer contact.")
 w("3. Pricing page that explains charges billed outside Shopify (Whatify).")
 w("4. Decide the Level 1 / Level 2 fork in section 4, and if Level 1: remove the customer tab + `read_customers`.")

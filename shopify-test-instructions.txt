@@ -22,8 +22,11 @@ REVIEW STORE (provided for testing)
    Install from the listing and approve the permission screen.
    Expected: the scopes offered are read_orders, read_products, read_content (plus read_customers
    while the picker still has a Customers tab). No write scope, no read_all_orders (see step 4).
-   After the redirect the board loads inside the admin from a single /api/board request, and
-   https://[HOST]/privacy is readable without a login.
+   After the redirect the board loads inside the admin from a single /api/board request, and both
+   https://[HOST]/privacy and https://[HOST]/terms are readable without a login. Shopify issues the
+   expiring offline token that public apps require; the app keeps it renewed from the refresh token
+   in the background, so nothing here depends on a permanent credential (php artisan taskpe:tokens
+   --probe prints the state per store).
 
 2. CREATE A TASK FROM A TEMPLATE
    Press "t" (or the "COD / NDR task templates" button at the top of the board) -> "COD

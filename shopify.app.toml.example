@@ -28,6 +28,10 @@ scopes = "read_orders,read_products,read_customers,read_content"
 # version, or the store never sees it.
 
 [auth]
+# The EXPIRING offline access token that public apps now need is requested in code
+# (ShopifyClient::exchangeCode sends expiring=1) and rotated by App\Services\TokenVault.
+# The `expiringOfflineAccessTokens` flag in Shopify's docs belongs to the Remix app
+# templates only — there is nothing to set here, and no dashboard toggle either.
 redirect_urls = [
   "https://app.yourdomain.com/auth/shopify/callback",
   "https://app.yourdomain.com/billing/callback",

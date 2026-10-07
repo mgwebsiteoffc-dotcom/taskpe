@@ -116,4 +116,17 @@ class AppController extends Controller
     {
         return view('privacy', ['appName' => config('app.name')]);
     }
+
+    /**
+     * GET /terms — public terms of service.
+     *
+     * Shopify's listing requires both links, and the pair is checked at review: a listing
+     * that points a terms field at the privacy page is a rejection over a page nobody argued
+     * about. Same static shell, no auth, no store data: a reviewer and a merchant must be
+     * able to read it without an install.
+     */
+    public function terms()
+    {
+        return view('terms', ['appName' => config('app.name')]);
+    }
 }

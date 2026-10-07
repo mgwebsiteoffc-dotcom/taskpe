@@ -109,6 +109,18 @@ class ResourceSearchController extends Controller
             return 'Shopify could not read that search. Try just the order number, for example 1042.';
         }
 
+        // The credential, not the permissions. Shopify now requires public apps to hold an
+        // EXPIRING offline token, so two things look like a scope problem from the outside:
+        // a store that installed before that change (its token is the refused kind) and a
+        // renewal that lapsed. Both are fixed by reopening the app, which re-runs OAuth, and
+        // the app can also convert and rotate the token itself (App\Services\TokenVault) — so
+        // the old sentence here sent merchants to uninstall a working install for nothing.
+        if (preg_match('/non-expiring|expiring offline|no longer accepted|refresh token|rejected the stored access token|reconnect/i', $msg)) {
+            return 'TaskPe\'s connection to Shopify needs renewing. Open TaskPe from Apps in your '
+                .'Shopify admin and it reconnects on its own, then search the order again. Nothing you '
+                .'saved is affected — this is the login, not your boards.';
+        }
+
         if (str_contains($msg, 'access') || str_contains($msg, 'ACCESS')) {
             return 'Missing API permission. Re-install the app or check scopes.';
         }

@@ -3235,9 +3235,10 @@
     } else if (err?.reason === 'not_installed') {
       why = err?.cause === 'token_rejected'
         ? 'Shopify no longer accepts the access token this install is holding — the app was '
-          + 'uninstalled or reinstalled on the store, or this server started with a different '
-          + 'APP_KEY than the one that stored it. Reconnect below: approving the scopes issues '
-          + 'a fresh token and the board reloads by itself.'
+          + 'uninstalled or reinstalled on the store, this server started with a different '
+          + 'APP_KEY than the one that stored it, or the token aged out and could not be renewed '
+          + 'by itself. Reconnect below: approving the scopes issues a fresh token and the board '
+          + 'reloads by itself. Nothing on your boards is lost — this is the login only.'
         : 'This store is not connected to TaskPe yet — approve the app scopes below and the '
           + 'board will open on its own.';
     } else if (err?.code === 'reauth') {

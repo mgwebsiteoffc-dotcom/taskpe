@@ -44,6 +44,27 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Expiring offline access tokens (required for public apps)
+    |--------------------------------------------------------------------------
+    | The GraphQL Admin API rejects a NON-expiring offline token for a public app, and the
+    | expiring one lives an hour: `expires_in` from the response is what says how long, and
+    | the refresh token beside it is how App\Services\TokenVault renews it without a merchant.
+    | The values below are the two knobs, and lifetimes are deliberately NOT configured here
+    | — Shopify's answer says `expires_in`, so Shopify is the one that decides.
+    |
+    | SHOPIFY_TOKEN_REFRESH_SKEW  how early (seconds) a call renews instead of using a token
+    |                             about to die. Below ~60s the renew and the request race each
+    |                             other in a slow queue; 120 suits an hour-long token.
+    | SHOPIFY_TOKEN_MIGRATE_RETRY how long to sit out after a store's legacy token turns out
+    |                             not to be convertible (custom-app and merchant-built tokens
+    |                             are exempt from the change, so a rejection there is normal).
+    */
+    'token_refresh_skew'   => (int) env('SHOPIFY_TOKEN_REFRESH_SKEW', 120),
+    'token_migrate_retry'  => (int) env('SHOPIFY_TOKEN_MIGRATE_RETRY', 3600),
+    'token_lock_seconds'   => (int) env('SHOPIFY_TOKEN_LOCK_SECONDS', 25),
+
+    /*
+    |--------------------------------------------------------------------------
     | API version
     |--------------------------------------------------------------------------
     | Public apps must stay on a supported stable version. Pin it here and

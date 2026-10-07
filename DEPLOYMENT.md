@@ -195,7 +195,7 @@ entry states its section, so the role default can never fight a deliberate click
 
 The one log line that looks like a credential bug and is almost never one. `X-Shopify-Access-Token`
 is sent from `shops.access_token`, so Shopify is rejecting **the token stored for that row** —
-and all four causes need a different fix:
+and all five causes need a different fix:
 
 | Cause | How it happens | Fix |
 |---|---|---|
@@ -203,6 +203,7 @@ and all four causes need a different fix:
 | wrong `APP_KEY` | the store's row was created on another server (hosting move), or `php artisan key:generate` was re-run — `access_token` is **encrypted with APP_KEY** | restore the old `APP_KEY`, or reconnect to mint a fresh one. Never rotate `APP_KEY` without telling merchants to reinstall |
 | different app | `.env` `SHOPIFY_API_KEY`/`SECRET` belong to app A while the store installed app B (common after `shopify app deploy` from a copied `shopify.app.toml`), or a stale `config:cache` is serving the old values | set the pair from the app the merchant installed, then `php artisan config:clear` |
 | OAuth never finished | the row exists (an old install, a copy) with an empty token | reconnect |
+| **the token is the old, non-expiring kind** | the store installed before Shopify required public apps to hold an *expiring* offline token — the Admin API refuses the permanent one (`Non-expiring access tokens are no longer accepted for the Admin API`). Looks identical from the log; it is not a credential bug at all | `php artisan taskpe:tokens --rotate` converts it in place (§ 19). A reconnect works too, and is what the merchant sees if nobody has SSH |
 
 ```bash
 php artisan taskpe:doctor                      # every shop
@@ -217,7 +218,8 @@ that decrypts fine but answers for *another store* (copied `shops` row). `undecr
 changed)` as the fingerprint is the second row of the table above, diagnosed without a stack trace.
 
 What the app does on its own: the first rejection marks the shop (`uninstalled_at` + a reason in
-`settings.auth.rejected_*`), so
+`settings.auth.rejected_*`), so (for the last row of the table it first tries to fix itself, which
+§ 19 explains)
 
 * the board shows the **reconnect** sentence instead of a spinner, and the SPA's existing
   `not_installed` handling restarts OAuth at top level — usually one click, no SSH needed;
@@ -869,3 +871,86 @@ back the in-app price table that caused § 17 in the first place.
 two minutes, upload this one file and run `php artisan config:clear`),
 `app/Http/Middleware/NoLaravelUser.php` (new), `bootstrap/app.php`, `config/auth.php`
 (comment only), `app/Services/BillingService.php`. No migration, no extension redeploy.
+
+## 19. `Non-expiring access tokens are no longer accepted for the Admin API`
+
+The message arrived as a GraphQL error while a merchant was linking an order to a task, and the
+screen above it said *"Missing API permission. Re-install the app or check scopes."* — which was
+wrong twice over: nothing about the scopes had changed, and reinstalling was the one action that
+would have cost the merchant nothing but time.
+
+**What Shopify changed.** A public app's offline access token is no longer permanent. It is issued
+as a **pair**: an access token that lives about **one hour** (`expires_in: 3600`) and a refresh
+token that lives about **90 days** (`refresh_token_expires_in: 7776000`), and every refresh hands
+back a **new** refresh token with a new 90 days. The GraphQL Admin API now refuses the old kind
+outright for new public apps, and for **every** public app after **1 January 2027** — with a
+`shpat_` token that still decrypts, still has the right scopes and still looks fine in the database.
+Enforcement is on the GraphQL Admin API only: custom apps and merchant-built apps are exempt, which
+is why a private test store can keep working while a real one does not.
+
+**Why the old code broke an hour after it worked.** `AuthController` saved one column
+(`shops.access_token`) and never read `expires_in`, so there was nothing to renew *from* — the row
+had no refresh token and no expiry. Any app that stores a token as a single string has this bug
+waiting, and it is a timing bug rather than a config bug: install at 10:00, fine until 11:00,
+`taskpe:send-digests` failing quietly at 09:00 the next morning.
+
+### What the app does now
+
+| Step | Where | Detail |
+|---|---|---|
+| Ask for the right kind | `ShopifyClient::exchangeCode()` | the code→token POST sends `expiring=1`. Without it Shopify hands back the refused token, so this is the line that matters at install |
+| Store all four values | `TokenVault::store()` | access token, refresh token (both `encrypted` casts), and **absolute** expiry dates. Lifetimes are read from the response, never hard-coded, because Shopify's own doc says `expires_in` is the source of truth |
+| Renew when needed | `TokenVault::token()`, called by `ShopifyClient::graphql()` | rotates if the token is inside `SHOPIFY_TOKEN_REFRESH_SKEW` (120s) of death. Every Admin API caller in the app inherits it: install, webhook registration, billing read-back, digests, order search, `taskpe:doctor` |
+| Migrate stores that already installed | `TokenVault::convertLegacy()` | Shopify's documented direct migration exchange (`grant_type=…token-exchange`, `subject_token` = the old token, `expiring=1`), so **no merchant has to reinstall**. Attempts for a store are spaced an hour apart (`SHOPIFY_TOKEN_MIGRATE_RETRY`) when the token turns out not to be eligible |
+| Self-heal one call | `ShopifyClient::graphql()` | if a request is refused for exactly this reason, the vault converts or rotates and the request is replayed **once** |
+| Keep quiet stores alive | `routes/console.php` → `taskpe:tokens --rotate` daily | only stores whose refresh token is inside 14 days of expiry are touched, so a merchant who does not open the app for a quarter does not come back to a reconnect wall |
+| Say the true thing | `ResourceSearchController::hintFor()` | the merchant-facing line is now "TaskPe's connection to Shopify needs renewing — open TaskPe from Apps in your admin", with no advice to uninstall anything |
+
+Two rules from Shopify's text are load-bearing in the code, and both were easy to get wrong:
+
+* **"Refresh one store at a time."** A per-store `Cache::lock('taskpe:token:<id>')` with the row
+  re-read inside it — two workers rotating the same store leave one of them holding a token the
+  other already retired. If the lock store is unavailable the work still goes ahead: a rare double
+  rotation is survivable (the presented refresh token stays usable until the new one is used), a
+  board that refuses to load is not.
+* **"Treat that `401` as final."** A dead refresh token is always `401 invalid_request` / *"This
+  request requires an active refresh_token"*, whether it was replaced, expired, or the app was
+  uninstalled — so the app does not branch on the cause, does not retry, marks the shop for
+  reconnect, and tells the merchant to open the app once. A **transient** failure (timeout, 429,
+  5xx) is the opposite: it is logged, retried later, and the still-valid hour of access is kept
+  rather than thrown away.
+
+`Shop::recentlyGranted()` (120s) keeps the two grants from racing: Shopify warns that acquiring a
+token and refreshing one for the same store retire each other, so rotation stands down while an
+OAuth callback is landing.
+
+### Reading `php artisan taskpe:tokens`
+
+| `token kind` | meaning | do this |
+|---|---|---|
+| `expiring` | the pair is stored and renewal works | nothing; the daily pass and the request path handle it |
+| `legacy (non-expiring)` | installed before this change | `taskpe:tokens --rotate` — converts in place, no reinstall |
+| `expiring, but Shopify rejected it` | the refresh token is dead (90 days with nobody in the app, or a reinstall revoked it) | the merchant opens the app once, from **Apps** in the admin |
+| `none — never installed or reinstalled` | no token on the row | install / reconnect |
+
+`--probe` adds a live `{ shop { name } }` per store, so the verdict is Shopify's answer rather than
+our reading of a column. `--force` rotates every store regardless of due date — use it after
+rotating a client secret, not as routine.
+
+### Deploy
+
+```bash
+# 1. code first is safe: TokenVault::hasTokenColumns() degrades to the old single-column
+#    behaviour with one log warning instead of throwing on a missing column.
+php artisan migrate --force          # adds shops.refresh_token + the three dates
+php artisan taskpe:tokens --rotate   # converts every legacy store, in place
+php artisan config:clear && php artisan cache:clear
+php artisan taskpe:tokens --probe    # Shopify's own verdict, per store
+```
+
+The `config:clear` is not decoration: `token_refresh_skew` and `token_migrate_retry` are read from
+a cached config, and a stale cache is how a rotation window of 120 seconds silently stays 0.
+
+Nothing here changes scopes, so `read_all_orders` and the protected-customer-data review are
+unaffected — a store that could not read old orders before still cannot, and still gets the
+link-by-number fallback (§ 16).

@@ -12,18 +12,25 @@ class Shop extends Model
         'plan', 'charge_id', 'timezone', 'currency',
         'whatify_api_key', 'whatify_account_id', 'settings',
         'installed_at', 'uninstalled_at', 'redacted_at',
+        // Public apps now hold an EXPIRING offline token plus its refresh token; both
+        // lifetimes are stored as absolute dates. Written only by TokenVault::store().
+        'refresh_token', 'token_expires_at', 'refresh_expires_at', 'token_rotated_at',
     ];
 
     protected $casts = [
         'access_token'     => 'encrypted',
+        'refresh_token'    => 'encrypted',
         'whatify_api_key'  => 'encrypted',
         'settings'         => 'array',
         'installed_at'     => 'datetime',
         'uninstalled_at'   => 'datetime',
         'redacted_at'      => 'datetime',
+        'token_expires_at' => 'datetime',
+        'refresh_expires_at' => 'datetime',
+        'token_rotated_at' => 'datetime',
     ];
 
-    protected $hidden = ['access_token', 'whatify_api_key'];
+    protected $hidden = ['access_token', 'refresh_token', 'whatify_api_key'];
 
     // ---------------- relationships ----------------
 
@@ -161,6 +168,97 @@ class Shop extends Model
         } catch (\Throwable $e) {
             return false;
         }
+    }
+
+    // ---------------- token lifetime (expiring offline tokens) ----------------
+
+    /**
+     * True when the row carries the expiry Shopify issues with an expiring offline
+     * token. False is not a broken install: it is a store that installed before the
+     * change, holding the non-expiring kind the Admin API now refuses — which is what
+     * TokenVault::convertLegacy() exists to fix without asking anyone to reinstall.
+     */
+    public function usesExpiringToken(): bool
+    {
+        return $this->token_expires_at !== null;
+    }
+
+    /**
+     * The access token is due for renewal once it is inside `$skew` seconds of death.
+     *
+     * A missing/unknown expiry returns false deliberately: "we do not know when this
+     * one dies" is the legacy case, and rotating a legacy token is impossible — it has
+     * no refresh token. The migration is the answer there, not a rotation.
+     */
+    public function tokenNeedsRotation(int $skew = 0): bool
+    {
+        $until = $this->token_expires_at;
+
+        if (!$until instanceof \DateTimeInterface) {
+            return false;
+        }
+
+        return $until->getTimestamp() - time() <= max(0, $skew);
+    }
+
+    /**
+     * Can this store renew itself without the merchant? Only with a refresh token that
+     * has not run out. Decrypting it can THROW (APP_KEY changed), and an unreadable
+     * secret means "no", which routes the merchant to OAuth rather than into a 500.
+     */
+    public function refreshPossible(): bool
+    {
+        $until = $this->refresh_expires_at;
+
+        if ($until instanceof \DateTimeInterface && $until->getTimestamp() <= time()) {
+            return false;
+        }
+
+        return $this->refreshToken() !== null;
+    }
+
+    public function refreshToken(): ?string
+    {
+        try {
+            $value = $this->refresh_token;
+        } catch (\Throwable $e) {
+            return null;
+        }
+
+        return is_string($value) && $value !== '' ? $value : null;
+    }
+
+    /** Seconds of access left, or null when this row does not track it (legacy). */
+    public function tokenSecondsLeft(): ?int
+    {
+        $until = $this->token_expires_at;
+
+        return $until instanceof \DateTimeInterface ? $until->getTimestamp() - time() : null;
+    }
+
+    /**
+     * Seconds the refresh token has left (the 90-day window). Null means "not tracked":
+     * either there is no refresh token, or the row predates the migration and cannot say.
+     * Reporting a guess here would send someone off to fix the wrong thing, so a status
+     * command prints "unknown" instead.
+     */
+    public function refreshSecondsLeft(): ?int
+    {
+        $until = $this->refresh_expires_at;
+
+        return $until instanceof \DateTimeInterface ? $until->getTimestamp() - time() : null;
+    }
+
+    /**
+     * Shopify: "Don't do the two at the same time for the same store — acquiring a
+     * token and refreshing one each retire the result of the other." A grant younger
+     * than this window means OAuth is still landing, so background rotation stands down.
+     */
+    public function recentlyGranted(int $seconds = 120): bool
+    {
+        $at = $this->token_rotated_at ?? $this->installed_at;
+
+        return $at instanceof \DateTimeInterface && (time() - $at->getTimestamp()) < $seconds;
     }
 
     /**

@@ -178,6 +178,29 @@ class DoctorCommand extends Command
             $this->row('access_token', 'OK', 'sha256:'.$fingerprint.' (value not printed)');
         }
 
+        // The token's *shape* now matters as much as its value. A public app holding the old
+        // non-expiring kind has a token that decrypts, belongs to the right store, carries the
+        // right scopes — and is refused by the GraphQL Admin API anyway. Reporting that row as
+        // OK on the strength of the fingerprint alone would be the most expensive green light in
+        // this command.
+        if (!$shop->hasUsableToken()) {
+            // already covered by the two FAIL rows above
+        } elseif (!$shop->usesExpiringToken()) {
+            $this->row('token kind', 'FAIL', 'non-expiring — the Admin API refuses that kind for public apps. php artisan taskpe:tokens --rotate converts it in place; no reinstall for the merchant');
+            $ok = false;
+        } else {
+            $left  = $shop->tokenSecondsLeft();
+            $renew = $shop->refreshSecondsLeft();
+
+            if (!$shop->refreshPossible()) {
+                $this->row('token kind', 'FAIL', 'expiring but not renewable — no usable refresh token on the row, so the merchant has to open the app once');
+                $ok = false;
+            } else {
+                $this->row('token kind', 'OK', 'expiring · access token '.($left !== null && $left <= 0 ? 'overdue' : 'valid ~'.($left === null ? '?' : (int) round($left / 60)).' min more')
+                    .' · renewable for ~'.($renew === null ? '?' : (int) round($renew / 86400)).' days');
+            }
+        }
+
         if ($this->option('skip-api')) {
             $this->row('probe', 'WARN', 'skipped (--skip-api)');
 
