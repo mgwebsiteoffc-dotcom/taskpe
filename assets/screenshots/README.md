@@ -1,5 +1,9 @@
 # App Store screenshots — TaskPe
 
+> Alt text and every other listing field now live in **`APP-LISTING.md`** (generated from
+> `tools/listing-copy.py`, which enforces Shopify's character limits). The table below is kept for
+> the upload order only — paste the alt text from `APP-LISTING.md`, which is trimmed to fit the field.
+
 **All desktop shots are real captures of the running app, exactly 1600×900 PNG**
 (Shopify's screenshot spec), seeded by `php artisan taskpe:demo-store`. No PII,
 no pricing, no reviews/stats, no browser chrome, no marketing overlays. Upload
