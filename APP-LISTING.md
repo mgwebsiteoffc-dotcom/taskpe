@@ -4,6 +4,10 @@ Paste-ready content for **Partner Dashboard → Apps → TaskPe → Distribution
 **API access requests** (protected customer data, read all orders). Every field below was length-checked
 against Shopify's current limits — the report is at the bottom of this file.
 
+**Prefer Word?** `python3 tools/make-docx.py` rebuilds `TaskPe-App-Listing.docx` from this file: the same
+content laid out as headings, tables and grey copy-verbatim boxes, plus a final “paste sheet” appendix that
+repeats every field you have to type, in form order, with its character count.
+
 Sources: [Best practices for apps in the Shopify App Store](https://shopify.dev/docs/apps/launch/shopify-app-store/best-practices)
 (name 30, introduction 100, details 500, features 80, screenshots 1600×900 + alt text, icon 1200×1200,
 integrations ≤6, search terms ≤5, install eligibility, review instructions),
