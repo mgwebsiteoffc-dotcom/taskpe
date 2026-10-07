@@ -73,6 +73,13 @@
     quickAdd: null,      // column id whose "add task" editor should auto-open
     filter: null,        // stat cell the board is currently narrowed to (see STAT_FILTERS)
     team: null,          // column team tag the board + stats are narrowed to (Accounting, Warehouse…)
+    // One database, three ways to read it (Notion's model): the board for the
+    // queue, the table to scan and sort everything, the calendar to plan a week.
+    mode: ['board', 'table', 'calendar'].includes(readPref('taskpe_mode')) ? readPref('taskpe_mode') : 'board',
+    group: readPref('taskpe_group') || 'stage',   // table grouping: stage|team|person|due|none
+    sort: null,           // { key, dir } — only meaningful in the table
+    collapsed: new Set(), // table groups folded away for this page load (see setGroup)
+    cal: null,            // 'YYYY-MM' being shown in the calendar
     dashHidden: readPref('taskpe_dash') === 'off',   // overview band
     loading: false,
   };
@@ -265,6 +272,12 @@
                  ['circle', { cx: 15, cy: 7.6, r: 2.3 }], ['circle', { cx: 10.7, cy: 16.4, r: 2.3 }]],
     premium:    [['path', { d: 'M12 3.9l2.5 5 5.6.9-4.1 3.9 1 5.6-5-2.6-5 2.6 1-5.6-4.1-3.9 5.6-.9z' }]],
     chart:      [['path', { d: 'M4.6 19.4h14.8' }], ['path', { d: 'M7.6 16.4v-4.6M12 16.4V6.2M16.4 16.4v-6.8' }]],
+    table:      [['rect', { x: 4.2, y: 5.4, width: 15.6, height: 13.2, rx: 2 }],
+                 ['path', { d: 'M4.2 9.8h15.6M9.6 9.8v8.8M15.2 9.8v8.8' }]],
+    calendar:   [['rect', { x: 4.2, y: 5.8, width: 15.6, height: 13.4, rx: 2 }],
+                 ['path', { d: 'M4.2 10.2h15.6M8.6 3.8v3.4M15.4 3.8v3.4' }]],
+    sort:       [['path', { d: 'M7.4 5.6v12.8M7.4 5.6L4.6 8.6M7.4 5.6l2.8 3' }],
+                 ['path', { d: 'M16.6 18.4V5.6M16.6 18.4l-2.8-3M16.6 18.4l2.8-3' }]],
     plus:       [['path', { d: 'M12 5.4v13.2M5.4 12h13.2' }]],
     minus:      [['path', { d: 'M5.4 12h13.2' }]],
     edit:       [['path', { d: 'M4.6 19.4h4L20 8a2.1 2.1 0 0 0-3-3L5.6 16.4z' }], ['path', { d: 'M14.9 7.1l3 3' }]],
@@ -995,19 +1008,272 @@
       h('button', { class: 'btn plain sm', onclick: clearFilters }, 'Show all'));
   }
 
+  function setMode(mode) {
+    state.mode = mode;
+    writePref('taskpe_mode', mode);
+    render();
+  }
+
+  function setGroup(group) {
+    state.group = group;
+    writePref('taskpe_group', group);
+    state.collapsed.clear();        // the old keys mean nothing in the new grouping
+    render();
+  }
+
+  const MODES = [
+    ['board', 'Board', 'board'],
+    ['table', 'Table', 'table'],
+    ['calendar', 'Calendar', 'calendar'],
+  ];
+  // Same order the columns are clicked in; `priority` needs a rank, not a string.
+  const TCOLS = [['title', 'Task'], ['stage', 'Stage'], ['team', 'Team'], ['person', 'Assignee'],
+                 ['priority', 'Priority'], ['due', 'Due'], ['closed', 'Closed']];
+  const PRANK = { urgent: 0, high: 1, medium: 2, low: 3 };
+  const GROUPS = [['stage', 'Stage'], ['team', 'Team'], ['person', 'Person'], ['due', 'Due'], ['none', 'No grouping']];
+
+  // Notion puts the view switcher, the filters and the grouping in ONE quiet row,
+  // and every part of it is text rather than chrome. That is what keeps a data
+  // dense screen from looking like a toolbar.
+  function renderViewBar(st) {
+    const shown = state.group !== 'none' && state.mode === 'table'
+      ? h('button', {
+          class: 'vbtn', title: 'Group the rows — click to cycle',
+          onclick: () => setGroup(GROUPS[(GROUPS.findIndex(g => g[0] === state.group) + 1) % GROUPS.length][0]),
+        }, 'By: ', h('b', null, GROUPS.find(g => g[0] === state.group)[1]), icon('chevron-down', { size: 12 }))
+      : null;
+
+    return h('div', { class: 'view-bar' },
+      // Deliberately a group of pressed-buttons and not a tablist: the admin's own
+      // sidebar is this app's navigation, while these switch views of one database.
+      h('div', { class: 'vtabs', role: 'group', 'aria-label': 'Ways to view the tasks' },
+        MODES.map(([key, label, ic]) => h('button', {
+          class: 'vtab' + (state.mode === key ? ' on' : ''),
+          'aria-pressed': String(state.mode === key),
+          title: 'Show the same tasks as a ' + label.toLowerCase(),
+          onclick: () => setMode(key),
+        }, icon(ic, { size: 14 }), label))),
+      shown,
+      state.mode === 'table' ? renderSortBtn() : null,
+      renderFilterBar(st));
+  }
+
+  function sortOf(key) {
+    const cur = state.sort;
+    state.sort = cur && cur.key === key ? { key, dir: -cur.dir } : { key, dir: 1 };
+    render();
+  }
+
+  function renderSortBtn() {
+    const cur = state.sort || { key: 'due', dir: 1 };
+    const label = (TCOLS.find(c => c[0] === cur.key) || ['due', 'Due'])[1];
+
+    return h('button', {
+      class: 'vbtn', title: 'Click a column heading to sort by it; click again to flip',
+      onclick: () => sortOf(cur.key === 'due' ? 'priority' : cur.key),
+    }, 'Sort: ', h('b', null, label), cur.dir > 0 ? ' ↑' : ' ↓');
+  }
+
   function renderBoard() {
-    const s = state.board;
     const st = boardStats();
+
+    return h('div', { class: 'board-page' },
+      renderPageHead(),
+      state.dashHidden ? null : h('div', { class: 'dash' }, renderStats(st)),
+      renderViewBar(st),
+      state.mode === 'table' ? renderTable(st)
+        : state.mode === 'calendar' ? renderCalendar(st)
+        : renderColumnsView(st));
+  }
+
+  // --- the board: one group per column, with the group's own totals underneath ---
+  function renderColumnsView(st) {
     const board = h('div', { class: 'board' });
 
     for (const col of boardColumns()) board.append(renderColumn(col));
     board.append(h('button', { class: 'add-col-btn', onclick: promptAddColumn }, ...withIcon('plus', 'Add column', { size: 16 })));
 
-    return h('div', { class: 'board-page' },
-      renderPageHead(),
-      state.dashHidden ? null : h('div', { class: 'dash' }, renderStats(st)),
-      renderFilterBar(st),
-      board);
+    return board;
+  }
+
+  /* ------------------------------------------------------------- table view */
+
+  const sortKey = t => {
+    const key = (state.sort || { key: 'due' }).key;
+    if (key === 'title') return String(t.title || '').toLowerCase();
+    if (key === 'stage') return String(colName(t.column_id) || '').toLowerCase();
+    if (key === 'team') return String(colTeam(t.column_id) || '~ none').toLowerCase();
+    if (key === 'person') return String(t.assignee ? t.assignee.name : '~ unclaimed').toLowerCase();
+    if (key === 'priority') return String(PRANK[t.priority] ?? 9) + '|' + String(t.title || '').toLowerCase();
+    if (key === 'closed') return String(t.completed_at || '');
+    return String(t.due_at || '');            // due: open tasks with no date sort last
+  };
+
+  const colName = id => (state.board.columns.find(c => c.id === id) || {}).name || '—';
+  const colTeam = id => (state.board.columns.find(c => c.id === id) || {}).team || null;
+
+  function renderTable(st) {
+    const dir = (state.sort || { dir: 1 }).dir;
+    const list = allTasks().slice().sort((a, b) => {
+      const x = sortKey(a); const y = sortKey(b);
+      // Done tasks sink to the bottom of any ordering — a list you have to skip
+      // them in is a list you stop reading.
+      if (!!a.completed_at !== !!b.completed_at) return a.completed_at ? 1 : -1;
+      return (x < y ? -1 : x > y ? 1 : 0) * dir;
+    });
+
+    const head = h('div', { class: 'thead' },
+      h('div', { class: 'th tick' }, icon('check', { size: 13 })),
+      TCOLS.map(([key, label]) => h('button', {
+        class: 'th th-' + key + (key === (state.sort || { key: 'due' }).key ? ' on' : ''),
+        title: 'Sort by ' + label,
+        onclick: () => sortOf(key),
+      }, label, key === (state.sort || { key: 'due' }).key ? (dir > 0 ? ' ↑' : ' ↓') : null)));
+
+    const rowsOf = items => items.map(t => h('div', { class: 'trow' + (t.completed_at ? ' is-done' : ''), onclick: () => openTaskDrawer(t.id) },
+      h('button', {
+        class: 'tick' + (t.completed_at ? ' on' : ''),
+        title: t.completed_at ? 'Reopen this task' : 'Mark done',
+        onclick: ev => { ev.stopPropagation(); void tickTask(t); },
+      }, t.completed_at ? icon('check', { size: 12 }) : null),
+      h('div', { class: 't-title' }, t.title),
+      h('div', { class: 't-cell' }, colName(t.column_id)),
+      h('div', { class: 't-cell' }, colTeam(t.column_id) || h('span', { class: 'muted' }, '—')),
+      h('div', { class: 't-cell who' }, ...(t.assignee
+        ? [h('span', { class: 'avatar sm' }, t.assignee.initials), t.assignee.name.split(' ')[0]]
+        : [h('span', { class: 'muted' }, 'Unclaimed')])),
+      h('div', { class: 't-cell' }, h('span', { class: 'pill ' + t.priority }, t.priority)),
+      h('div', { class: 't-cell when' + (t.overdue ? ' late' : '') },
+        t.due_at ? fmtDate(t.due_at) : h('span', { class: 'muted' }, '—')),
+      h('div', { class: 't-cell when' }, t.completed_at ? fmtDate(t.completed_at) : h('span', { class: 'muted' }, '—'))));
+
+    const groups = groupTable(list);
+
+    // A group header is Notion's fold: 60 tasks in 5 buckets are unreadable until
+    // the five you care about are the only ones open.
+    const header = g => {
+      const key = String(g.key);
+      const closed = state.collapsed.has(key);
+      return h('div', { class: 'tgroup' + (closed ? ' closed' : '') },
+        h('button', {
+          class: 'tg-caret', 'aria-expanded': String(!closed),
+          title: closed ? 'Show these ' + g.items.length : 'Hide these ' + g.items.length,
+          onclick: () => {
+            if (closed) state.collapsed.delete(key); else state.collapsed.add(key);
+            render();
+          },
+        }, icon('chevron-down', { size: 13 })),
+        h('span', { class: 'tg-name' }, g.label),
+        h('span', { class: 'tg-count' }, String(g.items.length)),
+        g.late ? h('span', { class: 'tg-late' }, g.late + ' late') : null);
+    };
+
+    return h('div', { class: 'table-wrap' },
+      h('div', { class: 'table' },
+        head,
+        groups.length
+          ? groups.map(g => [
+              g.key === null ? null : header(g),
+              state.collapsed.has(String(g.key)) ? null : rowsOf(g.items),
+            ])
+          : h('div', { class: 't-empty' }, state.filter || state.team
+            ? 'Nothing matches this filter.' : 'No tasks yet — add one and it appears here.')));
+  }
+
+  function groupTable(list) {
+    const by = state.group;
+    if (by === 'none') return [{ key: null, label: '', items: list, late: 0 }];
+
+    const buckets = new Map();
+    const push = (key, label, t) => {
+      if (!buckets.has(key)) buckets.set(key, { key, label, items: [], late: 0 });
+      buckets.get(key).items.push(t);
+      if (!t.completed_at && t.overdue) buckets.get(key).late++;
+    };
+    for (const t of list) {
+      if (by === 'stage') push(t.column_id, colName(t.column_id), t);
+      else if (by === 'team') push(colTeam(t.column_id) || '~none', colTeam(t.column_id) || 'No team', t);
+      else if (by === 'person') push(t.assignee ? t.assignee.id : '~none', t.assignee ? t.assignee.name : 'Unclaimed', t);
+      else push(dueBucket(t), dueBucketLabel(t), t);
+    }
+    return [...buckets.values()].sort((a, b) => b.items.length - a.items.length || String(a.label).localeCompare(String(b.label)));
+  }
+
+  const dueBucket = t => !t.due_at ? 'none' : t.overdue ? 'late' : isToday(t.due_at) ? 'today' : ageDays(t.due_at) < 0 && new Date(t.due_at) > new Date() ? 'week' : 'later';
+  const dueBucketLabel = t => ({ none: 'No due date', late: 'Overdue', today: 'Today', week: 'Next 7 days', later: 'Later' }[dueBucket(t)]);
+
+  async function tickTask(t) {
+    try {
+      await api('/tasks/' + t.id + '/complete', { method: 'POST' });
+      await refreshBoard();
+      toast(t.completed_at ? 'Reopened ' + t.title : 'Closed ' + t.title);
+    } catch (e) { toast(e.message, true); }
+  }
+
+  /* ---------------------------------------------------------- calendar view */
+
+  function renderCalendar(st) {
+    const now = new Date();
+    const cur = state.cal || (now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0'));
+    const [yy, mm] = cur.split('-').map(Number);
+    const first = new Date(yy, mm - 1, 1);
+    const shift = (first.getDay() + 6) % 7;                 // Monday first (en-IN shop weeks)
+    const days = new Date(yy, mm, 0).getDate();
+    const byDay = new Map();
+    for (const t of allTasks()) {
+      if (!t.due_at) continue;
+      const k = dateKey(t.due_at);
+      if (!byDay.has(k)) byDay.set(k, []);
+      byDay.get(k).push(t);
+    }
+    const monthName = new Intl.DateTimeFormat('en-IN', { month: 'long', year: 'numeric' }).format(first);
+    const shiftMonth = delta => {
+      const d = new Date(yy, mm - 1 + delta, 1);
+      state.cal = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+      render();
+    };
+
+    const cells = [];
+    const monthKeys = new Set();
+    for (let i = 0; i < shift; i++) cells.push(h('div', { class: 'cday out' }));
+    for (let d = 1; d <= days; d++) {
+      const key = cur + '-' + String(d).padStart(2, '0');
+      monthKeys.add(key);
+      const items = (byDay.get(key) || []);
+      const open = items.filter(t => !t.completed_at);
+      const today = key === dateKey(now.toISOString());
+
+      cells.push(h('div', { class: 'cday' + (today ? ' today' : '') },
+        h('div', { class: 'cday-n' }, String(d), open.length > 1 ? h('span', { class: 'cday-c' }, String(open.length)) : null),
+        items.slice(0, 3).map(t => h('button', {
+          class: 'c-task' + (t.completed_at ? ' is-done' : ''),
+          title: t.title + (t.assignee ? ' — ' + t.assignee.name : ' — unclaimed'),
+          onclick: () => openTaskDrawer(t.id),
+        }, h('span', { class: 'c-dot ' + (t.overdue ? 'late' : t.priority) }), t.title)),
+        items.length > 3 ? h('div', { class: 'c-more' }, '+' + (items.length - 3) + ' more') : null));
+    }
+    while (cells.length % 7) cells.push(h('div', { class: 'cday out' }));
+
+    const undated = allTasks().filter(t => !t.due_at && !t.completed_at).length;
+    // A month grid hides the oldest overdue work by construction (it lives in the
+    // previous month), and overdue items are exactly the ones that must not be
+    // able to hide, so the header counts them and points at the sorted list.
+    const missed = allTasks().filter(t => !t.completed_at && t.overdue && t.due_at && !monthKeys.has(dateKey(t.due_at))).length;
+
+    return h('div', { class: 'cal' },
+      h('div', { class: 'cal-head' },
+        h('button', { class: 'vbtn', onclick: () => shiftMonth(-1), title: 'Previous month' }, '‹'),
+        h('h3', null, monthName),
+        h('button', { class: 'vbtn', onclick: () => shiftMonth(1), title: 'Next month' }, '›'),
+        h('button', { class: 'vbtn', onclick: () => { state.cal = null; render(); } }, 'Today'),
+        h('span', { class: 'spacer' }),
+        missed ? h('button', {
+          class: 'vbtn late', title: 'Open the list, grouped by due date',
+          onclick: () => { state.sort = { key: 'due', dir: 1 }; setGroup('due'); setMode('table'); },
+        }, icon('alert-circle', { size: 13 }), String(missed) + ' overdue from earlier') : null,
+        undated ? h('span', { class: 'muted small' }, undated + ' open task' + (undated === 1 ? '' : 's') + ' with no due date') : null),
+      h('div', { class: 'cal-grid' }, ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(d => h('div', { class: 'cdow' }, d))),
+      h('div', { class: 'cal-grid' }, cells));
   }
 
   function renderColumn(col) {
@@ -1028,6 +1294,7 @@
           iconButton('edit', { title: 'Rename column', onClick: () => promptRenameColumn(col) }),
           state.board.columns.length > 1
             ? iconButton('delete', { title: 'Delete column', onClick: () => deleteColumn(col) }) : null)),
+      colSummary(tasks, col),
       h('div', { class: 'col-cards' }, tasks.map(t => renderCard(t, col))),
       active && !tasks.length && hidden ? h('div', { class: 'col-quiet' }, 'no ' + active.label.toLowerCase() + ' here') : null,
       renderAddCard(col));
@@ -1057,6 +1324,27 @@
       const r = c.getBoundingClientRect();
       return y > r.top + r.height / 2;
     }).length;
+  }
+
+  // What a group is worth right now, spelled out instead of counted by eye. It
+  // follows the active filter, so a filtered board never shows a stale total.
+  function colSummary(tasks, col) {
+    const open = tasks.filter(isOpenTask);
+    const late = open.filter(t => t.overdue).length;
+    const unclaimed = open.filter(t => !t.assignee).length;
+    const bits = [];
+
+    if (col.is_done_stage) {
+      const week = tasks.filter(t => t.completed_at && ageDays(t.completed_at) < 7).length;
+      bits.push(String(tasks.length) + ' closed' + (week ? '  ·  ' + week + ' this week' : ''));
+    } else {
+      bits.push(open.length ? h('span', null, h('b', null, String(open.length)), ' open') : 'nothing open');
+      if (late) bits.push(h('span', { class: 'late' }, '  ·  ' + late + ' late'));
+      if (unclaimed) bits.push('  ·  ' + unclaimed + ' unclaimed');
+    }
+
+    // An empty group needs no summary line: that is what being empty looks like.
+    return tasks.length ? h('div', { class: 'col-sum' }, ...bits) : null;
   }
 
   function renderCard(t, col) {

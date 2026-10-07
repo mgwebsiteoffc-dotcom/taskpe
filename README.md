@@ -157,7 +157,7 @@ app/Services             ShopifyClient (GraphQL, retry), WhatifyClient, TaskNoti
 app/Http/Controllers     OAuth / webhooks / billing + /api/* tenant-scoped JSON
 app/Jobs                 ProcessShopifyWebhook, SendWhatsAppJob
 config/cors.php          API CORS for the admin extensions (/api/* only)
-public/js/app.js         the whole SPA (dashboard + charts, board, drawer, resource picker, team, settings, plan, shortcuts, admin app-menu mount)
+public/js/app.js         the whole SPA (dashboard + charts, one task database in Board/Table/Calendar views, drawer, resource picker, team, settings, plan, shortcuts, admin app-menu mount)
 extensions/              6 Admin UI extensions (Create task / bulk / order-page block) + shared/
 resources/views          app shell (App Bridge) + privacy policy
 config/task_templates.php  The COD/NDR one-click checklist pack (edit copy/add templates here)
@@ -165,6 +165,7 @@ LISTING.md               App Store submission pack: listing copy, screenshot sho
 assets/app-icon.png      App icon for the listing
 tour-preview.html        Static preview of the 5-slide onboarding (open in any browser)
 boot-preview.html        Static preview of the four board-load states (see DEPLOYMENT.md § 5)
+ui-preview.html          The REAL SPA on fake data — open it to judge the board/table/calendar design without deploying
 tests                    PHP suite (`php artisan test`) + tests/js/boot.smoke.mjs (SPA boot screens)
 ```
 

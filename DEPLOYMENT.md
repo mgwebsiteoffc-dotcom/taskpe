@@ -267,7 +267,27 @@ No `.env` value fixes it. After Shopify approves the scope, add `read_all_orders
 store, and the note disappears by itself because `orderSearchSince()` re-reads `shops.scopes`.
 
 
-## 11. Teams on the dashboard (Accounting, Warehouse, …)
+## 11. One task database, three views (Notion's shape, Shopify's chrome)
+
+`Board · Table · Calendar` sit in one quiet row under the page title, and all three read
+the same filtered task set (the count tiles above them are the filter, `d` hides them).
+
+| view | what it is for | what is in it |
+|---|---|---|
+| Board | the queue | one group per column, each with its own totals line (`3 open · 1 late · 1 unclaimed`; a done column reads `3 closed · 2 this week`), cards flat and bordered |
+| Table | scanning and sorting | every task as a row; click a heading to sort (click again to flip), group by Stage / Team / Person / Due via `By:` — the grouping is remembered |
+| Calendar | planning a week | due dates on a Monday-first month grid, `‹ October 2026 ›`, and a red `N overdue from earlier` button that jumps to the Table grouped by due date, because a month grid hides last month's misses by construction |
+
+Nothing is stored for this: the mode lives in `localStorage` (`taskpe_mode`) like `taskpe_dash`,
+so there is no route, no column, no migration. Deep links keep working — `?view=` picks the
+*section* (dashboard/board/team/settings/plan), the view mode is a within-section choice.
+
+To look at it without touching the store: open **`ui-preview.html`** from a checkout in any
+browser. It loads the real `public/js/app.js` + `public/css/app.css` against a stubbed
+`/api/board`, so the design can be judged offline, and it never ships (only `public/` is
+served). Fake data, real code — including the drawer, the templates modal and `?`.
+
+## 12. Teams on the dashboard (Accounting, Warehouse, …)
 
 `columns.team` is a free-text tag: which part of the shop works that column. It is the
 only new state the dashboard needs — nothing else is configured per team.

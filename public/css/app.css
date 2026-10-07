@@ -6,14 +6,18 @@
    ========================================================================== */
 
 :root {
-  --bg: #f6f6f7;
+  /* Notion's neutrals: warm paper, hairlines, no chrome. The blues/reds below stay
+     Shopify's (the buttons and banners are the admin's language, and the app sits
+     inside that admin) — what changed is everything the merchant reads. */
+  --bg: #fbfbfa;
   --surface: #ffffff;
-  --surface-hover: #f7f7f7;
-  --border: #e3e3e3;
-  --border-strong: #c9cccf;
-  --text: #1a1a1a;
-  --text-subdued: #616161;
-  --text-disabled: #8c9196;
+  --surface-hover: #f1f0ef;
+  --subtle: #f7f6f3;
+  --border: #ebebea;
+  --border-strong: #d9d9d6;
+  --text: #37352f;
+  --text-subdued: #787774;
+  --text-disabled: #9b9a97;
   --primary: #005bd3;
   --primary-hover: #004494;
   --critical: #d72c0d;
@@ -25,7 +29,9 @@
   --info-bg: #e4e5f1;
   --radius: 12px;
   --radius-sm: 8px;
-  --shadow-card: 0 1px 0 rgba(26, 26, 26, .05), 0 1px 2px rgba(26, 26, 26, .06);
+  --radius-xs: 4px;
+  /* Notion separates with a hairline and a tint, not with a drop shadow. */
+  --shadow-card: none;
   --shadow-pop: rgba(26, 26, 26, .2) 0 3px 6px -3px, rgba(26, 26, 26, .12) 0 8px 20px -4px;
 }
 
@@ -36,7 +42,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-size: 14px;
-  line-height: 1.45;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -586,3 +592,195 @@ input, select, textarea { font: inherit; }
   .filter-bar { margin: 8px 14px -6px; flex-wrap: wrap; }
 }
 @media (max-width: 1000px) { .panels { grid-template-columns: 1fr; } }
+
+/* ==========================================================================
+   Notion structure layer — one database, three views
+   --------------------------------------------------------------------------
+   The board is Notion's grouped-list shape: quiet group header, a totals line,
+   flat bordered cards. Below it the Table (scan and sort everything) and the
+   Calendar (plan the week) read the same filtered task set. Property chips use
+   Notion's pastel geometry; the buttons and banners above them stay Shopify's.
+   ========================================================================== */
+
+/* --- the view bar: views, grouping, sort and filters in one quiet row --- */
+.view-bar {
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  padding: 0 20px 8px; border-bottom: 1px solid var(--border);
+}
+.vtabs { display: flex; align-items: center; gap: 2px; }
+.vtab {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border: 0;
+  border-radius: var(--radius-xs); background: transparent; color: var(--text-subdued);
+  font-size: 13px; font-weight: 500;
+}
+.vtab:hover { background: var(--subtle); color: var(--text); }
+.vtab.on { background: var(--subtle); color: var(--text); font-weight: 600; }
+.vtab .icon { opacity: .75; }
+.vtab.on .icon { opacity: 1; }
+.vbtn {
+  display: inline-flex; align-items: center; gap: 5px; margin-left: 6px; padding: 5px 8px;
+  border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--text-subdued);
+  font-size: 12.5px;
+}
+.vbtn b { color: var(--text); font-weight: 600; }
+.vbtn:hover { background: var(--subtle); color: var(--text); }
+.vbtn.late { color: var(--critical); }
+.vbtn.late:hover { background: var(--critical-bg); color: var(--critical); }
+.view-bar .filter-bar { margin-left: auto; padding: 2px 0 2px 10px; border: 0; background: transparent; }
+
+/* --- board: groups, their totals, and flatter cards --- */
+.board { gap: 12px; padding: 12px 20px 22px; min-height: 44vh; }
+.board-col {
+  width: 300px; flex: none; background: var(--subtle); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 6px 6px 4px;
+}
+.col-head { padding: 4px 6px 2px; gap: 7px; }
+.col-head h3 { font-size: 13.5px; font-weight: 600; letter-spacing: 0; }
+.col-count { background: rgba(55, 53, 47, .08); font-weight: 550; padding: 0 7px; }
+/* The group's own numbers — Notion's Σ row. Quiet, because it is read constantly. */
+.col-sum { display: flex; align-items: center; padding: 0 6px 7px; font-size: 11.5px; color: var(--text-subdued); }
+.col-sum b { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.col-sum .late { color: var(--critical); font-weight: 600; }
+.col-team { background: rgba(55, 53, 47, .07); font-weight: 500; padding: 1px 7px; border-radius: var(--radius-xs); }
+.card {
+  border: 1px solid var(--border); box-shadow: none; border-radius: 6px;
+  padding: 8px 10px; margin-bottom: 4px; background: var(--surface);
+}
+.card:hover { border-color: #d3d2cf; box-shadow: 0 1px 3px rgba(15, 15, 15, .07); }
+.card.priority-urgent { border-color: var(--border); }
+.card-title { font-size: 13.5px; font-weight: 500; line-height: 1.4; margin-bottom: 4px; }
+.card.is-done { opacity: .6; }
+
+/* --- property chips: Notion's geometry, still legible as status --- */
+.pill { border-radius: var(--radius-xs); padding: 1px 6px; font-weight: 500; font-size: 11.5px; letter-spacing: .01em; }
+.pill.urgent { background: #fdecec; color: #a4262c; }
+.pill.high { background: #fde9d9; color: #b05c0a; }
+.pill.medium { background: #fbf3db; color: #916a00; }
+.pill.low { background: #f1f1ef; color: #6b6a68; }
+.pill.due { background: #fbf3db; color: #916a00; }
+.pill.overdue { background: #fdecec; color: #a4262c; }
+.pill.done { background: #e3f1ea; color: #1a7a54; }
+.pill.link { background: #f1f1ef; color: #4c4b49; }
+.avatar.sm { width: 18px; height: 18px; font-size: 9.5px; }
+
+/* --- table view: the flat list, hairline rows, sticky heading --- */
+.table-wrap { padding: 0 20px 26px; }
+.table {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  overflow: hidden; font-variant-numeric: tabular-nums;
+}
+.thead, .trow {
+  display: grid; align-items: center; gap: 10px; padding: 0 12px;
+  grid-template-columns: 24px minmax(220px, 2.4fr) 1fr .9fr 1.1fr .8fr .95fr .8fr;
+}
+.thead {
+  position: sticky; top: 0; z-index: 1; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.th {
+  display: inline-flex; align-items: center; gap: 3px; padding: 7px 0; border: 0; background: transparent;
+  font-size: 11.5px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--text-disabled);
+  text-align: left; white-space: nowrap;
+}
+button.th:hover { color: var(--text); }
+.th.on { color: var(--text); }
+.th.tick { justify-content: center; }
+.trow { border-top: 1px solid var(--border); cursor: pointer; min-height: 38px; }
+.trow:first-child { border-top: 0; }
+.thead + .trow, .thead + div > .trow:first-child { border-top: 0; }
+.trow:hover { background: var(--subtle); }
+.trow.is-done { opacity: .58; }
+.t-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-cell { font-size: 13px; color: var(--text-subdued); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-cell.who { display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
+.t-cell.when.late { color: var(--critical); font-weight: 550; }
+.tick {
+  width: 15px; height: 15px; padding: 0; border: 1px solid var(--border-strong); border-radius: 3px;
+  background: var(--surface); color: #fff; display: inline-grid; place-items: center; opacity: .35;
+}
+.trow:hover .tick, .tick:focus-visible { opacity: 1; }
+.tick:hover { border-color: var(--primary); }
+.tick.on { background: var(--success); border-color: var(--success); opacity: 1; }
+.tgroup {
+  display: flex; align-items: center; gap: 8px; padding: 7px 12px 6px; background: var(--subtle);
+  border-top: 1px solid var(--border); font-size: 12.5px;
+}
+.tgroup:first-child { border-top: 0; }
+.tg-caret { width: 20px; height: 20px; padding: 0; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--text-disabled); display: inline-grid; place-items: center; }
+.tg-caret:hover { background: rgba(55, 53, 47, .08); color: var(--text); }
+.tgroup.closed .tg-caret .icon { transform: rotate(-90deg); }
+.tgroup.closed { padding-bottom: 7px; }
+.tg-name { font-weight: 600; }
+.tg-count, .tg-late {
+  font-size: 11.5px; color: var(--text-subdued); background: rgba(55, 53, 47, .07);
+  border-radius: var(--radius-xs); padding: 0 6px;
+}
+.tg-late { color: var(--critical); background: #fdecec; font-weight: 550; }
+.t-empty { padding: 26px; text-align: center; color: var(--text-subdued); font-size: 13px; }
+
+/* --- calendar view: month grid of due dates --- */
+.cal { padding: 10px 20px 24px; }
+.cal-head { display: flex; align-items: center; gap: 6px; padding: 0 0 8px; }
+.cal-head h3 { font-size: 15px; font-weight: 600; margin-right: 2px; }
+.cal-head .vbtn { margin-left: 0; font-size: 14px; }
+.cal-grid {
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 1px;
+  background: var(--border); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden;
+}
+.cdow {
+  background: var(--subtle); padding: 5px 8px; font-size: 10.5px; font-weight: 600;
+  letter-spacing: .04em; text-transform: uppercase; color: var(--text-disabled);
+}
+.cday { background: var(--surface); min-height: 104px; padding: 5px 6px 6px; display: flex; flex-direction: column; gap: 3px; }
+.cday.out { background: var(--bg); }
+.cday.today { box-shadow: inset 0 0 0 1px var(--primary); }
+.cday-n { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-subdued); font-variant-numeric: tabular-nums; }
+.cday.today .cday-n { color: var(--primary); font-weight: 700; }
+.cday-c { background: rgba(55, 53, 47, .07); border-radius: var(--radius-xs); padding: 0 5px; font-size: 10.5px; }
+.c-task {
+  display: flex; align-items: center; gap: 5px; width: 100%; padding: 2px 4px; border: 0;
+  border-radius: var(--radius-xs); background: transparent; text-align: left;
+  font-size: 11.5px; color: var(--text); line-height: 1.35;
+}
+.c-task:hover { background: var(--subtle); }
+.c-task.is-done { color: var(--text-disabled); text-decoration: line-through; }
+.c-task { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--text-disabled); }
+.c-dot.late { background: var(--critical); }
+.c-dot.urgent { background: #d92d20; }
+.c-dot.high { background: #e58a2b; }
+.c-dot.medium { background: #d5ab1e; }
+.c-dot.low { background: #9b9a97; }
+.c-more { font-size: 11px; color: var(--text-disabled); padding-left: 4px; }
+
+/* --- the dashboard panels, same flat treatment --- */
+.dash-page .panel, .panel { box-shadow: none; border: 1px solid var(--border); }
+.dash-page .kpis, .kpis { box-shadow: none; border: 1px solid var(--border); }
+.kpi { padding: 11px 14px 12px; }
+.kpi-l { font-weight: 550; letter-spacing: .02em; text-transform: none; font-size: 11.5px; }
+.kpi-v { font-size: 24px; font-weight: 600; }
+.kpi.on { background: var(--subtle); box-shadow: inset 0 -2px 0 var(--text); }
+.kpi.on .kpi-l { color: var(--text); }
+.panel > .p-head { padding: 10px 14px; }
+.panel > .p-head h2 { font-size: 13.5px; font-weight: 600; }
+
+/* --- page head: Notion's big quiet title, Polaris's actions --- */
+.page-head { padding: 18px 20px 12px; }
+.page-head h1 { font-size: 22px; font-weight: 650; letter-spacing: -.01em; }
+.page-sub { font-size: 13px; margin-top: 2px; }
+.dash { padding: 4px 20px 12px; }
+
+@media (max-width: 1080px) {
+  .thead, .trow { grid-template-columns: 24px minmax(180px, 2fr) 1fr 1.1fr .9fr .9fr; }
+  .table .th-team, .table .trow > :nth-child(4), .table .th-closed, .table .trow > :nth-child(8) { display: none; }
+}
+@media (max-width: 720px) {
+  /* tick · task · assignee · priority · due — the rest is in the group header */
+  .thead, .trow { grid-template-columns: 24px minmax(140px, 1.7fr) 1fr .8fr .95fr; }
+  .table .trow > :nth-child(3), .table .th-stage { display: none; }
+  .view-bar { padding: 0 14px 8px; }
+  .table-wrap { padding: 0 14px 22px; }
+  .cal { padding: 8px 14px 20px; }
+  .cday { min-height: 76px; }
+  .c-task { font-size: 10.5px; }
+  .cal-grid { border-radius: 8px; }
+}

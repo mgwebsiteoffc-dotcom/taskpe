@@ -1,0 +1,112 @@
+<!doctype html>
+<!--
+  Design preview — NOT part of the app. Open this file in a browser to see the real
+  UI (public/js/app.js + public/css/app.css, untouched) against a fake store, so the
+  look can be judged without deploying anything. It is at the repo root on purpose:
+  only files in public/ are served, so this never reaches a merchant.
+
+  What it fakes: window.shopify (a session token) and fetch (/api/board, /api/settings).
+  Everything rendered is the shipping code — click Board / Table / Calendar, filter
+  with the tiles, open a task, press d or ?.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TaskPe — design preview (fake data)</title>
+<link rel="stylesheet" href="public/css/app.css">
+</head>
+<body>
+<div id="root"></div>
+<script>
+  window.__TASKPE__ = { appUrl: '', shop: 'demo-store.myshopify.com', host: '', embedded: true, view: 'board' };
+  window.shopify = { idToken: async () => 'a.b.c' };
+
+  const iso = days => new Date(Date.now() - days * 864e5).toISOString();
+  const todayAt = (h) => { const d = new Date(); d.setHours(h, 0, 0, 0); return d.toISOString(); };
+
+  const task = (id, title, extra) => ({
+    id, title, description: null, priority: 'medium', due_at: null, overdue: false,
+    position: 0, completed_at: null, created_at: iso(3), created_by: 'Priya Sharma',
+    assignee: null, resource: null, checklist: null, ...extra,
+  });
+
+  const board = {
+    shop: {
+      domain: 'demo-store.myshopify.com', name: 'House of Indha', plan: 'starter',
+      plan_cfg: { task_limit: 50, whatsapp: true, digest: true },
+      timezone: 'Asia/Kolkata', currency: 'INR', onboarded: true,
+    },
+    plans: { starter: { name: 'Starter', prices: { INR: 499 }, trial_days: 7 } },
+    task_templates: {
+      cod_confirm: { icon: 'phone', name: 'COD confirmation', tagline: 'Verify before ship',
+        resource_type: 'order', priority: 'high', due_in_hours: 24,
+        title: 'Confirm COD order {order}', checklist: ['Call buyer', 'Confirm address'] },
+    },
+    members: [
+      { id: 1, name: 'Priya Sharma', initials: 'PS', phone: '919876500001', role: 'owner', active: true, whatsapp_verified: true, portal_active: true },
+      { id: 2, name: 'Rahul Kumar', initials: 'RK', phone: '919876500002', role: 'teammate', active: true, whatsapp_verified: true, portal_active: true },
+      { id: 3, name: 'Imran Sheikh', initials: 'IS', phone: '919876500003', role: 'teammate', active: true, whatsapp_verified: false, portal_active: true },
+      { id: 4, name: 'Neha Gupta', initials: 'NG', phone: '919876500004', role: 'teammate', active: false, whatsapp_verified: false, portal_active: false },
+    ],
+    me: 1,
+    whatsapp: { plan_allowed: true, master_on: true, has_key: true, enabled: true },
+    columns: [
+      { id: 1, name: 'COD confirmations', position: 0, team: 'Accounting', is_done_stage: false, tasks: [
+        task(21, 'Call the buyer about the failed payment', { priority: 'urgent', overdue: true, due_at: iso(2), created_at: iso(6), assignee: { id: 2, name: 'Rahul Kumar', initials: 'RK' }, resource: { type: 'order', id: 1042, label: 'Order', title: '#1042', url: '#' } }),
+        task(22, 'Verify the UPI screenshot before dispatch', { priority: 'high', due_at: todayAt(18), created_at: iso(1), assignee: { id: 1, name: 'Priya Sharma', initials: 'PS' }, description: '- [x] Open the screenshot\n- [ ] Match the UTR number\n- [ ] Note it on the order' }),
+        task(23, 'Release the payment hold on 3 orders', { priority: 'medium', created_at: iso(4), assignee: { id: 2, name: 'Rahul Kumar', initials: 'RK' } }),
+      ] },
+      { id: 2, name: 'Dispatch', position: 1, team: 'Warehouse', is_done_stage: false, tasks: [
+        task(24, 'Split the bulk order into two shipments', { priority: 'high', overdue: true, due_at: iso(1), created_at: iso(5), assignee: { id: 3, name: 'Imran Sheikh', initials: 'IS' } }),
+        task(25, 'Weigh the courier bag and update labels', { priority: 'low', created_at: iso(0), due_at: todayAt(11) }),
+        task(26, 'Pack the return from last week', { priority: 'medium', created_at: iso(2), assignee: { id: 3, name: 'Imran Sheikh', initials: 'IS' } }),
+      ] },
+      { id: 3, name: 'Escalations', position: 2, team: null, is_done_stage: false, tasks: [
+        task(31, 'Chase the courier for the lost parcel', { priority: 'urgent', overdue: true, due_at: iso(7), created_at: iso(11) }),
+      ] },
+      { id: 4, name: 'Done this week', position: 3, team: 'Warehouse', is_done_stage: true, tasks: [
+        task(41, 'Refunded the shipping on 4 orders', { completed_at: iso(0), due_at: iso(1), created_at: iso(3), assignee: { id: 1, name: 'Priya Sharma', initials: 'PS' }, priority: 'medium' }),
+        task(42, 'Reconciled the COD cash', { completed_at: iso(1), due_at: iso(2), created_at: iso(4), assignee: { id: 2, name: 'Rahul Kumar', initials: 'RK' }, priority: 'high' }),
+        task(43, 'Answered the 1-star review', { completed_at: iso(2), due_at: iso(3), created_at: iso(5), assignee: { id: 2, name: 'Rahul Kumar', initials: 'RK' }, priority: 'low' }),
+        task(44, 'Archived the export', { completed_at: iso(4), created_at: iso(6), assignee: { id: 3, name: 'Imran Sheikh', initials: 'IS' } }),
+        task(45, 'Restocked the display pieces', { completed_at: iso(6), created_at: iso(8), assignee: { id: 3, name: 'Imran Sheikh', initials: 'IS' } }),
+      ] },
+    ],
+  };
+
+  const settings = {
+    whatify: { connected: true },
+    settings: {
+      has_api_key: true, api_key_hint: 'what_•••4f2', whatsapp_account_id: 'wa-1',
+      templates: {}, notify: { whatsapp_on: true, on_assign: true },
+      digest: { enabled: true, time: '09:00' },
+      automation: { cod_auto: true, ndr_auto: false, weekly_remittance: true },
+      ndr_intake_url: null,
+    },
+    plan: { name: 'Starter', cfg: { whatsapp: true, digest: true, task_limit: 50 } },
+    logs: [],
+  };
+
+  const payload = {
+    '/api/board': board,
+    '/api/settings': settings,
+    '/api/tasks/activity': { entries: [
+      { kind: 'created', text: 'Priya Sharma added this task', at: iso(6) },
+      { kind: 'assigned', text: 'Assigned to Rahul Kumar', at: iso(5) },
+      { kind: 'comment', text: 'Buyer promised payment by evening — keep looking', at: iso(4), author: 'Rahul Kumar' },
+    ], comments: [] },
+  };
+
+  window.fetch = async (url, init) => {
+    const path = String(url).split('?')[0];
+    const body = payload[path] ?? (path.includes('/complete') || path.includes('/tasks') ? { ok: true } : { items: [] });
+    await new Promise(r => setTimeout(r, 60));         // let the loading states be seen
+    return { ok: true, status: 200, json: async () => body };
+  };
+  window.confirm = () => true;
+  window.alert = m => console.log('[alert]', m);
+</script>
+<script src="public/js/app.js"></script>
+</body>
+</html>
