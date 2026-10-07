@@ -29,9 +29,15 @@ class BoardController extends Controller
         // for a $5.99 plan. What is left is what Shopify says it bills, already in the
         // store's own billing currency.
         $managed = BillingService::shopifyManaged();
-        $plans = collect(config('shopify.plans'))
-            ->map(fn ($p) => $managed ? array_except($p, 'prices') : $p)
-            ->all();
+        $plans = collect(config('shopify.plans'))->map(function ($p) use ($managed) {
+            // Plain PHP on purpose: `array_except()` is not a Laravel helper, and one
+            // undefined function in this builder 500s the whole board for every store.
+            if ($managed) {
+                unset($p['prices']);
+            }
+
+            return $p;
+        })->all();
 
         return response()->json([
             'billing' => [

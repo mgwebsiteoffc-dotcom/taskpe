@@ -774,3 +774,98 @@ yet — open the Plan tab and press "Check again""*).
 
 No merchant-side action beyond that: cancelling, refunds and invoices stay with Shopify, which is
 the point — the app cannot misquote a number it does not own.
+
+---
+
+## 18. Two 500s from that deploy: an undefined helper, and `throttle:` asking about a user
+
+Reported straight off the running app, inside the embedded page:
+
+    What failed: Call to undefined function App\Http\Controllers\Api\array_except()
+    Endpoint /api/board   HTTP status 500
+
+and, under the staff sign-in form ("Your WhatsApp number"):
+
+    Auth guard [] is not defined.
+
+The first was mine, from the billing change; the second had been sitting there for
+much longer and only surfaced because the whole app was being reopened to look at the
+first one. Both are the same *class* of failure, which is worth naming: **nothing in
+this pipeline executes PHP.** The sandbox has no PHP binary, there is no PHP test
+suite, and the SPA probe that covers the other half of the change runs `public/js/app.js`
+against a faked `/api/board` payload. A typo in a Blade file, a config value or a
+payload builder therefore ships until a merchant pays for it in a 500.
+
+### 1. `array_except()` — not a Laravel helper, never was
+
+`BoardController` stripped the price table with `array_except($p, 'prices')`. The old
+`array_get()` / `array_except()`-style global helpers were removed from Laravel years
+ago (`Arr::except()` is the function), so the call resolved as "a function in
+`App\Http\Controllers\Api`", found nothing, and threw — on the one endpoint every
+screen of the app boots from. Fixed by dropping the helper and the `Arr` import
+altogether, because plain PHP cannot be missing:
+
+    $plans = collect(config('shopify.plans'))->map(function ($p) use ($managed) {
+        if ($managed) {
+            unset($p['prices']);
+        }
+
+        return $p;
+    })->all();
+
+Two habits that keep this class away: prefer a language construct or a repo-proven
+helper in payload builders (`collect()`, `config()`, `now()`, `abort_if()` appear
+hundreds of times here, so they exist), and lint before uploading:
+
+    find app config -name '*.php' -newermt '-2 hours' -exec php -l {} \;
+
+### 2. `Auth guard [] is not defined.` — a framework question, not an app one
+
+`config/auth.php` ships `'guards' => []` **on purpose** (TaskPe authenticates with a
+Shopify session token and a signed staff cookie; there is no users table, and an empty
+guard list makes a stray `auth()` call fail loudly instead of half-working). That is a
+good decision with a sharp edge nobody noticed: `Illuminate\Routing\Middleware\ThrottleRequests`
+calls `$request->user()` **first**, before it falls back to the IP, to decide whose
+quota to spend. `Request::user()` asks the auth manager for the default guard; the
+default guard is `null`; resolving `null` throws.
+
+So any route carrying `throttle:` was dead for POST requests: `/staff/login` and
+`/staff/verify` (staff WhatsApp sign-in) and the courier NDR intake endpoint. The
+merchant's screenshot is the staff form's own error slot printing that exception
+message — it looked like a WhatsApp/auth configuration problem and was a middleware
+ordering accident.
+
+Fix: `app/Http/Middleware/NoLaravelUser.php`, prepended to the `web` and `api` groups
+in `bootstrap/app.php`, sets the request's user resolver to `fn (?string $guard = null) => null`
+— the honest answer for this app. Rate limiting is unchanged (with no user it keys by
+route domain + IP, as it already did for every unauthenticated request), and an explicit
+`auth()->guard('web')` call *still* fails loudly. If a real guard is ever added, delete
+that middleware rather than keeping both.
+
+### Also changed while here
+
+`BillingService::shopifyManaged()` now reads "is this **not** `api`" instead of "is this
+`shopify`". A stale `bootstrap/cache/config.php` (or a typo in `SHOPIFY_BILLING_MODE`)
+then leaves the money with Shopify — the safe direction — instead of quietly bringing
+back the in-app price table that caused § 17 in the first place.
+
+### Verify after deploying
+
+1. `php artisan config:clear && php artisan queue:restart` — both bugs were config/middleware
+   wiring, so a cached config hides either fix.
+2. Open the app once inside Shopify admin, then `tail -n 50 storage/logs/laravel.log`: no
+   `Call to undefined function`, no `Auth guard`.
+3. Staff sign-in from a private browser window: `/staff` → type the number → **Send sign-in
+   code** must give either the 6-digit field or one plain sentence (alerts switched off for the
+   store, number not on the team). Never an exception message. After five tries in a minute expect
+   `429` — that is the throttle doing its job, which is the proof it no longer throws.
+4. `curl -i https://<app-host>/up` → 200, then `curl -i -H 'Accept: application/json'
+   https://<app-host>/api/board` → **401** JSON (unauthenticated but *rendered*, i.e. the
+   payload builder compiled). The real board check is step 2.
+
+### Deploy
+
+`app/Http/Controllers/Api/BoardController.php` (the 500 — if you want the board back in
+two minutes, upload this one file and run `php artisan config:clear`),
+`app/Http/Middleware/NoLaravelUser.php` (new), `bootstrap/app.php`, `config/auth.php`
+(comment only), `app/Services/BillingService.php`. No migration, no extension redeploy.

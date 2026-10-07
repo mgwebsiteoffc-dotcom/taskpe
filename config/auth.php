@@ -18,7 +18,14 @@
 | "the app is broken", which is exactly the noise that hides the real failure.
 |
 | Empty arrays keep config caching valid and make any accidental auth() call
-| fail loudly ("Auth guard [] is not defined") instead of half-working.
+| fail loudly instead of half-working — with ONE exception the framework asks for
+| itself: `throttle:` middleware calls `$request->user()` before it looks at the IP,
+| and an empty guard list turns that ordinary question into
+| "Auth guard [] is not defined." on every throttled POST (that is what killed staff
+| WhatsApp sign-in and the courier NDR intake). So `web` and `api` groups lead with
+| app/Http/Middleware/NoLaravelUser.php, which answers "nobody" — the truth here —
+| and the loud failure is preserved for any real `auth()->guard('…')` call. If you
+| ever add a guard, delete that middleware rather than keeping both.
 */
 
 return [

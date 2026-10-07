@@ -35,10 +35,17 @@ class BillingService
 {
     public function __construct(protected Shop $shop) {}
 
-    /** True when the Partner Dashboard owns the prices (Shopify App Pricing). */
+    /**
+     * True when the Partner Dashboard owns the prices (Shopify App Pricing).
+     *
+     * Deliberately phrased as "unless the developer said `api`": the failure this guards is
+     * quoting a price nobody will be charged, and a stale config cache (or a typo in
+     * SHOPIFY_BILLING_MODE) must not resurrect the app's own price table. Anything that is
+     * not explicitly `api` leaves the money with Shopify.
+     */
     public static function shopifyManaged(): bool
     {
-        return config('shopify.billing.mode', 'shopify') === 'shopify';
+        return config('shopify.billing.mode', 'shopify') !== 'api';
     }
 
     /** The one sentence both endpoints and both mutations use when Shopify owns the billing. */
