@@ -857,6 +857,20 @@ h1, h2, h3, .card-title, .kpi-l, .col-head h3 { letter-spacing: -0.011em; }
 .checkline { display: flex; align-items: flex-start; gap: 8px; font-size: 13.5px; color: var(--ink); }
 .help ul { font-size: 13px; }
 
+/* --- the resource picker's failure states ---------------------------------- */
+/* "No matches" and "the API refused us" are different problems with different fixes,
+   so they must not share a line of styling. The reason sits in a box; the retry is a
+   button, not part of the sentence. */
+.res-failed {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 12px; border: 1px solid #f0d6b8; border-radius: 8px;
+  background: #fdf6ec; color: #7a4b12; font-size: 13px;
+}
+.res-detail {
+  flex-basis: 100%; font-size: 11.5px; color: var(--ink-3);
+  white-space: pre-wrap; word-break: break-word;
+}
+
 /* --- wide screens: use the page, don't strand it ------------------------ */
 /* The dashboard used to be capped at 1220px and pinned left, so on a 1900px screen
    the right third of the page was empty wall — which reads as a broken layout, not

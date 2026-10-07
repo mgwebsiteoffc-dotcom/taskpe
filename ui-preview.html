@@ -115,6 +115,12 @@
 
   const payload = {
     '/api/board': board,
+    // A resource search that answers, so the picker can be looked at too. The note is
+    // the real one an unapproved store sees, and it is worth judging how it reads.
+    '/api/resources/search': { items: [
+      { type: 'order', id: 1042, title: '#1042', subtitle: '\u20b91,299.00 INR \u00b7 paid', url: '#' },
+      { type: 'order', id: 1043, title: '#1043', subtitle: '\u20b94,850.00 INR \u00b7 pending', url: '#' },
+    ], note: 'Shopify only lets this app read orders created since TaskPe was installed (2026-09-01), so anything older than that cannot appear here.' },
     '/api/settings': settings,
     '/api/tasks/activity': { entries: [
       { kind: 'created', text: 'Priya Sharma added this task', at: iso(6) },

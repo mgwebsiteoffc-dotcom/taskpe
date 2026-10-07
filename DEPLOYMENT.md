@@ -261,7 +261,8 @@ Now:
 * An exact lookup (`?id=`, i.e. a pasted admin URL) stays unbounded. If even that is denied, the
   message names the review instead of a stack trace (`hintFor()`).
 * Draft orders, products and blog posts are untouched — they are not protected objects — and customer
-  search keeps selecting only `name`, the one PCD field justified in the listing.
+  search selects only `displayName` + `numberOfOrders`, the one PCD field justified in the listing.
+* What the picker says for each cause, and the three grammar bugs this replaced, are in § 13.
 
 No `.env` value fixes it. After Shopify approves the scope, add `read_all_orders` to the app's scopes
 (Partner Dashboard **and** `shopify.app.toml`; `SHOPIFY_SCOPES` is the env twin), re-install on the
@@ -339,3 +340,39 @@ php artisan route:clear         # /api/teams is new; a cached route file would 4
   add up to the totals next to them.
 * Members are *not* assigned to teams — a task belongs to the team of its column, which is
   how a small shop actually works (the same person answers for COD calls and dispatch).
+
+## 13. Order search: why it used to say "Search failed — try again."
+
+The picker in the task drawer (`/api/resources/search`) builds one string that Shopify's
+search parser has to accept, and three things about that string were wrong:
+
+* **a leading wildcard** — `name:*Ravi*`. Shopify only supports a `*` at the *end* of a term
+  (a "prefix query"), so any order search that was not a number was a syntax error.
+* **an unquoted date bound** — "Date values must be a string surrounded by quotes", so
+  `created_at:>=2026-09-01` is not valid while `created_at:>='2026-09-01'` is. That bound is on
+  *every* order search for a store whose `read_all_orders` is not approved, which is most stores:
+  the search failed before Shopify looked at the term at all.
+* **an unquoted value** — `#`, quotes, colons, parens and `+`/`-` are syntax, so `#1042` and
+  `O'Brien` could not be searched.
+
+Now `ResourceSearchController` sanitises the term, quotes what needs quoting, puts `*` only at the
+end, and tries a short list of queries narrowest-first (`name:'#1042'`, then a full-text
+`'1042'`) so a store whose order names are not plain numbers still finds its order.
+
+The message the merchant sees is chosen from the actual cause, and **"try again" is only said when
+a retry can help**:
+
+| what Shopify said | what the picker shows |
+|---|---|
+| `ACCESS_DENIED` / protected customer data | the Partner Dashboard instruction (§ 10) — no retry button |
+| timeout, 429, 5xx, connection | "Shopify is busy or slow right now." + **Try again** |
+| `USER_ERROR` / invalid query | "Shopify could not read that search. Try just the order number, for example 1042." |
+| anything else | "Shopify could not answer this search — try again in a moment." |
+
+The raw GraphQL reply never reaches the browser as advice, but it is logged
+(`Log::warning('Resource search failed')`, grep `laravel.log` for it) and returned as `detail`
+only while `APP_DEBUG=true`, where the picker shows it under the sentence in small grey text.
+Searching one character is refused in the UI instead of returning half the store, and a
+zero-result search says *what* found nothing ("Nothing matched that in Orders") with the
+install-date note underneath, so "no matches" is never mistaken for "this order does not exist".
+

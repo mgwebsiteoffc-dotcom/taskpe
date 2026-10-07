@@ -259,7 +259,12 @@
   function openAdmin(url) { open(url, '_top'); }
 
   function debounce(fn, ms) {
-    let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+    let t;
+    const later = (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+    // `run()` fires now — the retry button in the search picker should not make the
+    // person wait another 350ms for something they just asked for.
+    later.run = (...a) => { clearTimeout(t); return fn(...a); };
+    return later;
   }
 
   function esc(s) { return s === null || s === undefined ? '' : String(s); }
@@ -1673,6 +1678,12 @@
     const results = h('div', null, h('div', { class: 'res-empty' }, 'Type to search'));
     const tabs = h('div', { class: 'res-tabs' });
 
+    // `searchFailed` keeps the reason next to the field instead of inside the result
+    // list, so the retry button and the sentence are read together — and a search that
+    // failed is retried by pressing the button, not by deleting a character and typing
+    // it back, which is what people otherwise do.
+    let searchFailed = null;
+
     const doSearch = debounce(async () => {
       const q = searchInput.value.trim();
       // Smart paste: full Shopify admin URL → resolve directly.
@@ -1683,8 +1694,15 @@
         params = 'type=' + activeType + '&id=' + paste[2];
       } else {
         if (!q) { results.replaceChildren(h('div', { class: 'res-empty' }, 'Type to search')); return; }
+        // Two characters, or a number: a single letter matches half the store, and one
+        // stray symbol (`#`, `?`) is nothing for Shopify to search for at all.
+        if (q.replace(/^#/, '').trim().length < 2 && !/^#?\d/.test(q)) {
+          results.replaceChildren(h('div', { class: 'res-empty' }, 'Type at least two characters'));
+          return;
+        }
         params = 'type=' + activeType + '&q=' + encodeURIComponent(q.replace(/^#/, ''));
       }
+      searchFailed = null;
       renderTabs();
       results.replaceChildren(h('div', { class: 'res-empty' }, 'Searching…'));
       try {
@@ -1704,7 +1722,10 @@
           ),
         ));
 
-        if (!rows.length) rows.push(h('div', { class: 'res-empty' }, 'No matches found'));
+        if (!rows.length) {
+          rows.push(h('div', { class: 'res-empty' },
+            'Nothing matched that in ' + (types.find(([k]) => k === activeType) || [, 'Shopify'])[1] + '.'));
+        }
         // The server adds a note when it had to narrow the search (Shopify only
         // lets us read orders created after the install until the protected
         // customer data review approves more). Without it, "no matches" reads as
@@ -1713,7 +1734,16 @@
 
         results.replaceChildren(...rows);
       } catch (e) {
-        results.replaceChildren(h('div', { class: 'res-empty' }, e.message || 'Search failed'));
+        searchFailed = e.message || 'Shopify could not answer this search.';
+        results.replaceChildren(h('div', { class: 'res-failed' },
+          h('span', null, searchFailed),
+          // A retry is offered whenever the reason is Shopify being slow, not when the
+          // reason is a permission the store has not granted — the second does not get
+          // better on the second try, and a button that never works is worse than none.
+          /try again|a second later|busy or slow/i.test(searchFailed)
+            ? h('button', { class: 'btn sm', onclick: () => doSearch.run() }, 'Try again')
+            : null,
+          e.body && e.body.detail ? h('div', { class: 'res-detail' }, e.body.detail) : null));
       }
     }, 350);
 
@@ -1835,9 +1865,17 @@
       const doSearch = debounce(async () => {
         const q = search.value.trim();
         if (!q) { results.replaceChildren(h('div', { class: 'res-empty' }, 'Type to search')); return; }
+        if (q.replace(/^#/, '').trim().length < 2 && !/^#?\d/.test(q)) {
+          results.replaceChildren(h('div', { class: 'res-empty' }, 'Type at least two characters'));
+          return;
+        }
         results.replaceChildren(h('div', { class: 'res-empty' }, 'Searching…'));
         try {
           const data = await api('/resources/search?type=' + tpl.resource_type + '&q=' + encodeURIComponent(q.replace(/^#/, '')));
+          // The order line says "No matches found" and nothing else, which for an older
+          // order is simply wrong — Shopify has not let us read it. The server's note is
+          // the difference between "search harder" and "go approve the scope".
+          const note = data.note ? h('div', { class: 'res-note' }, data.note) : null;
           results.replaceChildren(...(data.items.length ? data.items.map(item => h('div', {
             class: 'res-item',
             onclick: ev => {
@@ -1850,8 +1888,16 @@
             item.image ? h('img', { src: item.image, alt: '' }) : h('img', { alt: '' }),
             h('div', null,
               h('div', { class: 'ri-title' }, item.title || '(no title)'),
-              h('div', { class: 'ri-sub' }, item.subtitle || '')))) : [h('div', { class: 'res-empty' }, 'No matches found')]));
-        } catch (e) { results.replaceChildren(h('div', { class: 'res-empty' }, e.message || 'Search failed')); }
+              h('div', { class: 'ri-sub' }, item.subtitle || '')))) : [h('div', { class: 'res-empty' }, 'No matches found'), note].filter(Boolean)));
+        } catch (e) {
+          results.replaceChildren(h('div', { class: 'res-failed' },
+            h('span', null, e.message || 'Shopify could not answer this search.'),
+            // Only worth a retry button when a retry can help: a slow Shopify recovers,
+            // an unapproved data scope does not.
+            /try again|a second later|busy or slow/i.test(e.message || '')
+              ? h('button', { class: 'btn sm', onclick: () => doSearch.run() }, 'Try again')
+              : null));
+        }
       }, 350);
       search.addEventListener('input', doSearch);
 
