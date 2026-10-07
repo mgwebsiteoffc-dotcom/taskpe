@@ -27,8 +27,32 @@
     {{-- Authenticated staff — the same board shell as the admin app. --}}
     <main id="root">
         <div class="boot">
-            <div class="boot-logo">{{ mb_substr(config('app.name'), 0, 1) }}</div>
-            <div class="boot-text">Loading your board…</div>
+            <div class="boot-card">
+                <div class="boot-row">
+                    <div class="boot-logo">{{ mb_substr(config('app.name'), 0, 1) }}</div>
+                    <div>
+                        <div class="boot-name">{{ config('app.name') }}</div>
+                        <div class="boot-text">Loading your board — columns, tasks and settings.</div>
+                        @if ($member)<div class="boot-who">Signed in as {{ $member->name }}</div>@endif
+                    </div>
+                </div>
+                <div class="skcols">
+                    @foreach ([3, 2, 2, 1] as $cards)
+                        <div class="skcol">
+                            <span class="skbar"></span>
+                            @for ($i = 0; $i < $cards; $i++)
+                                <span class="skcard"><span class="skline w80"></span><span class="skline w55"></span></span>
+                            @endfor
+                        </div>
+                    @endforeach
+                </div>
+                {{-- CSS reveals this after ~8s only. A first embedded load can take a
+                     few seconds legitimately, so do not hint at a problem earlier. --}}
+                <div class="skslow">
+                    <span>Still waiting? Your session with Shopify may have expired.</span>
+                    <a class="btn sm" href="{{ request()->fullUrl() }}">Reload</a>
+                </div>
+            </div>
         </div>
     </main>
     <script>

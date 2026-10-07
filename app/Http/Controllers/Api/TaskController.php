@@ -28,11 +28,27 @@ class TaskController extends Controller
 
         $data = $request->validate($this->rules($shop));
         $data = $this->normalizeResource($shop, $data);
+        $data = $this->fillOrderTitle($shop, $data);
 
-        $column = $this->findColumn($ctx, (int) $data['column_id']);
+        $column = empty($data['column_id'])
+            ? TaskTemplates::columnFor($shop, null)
+            : $this->findColumn($ctx, (int) $data['column_id']);
+
+        if (!$column) {
+            // The board always has at least one column, so this only fires on a store that
+            // deleted everything — worth saying, because every other path 500s on it.
+            return response()->json([
+                'error'   => 'no_column',
+                'message' => 'Your board has no column to put this task in. Open TaskPe and add one first.',
+            ], 422);
+        }
 
         $task = $shop->tasks()->create([
             ...$data,
+            // After the spread on purpose: a create that sent no column leaves
+            // `column_id => null` in $data, and a null here is a NOT NULL violation
+            // instead of the column we just resolved.
+            'column_id'       => $column->id,
             'position'        => ((int) $shop->tasks()->where('column_id', $column->id)->max('position')) + 1,
             'created_by_name' => $ctx->actorName(),
             'completed_at'    => $column->is_done_stage ? now() : null,
@@ -402,6 +418,29 @@ class TaskController extends Controller
     // ---------------- internals ----------------
 
     /**
+     * One order, looked up by id, when the client did not know its number. A task linked
+     * to an order but titled only "Order" is a dead end: you cannot tell which order from
+     * the card, and the card is where the work gets read. Cheap when it works, silent when
+     * it does not (the pre-install data scope can deny this lookup).
+     */
+    protected function fillOrderTitle(Shop $shop, array $data): array
+    {
+        if (($data['resource_type'] ?? null) !== 'order' || !empty($data['resource_title']) || empty($data['resource_id'])) {
+            return $data;
+        }
+
+        $one = $this->hydrateOrderTitles($shop, collect([[
+            'type' => 'order', 'id' => (int) $data['resource_id'], 'title' => null, 'gid' => $data['resource_gid'] ?? null,
+        ]]))->first();
+
+        if ($one && !empty($one['title'])) {
+            $data['resource_title'] = $one['title'];
+        }
+
+        return $data;
+    }
+
+    /**
      * Admin bulk selection hands us GIDs and nothing else, so fetch the order
      * names in ONE query (best-effort: if Shopify is slow we just create tasks
      * with "order <id>" titles instead of failing the whole batch).
@@ -456,7 +495,11 @@ class TaskController extends Controller
             'priority'       => [$partial ? 'sometimes' : 'sometimes', Rule::in(Task::PRIORITIES)],
             'due_at'         => ['nullable', 'date'],
             'assignee_id'    => ['nullable', 'integer', $memberExists],
-            'column_id'      => [$req, 'integer', $columnExists],
+            // Optional on create: an Admin action on an order page has no business
+            // knowing which of the shop's columns should hold the task, and demanding it
+            // turns a hiccup in the extension's board fetch into "The column id field is
+            // required." A missing column falls through to the first open one below.
+            'column_id'      => [$partial ? 'sometimes' : 'nullable', 'integer', $columnExists],
             'resource_type'  => ['nullable', Rule::in(Task::RESOURCE_TYPES)],
             'resource_id'    => ['nullable', 'integer', 'required_with:resource_type'],
             'resource_gid'   => ['nullable', 'string', 'max:120'],

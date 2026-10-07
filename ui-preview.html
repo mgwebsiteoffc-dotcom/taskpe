@@ -5,7 +5,8 @@
   look can be judged without deploying anything. It is at the repo root on purpose:
   only files in public/ are served, so this never reaches a merchant.
 
-  What it fakes: window.shopify (a session token) and fetch (/api/board, /api/settings).
+  What it fakes: window.shopify (a session token) and fetch (/api/board, /api/settings,
+  /api/resources/search). Add ?boot=1200 to the URL to see the loading screens.
   Everything rendered is the shipping code: same app.js, same app.css. Click
   Board / List / Month, tap a stat tile to filter, press ? for the shortcut list.
   If something here looks different from the deployed app, the preview is lying and
@@ -150,9 +151,15 @@
       board.teams.sort((a, b) => a.localeCompare(b));
     }
     const body = payload[path] ?? (path.includes('/complete') || path.includes('/tasks') ? { ok: true } : { items: [] });
-    await new Promise(r => setTimeout(r, 60));         // let the loading states be seen
+    await new Promise(r => setTimeout(r, latency));    // let the loading states be seen
     return { ok: true, status: 200, json: async () => body };
   };
+  // ?boot=<ms> holds every fake reply open, so the waiting screens can be reviewed in
+  // the same file as the board they come before: ?boot=1200 for the skeleton, ?boot=9000
+  // to watch the "still waiting?" line appear at eight seconds. The blade renders the
+  // identical markup before app.js exists, so what you see here is what the merchant sees.
+  const latency = Number(new URLSearchParams(location.search).get('boot')) || 60;
+
   window.confirm = () => true;
   window.alert = m => console.log('[alert]', m);
 </script>

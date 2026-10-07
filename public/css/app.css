@@ -939,3 +939,47 @@ div.tm-row:hover { background: transparent; }
 @media (max-width: 1000px) {
   .panels { grid-template-columns: 1fr; }
 }
+
+/* --- Waiting screens: the boot splash and the SPA's loading state share these, so the
+   swap from "still loading" to the real board does not jump. Skeleton first (it shows the
+   shape of what is coming), words second (it says what it is waiting for). */
+.boot { display: grid; place-items: center; padding: 32px 20px; min-height: calc(100vh - 220px); text-align: left; }
+.boot-card { width: 100%; max-width: 880px; display: grid; gap: 16px; }
+.boot-row { display: flex; align-items: center; gap: 12px; }
+.boot-row > div:last-child { min-width: 0; }
+.boot-name { font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
+.boot-text { font-size: 13px; color: var(--text-subdued); margin-top: 1px; }
+.boot-who { font-size: 12px; color: var(--text-disabled); margin-top: 3px; }
+.boot .boot-logo { width: 34px; height: 34px; border-radius: 10px; font-size: 16px; }
+
+/* Four columns, a header bar each, a few cards. */
+.skcols { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.skcol { display: grid; gap: 8px; align-content: start; padding: 12px; border: 1px solid var(--border);
+    border-radius: var(--radius); background: var(--surface); }
+.skbar { display: block; width: 46%; height: 10px; border-radius: var(--radius-xs); }
+.skcard { display: grid; gap: 7px; padding: 11px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg); }
+.skline { display: block; height: 9px; border-radius: var(--radius-xs); }
+.skline.w80 { width: 80%; }
+.skline.w55 { width: 55%; }
+.skbar, .skline { background: var(--subtle); background-image: linear-gradient(90deg, var(--surface-hover), var(--bg) 55%, var(--surface-hover));
+    background-size: 220% 100%; animation: sk-walk 1.5s ease-in-out infinite; }
+.skcol:nth-child(2) .skbar, .skcol:nth-child(2) .skline { animation-delay: .12s; }
+.skcol:nth-child(3) .skbar, .skcol:nth-child(3) .skline { animation-delay: .24s; }
+.skcol:nth-child(4) .skbar, .skcol:nth-child(4) .skline { animation-delay: .36s; }
+@keyframes sk-walk { from { background-position: 110% 0; } to { background-position: -30% 0; } }
+
+/* Eight seconds in, the wait gets a way out. Not before that: a first embedded load
+   inside Shopify Admin genuinely takes a few seconds, and hinting at a problem earlier
+   teaches merchants to reload a page that was about to appear. */
+.skslow { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12.5px;
+    color: var(--text-disabled); opacity: 0; animation: sk-hint 0s linear 8s forwards; }
+.skslow a { text-decoration: none; }
+@keyframes sk-hint { to { opacity: 1; } }
+@media (max-width: 900px) {
+    .skcols { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .skslow { flex-direction: column; align-items: flex-start; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .skbar, .skline { animation: none; background-image: none; }
+    .skslow { animation: none; opacity: 1; }
+}

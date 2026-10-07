@@ -52,21 +52,29 @@ function CreateTaskAction({ resourceLabel }) {
   useEffect(() => {
     if (appUrlNotSet) return;
     let alive = true;
-    (async () => {
-      try {
-        const [boardData, resourceData] = await Promise.all([
-          api("/board"),
-          resourceType
-            ? api(`/resources/search?type=${resourceType}&id=${encodeURIComponent(numericId)}`)
-            : Promise.resolve({ items: [] }),
-        ]);
-        if (!alive) return;
-        setBoard(boardData);
-        setResource(resourceData?.items?.[0] || null);
-      } catch (e) {
+
+    // Two independent calls, on purpose. The board is what this form needs in order to
+    // file the task; the search only buys a nicer "Linked: Order #1042" line. Awaiting
+    // both together meant one failed lookup sank the other: the search threw, `board`
+    // stayed null, the POST went out without a column, and the merchant read "The column
+    // id field is required." on a store that has columns. A missing title is survivable
+    // the same way now — /api/tasks looks the order number up itself.
+    api("/board")
+      .then((d) => {
+        if (alive) setBoard(d);
+      })
+      .catch((e) => {
         if (alive) setError(e.message || "Could not reach TaskPe. Is the app installed on this store?");
-      }
-    })();
+      });
+
+    if (resourceType) {
+      api(`/resources/search?type=${resourceType}&id=${encodeURIComponent(numericId)}`)
+        .then((d) => {
+          if (alive) setResource(d?.items?.[0] || null);
+        })
+        .catch(() => {});
+    }
+
     return () => {
       alive = false;
     };
@@ -129,8 +137,9 @@ function CreateTaskAction({ resourceLabel }) {
       {error ? <s-banner tone="critical">{error}</s-banner> : null}
 
       <s-text appearance="subdued">
-        Linked: {resourceLabel}
-        {resource?.title ? ` — ${resource.title}` : ""}
+        {resource?.title
+          ? `Linked: ${resource.title}`
+          : `Linked to ${resourceLabel}${numericId ? ` #${numericId}` : ""}.`}
       </s-text>
 
       <s-box padding-block-start="large">

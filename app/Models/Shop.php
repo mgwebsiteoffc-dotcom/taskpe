@@ -108,7 +108,11 @@ class Shop extends Model
             ? (string) $this->scopes
             : (string) config('shopify.scopes', '');
 
-        return collect(strtolower(explode(',', $granted)))
+        // strtolower() on the STRING, then split. The other order of operations hands
+        // strtolower() an array, which is a TypeError rather than a false — and since
+        // orderSearchSince() calls this on every order search, one misplaced parenthesis
+        // made the whole search feature fail before Shopify was even asked.
+        return collect(explode(',', strtolower($granted)))
             ->contains(fn ($scope) => trim($scope) === 'read_all_orders');
     }
 

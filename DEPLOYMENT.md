@@ -367,12 +367,107 @@ a retry can help**:
 | `ACCESS_DENIED` / protected customer data | the Partner Dashboard instruction (§ 10) — no retry button |
 | timeout, 429, 5xx, connection | "Shopify is busy or slow right now." + **Try again** |
 | `USER_ERROR` / invalid query | "Shopify could not read that search. Try just the order number, for example 1042." |
+| a PHP fault of ours (`must be of type`, `TypeError`, `undefined method`) | "TaskPe hit an error in this search — nothing you did wrong." + the log pointer, no retry button |
 | anything else | "Shopify could not answer this search — try again in a moment." |
 
 The raw GraphQL reply never reaches the browser as advice, but it is logged
-(`Log::warning('Resource search failed')`, grep `laravel.log` for it) and returned as `detail`
-only while `APP_DEBUG=true`, where the picker shows it under the sentence in small grey text.
+(`Resource search failed`, grep `laravel.log` for it — at `error` level when the message looks
+like a bug of ours, so it also reaches whatever log alerting reads that level) and returned as
+`detail` only while `APP_DEBUG=true`, where the picker shows it under the sentence in small grey
+text.
 Searching one character is refused in the UI instead of returning half the store, and a
 zero-result search says *what* found nothing ("Nothing matched that in Orders") with the
 install-date note underneath, so "no matches" is never mistaken for "this order does not exist".
 
+§ 14 is the sequel the live store forced: the *same* search path was also behind two unrelated-
+looking errors on the order page, because a rejected search took the board fetch down with it.
+
+---
+
+## 14. One misplaced parenthesis, four complaints: the order page end to end
+
+The store reported all of these in one message, minutes after § 13 went out:
+
+* creating a task from the order page answered `The column id field is required.`
+* the task that did get made read `Linked: order`, with no order number
+* the picker still said the search failed
+* the app opens to a lonely **T**
+
+The log line settled it:
+
+```
+[2026-10-07 07:26:22] local.WARNING: Resource search failed
+{"shop":"house-of-indha.myshopify.com","type":"order","q":"101",
+ "error":"strtolower(): Argument #1 ($string) must be of type string, array given"}
+```
+
+### The cause
+
+`Shop::canReadAllOrders()` lower-cased the wrong thing:
+
+```php
+collect(strtolower(explode(',', $granted)))   // strtolower() gets an ARRAY → TypeError
+collect(explode(',', strtolower($granted)))   // what it was meant to say
+```
+
+PHP 8 raises a `TypeError` rather than shrugging, and `orderSearchSince()` calls this on
+**every** order search — so the search died inside Laravel before Shopify was ever asked.
+`hintFor()` matched no branch of a `strtolower` message, and the merchant got the
+"try again in a moment" fallback (§ 13), which is the worst possible advice for a bug in
+our own code: retrying a `TypeError` never helps.
+
+### Why that turned into `The column id field is required.`
+
+The Admin action fetched the board and the order in one `Promise.all`. The rejection
+skipped *both* assignments, so `board` stayed `null` and the create POST carried
+`column_id: undefined` — and Laravel refused to file a task on a store that has columns.
+Two rules keep a failed lookup inside the one box it belongs to:
+
+* **`POST /api/tasks` no longer demands a column.** `column_id` is nullable; a missing one
+  resolves through `TaskTemplates::columnFor()` (that id → first non-done column → first
+  column), which is what `bulk()` already did, so the two entry points no longer disagree.
+  A store that deleted every column gets `Your board has no column to put this task in.
+  Open TaskPe and add one first.` instead of a 500. `column_id` is written *after* the
+  `...$data` spread, because a nullable-but-present key would otherwise insert `null` into
+  a NOT NULL column.
+* **the extension no longer couples the two calls.** The board loads on its own (its
+  failure is the only one worth a red banner: it means TaskPe is unreachable); the order
+  lookup loads on its own and its failure is silent, because all it can lose is a title.
+
+### `Linked: order` with no number
+
+Same cause: the number used to come only from the search. `TaskController::fillOrderTitle()`
+now looks it up itself when `resource_type` is `order` and no title arrived, reusing the
+bulk path's one-query `hydrateOrderTitles()` (best-effort by design — the pre-install data
+scope can refuse it, § 10, and a task titled `order 1042` beats no task). The modal line
+says `Linked to order #1042.` while that is unknown, rather than `Linked: order` — the
+truncated-looking half-sentence that read as a bug.
+
+### Our own faults are now named as ours
+
+`hintFor()` has a branch for `must be of type` / `TypeError` / `undefined method` that says
+so plainly, with no retry button, and the log line goes up to `error` level so a store that
+alerts on it gets told. That is the whole difference between this message and the previous
+one: it must send someone to `laravel.log`, not to the reload key.
+
+### The lonely **T**
+
+Both waiting screens were a brand letter and "Loading…". They now draw the thing that is
+coming — four skeleton columns with cards, the store the board belongs to, and the same
+layout the real board uses, so the swap barely moves — and the copy says *what* is being
+loaded. `.skslow` (the "still waiting?" line + a plain Reload link, since a first embedded
+load really can take a few seconds) is `opacity: 0` until an 8-second CSS animation reveals
+it, so nobody is told something is wrong while the app is merely still working. It is
+rendered twice, from `resources/views/*.blade.php` before `app.js` runs and from `bootView()`
+after, deliberately with the same class names so the handover is invisible.
+
+### Deploy
+
+`app/`, `public/js/app.js`, `public/css/app.css`, `resources/views/`, then `php artisan
+config:clear`. The `extensions/shared/CreateTaskAction.jsx` change needs
+`shopify app deploy` **and** a released version (§ 7) — a deployed-but-unreleased version is
+invisible to the store, which is also the answer to "why is it only in More actions": the
+bulk action and the order-page block are separate extensions, and the block has to be pinned
+by the merchant once (`extensions/README.md` has the three checks).
+
+No migration, no `.env` key, no scope change. `npm run test:all` stays green.

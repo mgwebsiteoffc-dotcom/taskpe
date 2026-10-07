@@ -57,7 +57,10 @@ class ResourceSearchController extends Controller
             // The merchant gets a sentence they can act on; the raw Shopify reply
             // goes to the log, and into `detail` only while debugging. Both belong
             // somewhere, and not in the same place.
-            Log::warning('Resource search failed', [
+            // An internal PHP error is a bug to fix, so it is logged as one. The
+            // search string goes in too: "type=order q=101" is enough to reproduce it.
+            Log::log(preg_match('/must be of type|TypeError|undefined method|Call to /', $msg) ? 'error' : 'warning',
+                'Resource search failed', [
                 'shop'  => $ctx->shop()->domain,
                 'type'  => $data['type'],
                 'q'     => mb_substr($q, 0, 80),
@@ -108,6 +111,14 @@ class ResourceSearchController extends Controller
 
         if (str_contains($msg, 'access') || str_contains($msg, 'ACCESS')) {
             return 'Missing API permission. Re-install the app or check scopes.';
+        }
+
+        // A TypeError or ArgumentCountError here is our bug, not Shopify's and not the
+        // merchant's. Saying "try again" over it sends everyone to the wrong door, so the
+        // sentence points at the log line that has the truth.
+        if (preg_match('/must be of type|Argument #\d|TypeError|\bCall to (undefined|static)|undefined method|too few arguments/i', $msg)) {
+            return 'TaskPe hit an error in this search — nothing you did wrong. '
+                . 'The store log has the line (search for \'Resource search failed\').';
         }
 
         return 'Shopify could not answer this search — try again in a moment.';

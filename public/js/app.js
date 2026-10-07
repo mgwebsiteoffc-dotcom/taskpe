@@ -504,9 +504,38 @@
     if (cfg.openTask && state.board) { openTaskDrawer(Number(cfg.openTask)); cfg.openTask = null; }
   }
 
+  /**
+   * What the app shows while it waits. Two rules: draw the *shape* of what is coming
+   * (columns and cards, so the wait reads as "arriving" and the swap to the real board
+   * barely moves), and say what it is waiting for. A bare brand letter with "Loading…"
+   * looks like a crash, and a first embedded load inside Shopify Admin really can take a
+   * few seconds — so the slow hint only fades in after eight of them.
+   */
+  function bootView(text, opts) {
+    const o = opts || {};
+    const card = () => h('span', { class: 'skcard' }, h('span', { class: 'skline w80' }), h('span', { class: 'skline w55' }));
+    const cols = h('div', { class: 'skcols' },
+      [3, 2, 2, 1].map((n) => h('div', { class: 'skcol' }, h('span', { class: 'skbar' }), Array.from({ length: n }, card))));
+    const inner = [
+      h('div', { class: 'boot-row' },
+        h('div', { class: 'boot-logo' }, 'T'),
+        h('div', null,
+          h('div', { class: 'boot-name' }, 'TaskPe'),
+          h('div', { class: 'boot-text' }, text),
+          cfg.shop ? h('div', { class: 'boot-who' }, cfg.shop) : null)),
+      cols,
+    ];
+    if (!o.noHint) {
+      inner.push(h('div', { class: 'skslow' },
+        h('span', null, o.slow || 'Still waiting? Your session with Shopify may have expired.'),
+        h('a', { class: 'btn sm', href: window.location.href }, 'Reload')));
+    }
+    return h('div', { class: 'boot' }, h('div', { class: 'boot-card' }, ...inner));
+  }
+
   function renderShell() {
     const s = state.board;
-    if (!s) return h('div', { class: 'boot' }, h('div', { class: 'boot-text' }, 'Loading…'));
+    if (!s) return bootView(cfg.embedded ? 'Loading your board — columns, tasks and settings.' : 'Waiting for your Shopify session…');
 
     // Staff portal: board-only surface, so no section nav — just who you are
     // and how to get out. Same row shape as the admin nav, minus the tabs.
@@ -2352,7 +2381,7 @@
   function renderSettings() {
     if (!state.settings || state.settings === 'loading') {
       void renderSettingsAsync();
-      return h('div', { class: 'page' }, h('div', { class: 'boot' }, h('div', { class: 'boot-text' }, 'Loading settings…')));
+      return h('div', { class: 'page' }, bootView('Loading your settings…', { noHint: true }));
     }
     const st = state.settings;
     if (st.error) return h('div', { class: 'page' }, h('div', { class: 'banner crit' }, 'Failed to load settings: ' + st.error));

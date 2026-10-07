@@ -31,6 +31,15 @@ app instead: search, or paste the article URL.)
   and pin blocks to their pages before they can use them."* The order-page card
   therefore never replaces the action/bulk targets — it only adds the tick-in-place
   workflow. Settings → **In your Shopify admin** states this in the app, too.
+- **Nothing of ours can sit next to the order number.** "Put the button by the
+  number" is the most-requested placement there is, and the platform has no target
+  for the header of a resource page. The nearest legal answers are the pinned block
+  (a card on that order page) and the bulk action (in the bar that appears above the
+  Orders list when rows are ticked) — which is exactly what `taskpe-order-block` and
+  `taskpe-task-order-bulk` are for. If a merchant reports "it's only in More
+  actions", that is *not* a code choice to change and not a bug to fix: it means
+  those two extensions were never deployed (or the version was never released), and
+  for the block it also means nobody pinned it yet.
 - **Blocks are read-mostly.** Their height is capped (~300px, then "Show more")
   and the block component set has no text inputs, so the card deliberately has
   no free-text field. Anything that needs typing belongs in the action modal.
@@ -150,6 +159,19 @@ extension trusts it:
 
 Preview while developing: `shopify app dev` (watch mode) — it serves all six
 extensions into your dev store's admin, including the block.
+
+**"I only see Create task in More actions."** Three checks, in this order — all
+three are deploy/pin state, none of them is code:
+
+1. `shopify app deploy` was run **after** the six folders existed, and the new
+   version was **released** in the Partner Dashboard (Versions → release). A deployed
+   but unreleased version is invisible to the store.
+2. The bulk action only exists while rows are ticked: Orders → tick one or more →
+   the button appears in the bar above the list, alongside Shopify's own bulk
+   actions (tag, fulfill, …). There is no per-row button to add (see above).
+3. The block has to be pinned by the merchant: open an order → **Add custom app
+   block** (or *Edit page*) → *TaskPe — this order*. Pinning is once per store, then
+   it is on every order page.
 
 ## Notes
 
