@@ -100,13 +100,23 @@ class Shop extends Model
     /**
      * `read_all_orders` is what unlocks order history from before the install.
      * Public apps only get it after Shopify approves the protected customer data
-     * review, so NOT having it is normal, not a broken install.
+     * review, so NOT having it is normal, not a broken install. Once approved,
+     * SHOPIFY_READ_ALL_ORDERS (config/shopify.php) is what asks for it; this method
+     * reports only what the store actually granted, because that is the only answer
+     * a query can be planned around.
      */
     public function canReadAllOrders(): bool
     {
-        $granted = trim((string) $this->scopes) !== ''
-            ? (string) $this->scopes
-            : (string) config('shopify.scopes', '');
+        // Only what THIS store's token was actually granted. The scopes in the config are
+        // what we ask for, and `read_all_orders` sits in that list the moment the switch is
+        // on but before the store has reinstalled — reading the config here would promise a
+        // full history the token cannot deliver, and the search would come back as an
+        // ACCESS_DENIED instead of the bounded answer that is true today.
+        $granted = trim((string) $this->scopes);
+
+        if ($granted === '') {
+            return false;
+        }
 
         // strtolower() on the STRING, then split. The other order of operations hands
         // strtolower() an array, which is a TypeError rather than a false — and since

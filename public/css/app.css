@@ -310,7 +310,15 @@ input, select, textarea { font: inherit; }
 .res-item .ri-title { font-weight: 600; }
 .res-item .ri-sub { font-size: 12px; color: var(--text-subdued); }
 .res-empty { padding: 22px; text-align: center; color: var(--text-subdued); }
-.res-note { margin-top: 8px; padding: 8px 10px; font-size: 12px; line-height: 1.45; color: var(--text-subdued); background: var(--warning-bg); border-radius: 8px; }
+.res-note { display: grid; gap: 7px; margin-top: 8px; padding: 9px 11px; font-size: 12px; line-height: 1.45;
+  color: var(--text-subdued); background: var(--warning-bg); border-radius: 8px; }
+.res-note .btn { justify-self: start; padding: 0; border: 0; background: none; color: var(--primary);
+  font-size: 12px; font-weight: 600; text-decoration: underline; }
+.res-note .btn:hover { background: none; color: var(--primary-hover); }
+.res-note-now { color: var(--text); }
+.res-note-steps { display: none; gap: 5px; padding: 9px 11px; border-radius: var(--radius-sm);
+  background: var(--surface); border: 1px solid var(--border); color: var(--text-subdued); }
+.res-note-steps.open { display: grid; }
 .res-current { display: flex; align-items: center; gap: 10px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; background: var(--surface-hover); }
 
 /* ---------------- template cards ---------------- */

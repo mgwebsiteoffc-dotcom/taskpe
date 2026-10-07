@@ -9,6 +9,30 @@
 | Dashboard values that must mirror these settings.
 */
 
+/*
+|--------------------------------------------------------------------------
+| Full order history (`read_all_orders`)
+|--------------------------------------------------------------------------
+| Computed BEFORE the array because the two values must agree: the flag says whether
+| the app may ask for the scope, and the scope list is what OAuth sends to the store.
+|
+| Flip SHOPIFY_READ_ALL_ORDERS=true ONLY after Partner Dashboard → your app →
+| API access → Protected customer data has approved reading all orders — asking before
+| that approval makes the install screen fail for every store, which is a worse outage
+| than a search that can only see recent orders. After the approval it is one .env line,
+| `php artisan config:clear`, and a reinstall per store; the bounded-search notice in
+| the picker reads granted scopes and disappears on its own. See DEPLOYMENT.md § 15.
+*/
+$readAllOrders = filter_var(env('SHOPIFY_READ_ALL_ORDERS', false), FILTER_VALIDATE_BOOLEAN);
+
+$requested = explode(',', (string) env('SHOPIFY_SCOPES', 'read_orders,read_products,read_customers,read_content'));
+
+if ($readAllOrders) {
+    $requested[] = 'read_all_orders';
+}
+
+$scopes = implode(',', array_values(array_unique(array_filter(array_map('trim', $requested)))));
+
 return [
 
     // From Partner Dashboard → Apps → your app → Overview → Client credentials.
@@ -37,7 +61,15 @@ return [
     | Partner Dashboard configuration this app was designed for (we never
     | query or store PCD fields such as customer address/email/phone).
     */
-    'scopes' => env('SHOPIFY_SCOPES', 'read_orders,read_products,read_customers,read_content'),
+    /*
+    | Full order history — see the $readAllOrders block at the top of this file. Shopify's
+    | protected-customer-data rule: without the `read_all_orders` scope an offline token may
+    | read only orders created AFTER the install, so an older order cannot be found by any
+    | search, however well written. That scope is refused at install until the review
+    | approves it, so it is not in the default list.
+    */
+    'read_all_orders' => $readAllOrders,
+    'scopes'          => $scopes,   // the env list, plus read_all_orders when approved
 
     // Webhooks registered automatically on install (topic => handled internally).
     'webhook_topics' => [

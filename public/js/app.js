@@ -1698,6 +1698,70 @@
 
   /* -------------------------------------------------------- resource picker */
 
+  /*
+   * A limited search, explained where it was hit. Two things a merchant can act on, not a
+   * dead end: how to lift the limit for good, and the one route that needs no permission at
+   * all — creating a task from the order page links that order by its id, so it works for
+   * orders from before the install date. (Only orders can be bounded this way, so only
+   * order searches get the extra lines.)
+   */
+  function resNote(text, type) {
+    if (type !== 'order') return h('div', { class: 'res-note' }, text);
+
+    let open = false;
+    const steps = h('div', { class: 'res-note-steps', },
+      h('div', null, '1. In the Partner Dashboard, open your app → API access → Protected customer data, and request access to read all orders. Shopify reviews this once per app.'),
+      h('div', null, '2. Once it is approved, set SHOPIFY_READ_ALL_ORDERS=true in this app\u2019s .env and run php artisan config:clear.'),
+      h('div', null, '3. Ask the store to reinstall TaskPe so the new permission is granted. This notice disappears by itself after that.'));
+
+    return h('div', { class: 'res-note' },
+      h('div', null, text),
+      h('div', { class: 'res-note-now' },
+        'Meanwhile: open the order in Shopify and use ', h('b', null, 'More actions \u2192 Create task'),
+        '. That links the order itself, so it works for old orders too.'),
+      // A class toggle rather than `hidden`, so the state is visible to the smoke test's
+      // DOM stub as well as to a browser.
+      h('button', {
+        class: 'btn plain sm',
+        onclick: (ev) => {
+          open = !open;
+          steps.className = 'res-note-steps' + (open ? ' open' : '');
+          ev.currentTarget.textContent = open ? 'Hide the steps' : 'How to open the full order history';
+        },
+      }, 'How to open the full order history'),
+      steps);
+  }
+
+  /*
+   * A limited search, explained where it was hit. Two things a merchant can act on, not a
+   * dead end: how to lift the limit for good, and the one route that needs no permission at
+   * all — creating a task from the order page links that order by its id, so it works for
+   * orders from before the install date. (Only orders can be bounded this way, so only
+   * order searches get the extra lines.)
+   */
+  function resNote(text, type) {
+    if (type !== 'order') return h('div', { class: 'res-note' }, text);
+
+    const steps = h('div', { class: 'res-note-steps', hidden: '' },
+      h('div', null, '1. In the Partner Dashboard, open your app → API access → Protected customer data, and request access to read all orders. Shopify reviews this once per app.'),
+      h('div', null, '2. Once it is approved, set SHOPIFY_READ_ALL_ORDERS=true in this app\u2019s .env and run php artisan config:clear.'),
+      h('div', null, '3. Ask the store to reinstall TaskPe so the new permission is granted. This notice disappears by itself after that.'));
+
+    return h('div', { class: 'res-note' },
+      h('div', null, text),
+      h('div', { class: 'res-note-now' },
+        'Meanwhile: open the order in Shopify and use ', h('b', null, 'More actions \u2192 Create task'),
+        '. That links the order itself, so it works for old orders too.'),
+      h('button', {
+        class: 'btn plain sm',
+        onclick: (ev) => {
+          steps.hidden = !steps.hidden;
+          ev.currentTarget.textContent = steps.hidden ? 'How to open the full order history' : 'Hide the steps';
+        },
+      }, 'How to open the full order history'),
+      steps);
+  }
+
   function openResourcePicker(task) {
     const types = [['order', 'Orders'], ['draft_order', 'Draft orders'], ['product', 'Products'], ['customer', 'Customers'], ['article', 'Blog posts']];
     let activeType = 'order';
@@ -1755,11 +1819,11 @@
           rows.push(h('div', { class: 'res-empty' },
             'Nothing matched that in ' + (types.find(([k]) => k === activeType) || [, 'Shopify'])[1] + '.'));
         }
-        // The server adds a note when it had to narrow the search (Shopify only
-        // lets us read orders created after the install until the protected
-        // customer data review approves more). Without it, "no matches" reads as
-        // "this order does not exist".
-        if (data.note) rows.push(h('div', { class: 'res-note' }, data.note));
+        // The server adds a note when it had to narrow the search (Shopify only lets us
+        // read orders created after the install until the protected customer data review
+        // approves more). Without it, "no matches" reads as "this order does not exist" —
+        // and the merchant concludes the app is broken.
+        if (data.note) rows.push(resNote(data.note, activeType));
 
         results.replaceChildren(...rows);
       } catch (e) {
@@ -2496,8 +2560,14 @@
           h('div', null, h('b', null, 'The order-page card'),
             h('p', { class: 'mt' }, 'On an order page, choose ', h('b', null, 'Add custom app block'), ' → TaskPe. Then you can tick checklist steps and file a COD/NDR task while the order is open. Only you can pin a block — Shopify does not let apps place it.'))),
         h('div', { class: 'how-row' }, icon('edit', { size: 16 }),
-          h('div', null, h('b', null, 'Entries missing from the admin menus?'),
-            h('p', { class: 'mt' }, 'They are Shopify extensions: set ', h('code', null, 'APP_URL'), ' in ', h('code', null, 'extensions/shared/api.js'), ', then run ', h('code', null, 'shopify app deploy'), ' from your own computer (', h('code', null, 'extensions/README.md'), ').'))),
+          h('div', null, h('b', null, 'An entry missing from the admin menus?'),
+            h('p', { class: 'mt' }, 'Each one is a Shopify extension, so it only reaches this store when a new version is ',
+              h('b', null, 'released'), ': run ', h('code', null, 'shopify app deploy'),
+              ' from your own computer (', h('code', null, 'extensions/README.md'), '), then in the Partner Dashboard open your app \u2192 ',
+              h('b', null, 'Versions'), ' \u2192 release that version. A deployed but unreleased version is invisible \u2014 this is the usual reason a deploy appears to do nothing.'),
+            h('p', { class: 'mt' }, 'Then check the two placements Shopify controls: the bulk entry exists ',
+              h('b', null, 'only while rows are ticked'), ', and the order-page card must be pinned once by you under ',
+              h('b', null, 'Add custom app block'), ' \u2014 apps are not allowed to place blocks, so no deploy can make it appear by itself.'))),
         h('p', { class: 'mt small muted' }, 'On the board: n adds a task · t opens templates · c completes the open task · 1–4 switch sections · ? lists them.')));
 
     // DISABLED state: show only the master card + explanation. Zero WhatsApp

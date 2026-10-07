@@ -14,7 +14,18 @@ application_url = "https://app.yourdomain.com/"
 embedded = true
 
 [access_scopes]
+# Add read_all_orders ONLY after Shopify approves the protected-customer-data
+# request (Partner Dashboard -> your app -> API access). It is refused before
+# that, and a refused scope breaks the install screen for every store. The Laravel
+# side has the same switch: SHOPIFY_READ_ALL_ORDERS=true in .env appends it to the
+# OAuth request, so keep the two in step (see DEPLOYMENT.md section 15).
 scopes = "read_orders,read_products,read_customers,read_content"
+
+# Extensions are NOT listed in this file: `shopify app deploy` discovers them from
+# extensions/*/shopify.extension.toml. Its output must name SIX (four detail-page
+# actions, the Orders-list selection action, the order-page block). Fewer than six
+# means the folder was missing when you deployed -- deploy again and RELEASE the
+# version, or the store never sees it.
 
 [auth]
 redirect_urls = [

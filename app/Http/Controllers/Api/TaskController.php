@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Jobs\SendWhatsAppJob;
 use App\Models\BoardColumn;
 use App\Models\Member;
+use App\Models\Shop;
 use App\Models\Task;
 use App\Models\TaskActivity;
 use App\Services\ShopifyClient;
@@ -429,12 +430,18 @@ class TaskController extends Controller
             return $data;
         }
 
-        $one = $this->hydrateOrderTitles($shop, collect([[
-            'type' => 'order', 'id' => (int) $data['resource_id'], 'title' => null, 'gid' => $data['resource_gid'] ?? null,
-        ]]))->first();
+        // A title is a nicety: nothing in here may cost the merchant their task, so a
+        // throw of any kind leaves the payload exactly as it arrived.
+        try {
+            $one = $this->hydrateOrderTitles($shop, collect([[
+                'type' => 'order', 'id' => (int) $data['resource_id'], 'title' => null, 'gid' => $data['resource_gid'] ?? null,
+            ]]))->first();
 
-        if ($one && !empty($one['title'])) {
-            $data['resource_title'] = $one['title'];
+            if ($one && !empty($one['title'])) {
+                $data['resource_title'] = $one['title'];
+            }
+        } catch (\Throwable $e) {
+            // deliberately ignored — see the comment above
         }
 
         return $data;

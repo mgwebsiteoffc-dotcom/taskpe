@@ -231,6 +231,10 @@ A successful OAuth callback clears the flag (`Shop::clearTokenRejection()`), so 
 
 ## 10. `ACCESS_DENIED` on the `orders` field (protected customer data)
 
+> If the question is "why can't I find an order from before we installed the app", read § 15
+> first: it is the same rule, and there is now a `.env` switch for it (`SHOPIFY_READ_ALL_ORDERS`),
+> a three-step fix in the picker's own note, and a route that needs no permission at all.
+
 ```
 local.WARNING: Shopify GraphQL errors {"shop":"house-of-indha.myshopify.com",
  "errors":"[{\"message\":\"This app is not approved to access the Order object ...\",
@@ -471,3 +475,94 @@ bulk action and the order-page block are separate extensions, and the block has 
 by the merchant once (`extensions/README.md` has the three checks).
 
 No migration, no `.env` key, no scope change. `npm run test:all` stays green.
+
+---
+
+## 15. The follow-up from the same store: `Shop` was the wrong class, and old orders
+
+Two reports arrived after § 14 was deployed:
+
+```
+App\Http\Controllers\Api\TaskController::fillOrderTitle(): Argument #1 ($shop)
+must be of type App\Http\Controllers\Api\Shop, App\Models\Shop given, called in …/TaskController.php on line 31
+
+Shopify only lets this app read orders created since TaskPe was installed (2026-10-07),
+so anything older than that cannot appear here.
+```
+
+### The first one is our fault, and it is older than § 14
+
+`TaskController` has no `use App\Models\Shop;`, so every `Shop $shop` type hint in that file
+resolved to `App\Http\Controllers\Api\Shop` — **a class that does not exist**. PHP keeps quiet
+until something is actually passed, then refuses it. Two methods in the file take a `Shop`:
+
+| method | what that meant |
+| --- | --- |
+| `hydrateOrderTitles()` | **every bulk create from a ticked Orders list threw**, before its own try/catch could help — the "best-effort" comment under it was never true |
+| `fillOrderTitle()` (new in § 14) | creating a task from an order page threw the sentence the store pasted |
+
+Fixed with the import, and `fillOrderTitle()` now swallows `\Throwable` around the lookup:
+a title is a nicety, and nothing in that path may cost a merchant their task.
+
+*The lesson the smoke test could not catch:* an unresolved type hint is silent until the call
+site runs, and this repo has no PHP toolchain in CI. When a type hint names a class, the import
+line is part of the code, not decoration — check it when copy-pasting a signature between
+namespaces.
+
+### "I want older orders here" — what the platform allows and what we added
+
+The line the store quoted is not a TaskPe limitation we can switch off: Shopify's protected
+customer data rule says an offline access token may read **only orders created after the
+install**, until the app is granted `read_all_orders`. No query, sort key or quoting trick
+changes that; the API refuses the rows.
+
+What was missing is a way out, so the search now carries one:
+
+* **The picker's note is actionable.** Under the sentence, the order tab shows *"Meanwhile:
+  open the order in Shopify and use More actions → Create task. That links the order itself,
+  so it works for old orders too."* Creating from the order page needs no read — the extension
+  already holds the order id — so a task can be filed against any order, ever, on any store.
+  Plus a labelled **"How to open the full order history"** button revealing the three steps
+  (Partner Dashboard approval → `SHOPIFY_READ_ALL_ORDERS=true` + `config:clear` → reinstall).
+* **`config/shopify.php` grew the switch.** `SHOPIFY_READ_ALL_ORDERS=true` appends
+  `read_all_orders` to the requested scopes. It is off by default on purpose: Shopify refuses
+  the scope at install until the review approves it, and a scope list that ends in a refusal
+  means the merchant cannot install the app at all.
+* **`Shop::canReadAllOrders()` no longer reads the config as a fallback.** It asks only what
+  *this store's token* was granted. The config lists what we ask for, so with the switch on and
+  the store not yet reinstalled it would have promised a full history the token cannot deliver —
+  and the search would have come back as `ACCESS_DENIED` instead of the honest bounded answer.
+  Unknown scopes now mean "not granted", which is the safe reading.
+
+So: the approval is a Partner Dashboard action only they can take; everything after it is one
+`.env` line, `php artisan config:clear`, and a reinstall. The note in the picker disappears by
+itself, because it is computed from the granted scopes.
+
+### Why the buttons still are not in the Orders list or on the order page
+
+Three things must all be true, and only the first is ours:
+
+1. `shopify app deploy` ran **after** `taskpe-task-order-bulk` and `taskpe-order-block` existed
+   in `extensions/` (both were added in this branch, so any deploy predating them cannot show
+   them), **and** that version was **released** in the Partner Dashboard. A deployed but
+   unreleased version is invisible to the store.
+2. The selection action only exists while rows are ticked: Orders → tick → the entry appears in
+   the bar above the list. There is no per-row button in Shopify's Orders list, and no target
+   for a button beside the order number (`extensions/README.md`, "What Shopify does *not* allow").
+3. The block is pinned by the merchant: order page → **Add custom app block** → *TaskPe — this
+   order*, once per store. Apps are not allowed to place blocks.
+
+The second half of the store's complaint may also have been § 15's first half: even when the
+bulk entry was visible, ticking rows and pressing it threw the `Shop` TypeError above, so
+"nothing happened" looked like "the button is missing". Settings → **In your Shopify admin**
+now says the deploy-half out loud too (deploy *and* release), instead of naming only the CLI.
+
+### Deploy
+
+`app/`, `config/shopify.php`, `public/js/app.js`, `public/css/app.css` → `php artisan
+config:clear` (config changed — without this the new switch and the old scope list disagree).
+No migration. Nothing to redeploy for this fix specifically: the PHP import is the whole
+change, so no `shopify app deploy` is required for it.
+
+`npm run test:all` green, plus 9 checks on the note (it must explain, must not offer a useless
+retry, must stay quiet for products/customers, and its steps must toggle).
