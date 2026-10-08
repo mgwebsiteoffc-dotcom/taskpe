@@ -80,13 +80,134 @@ class BillingService
             return $configured;
         }
 
-        $appHandle = strtolower(trim((string) config('shopify.billing.app_handle', '')));
+        // Shopify's own answer first: it is the handle the admin actually routes on. The config
+        // value is the fallback for a store that has not been asked yet, and it is exactly the one
+        // that can be a typo away from sending a merchant to the Apps list.
+        $appHandle = $shop !== null
+            ? $shop->shopifyAppHandle()
+            : strtolower(trim((string) config('shopify.billing.app_handle', '')));
 
-        if ($appHandle === '' || $shop === null || $shop->adminHandle() === '') {
+        if ($appHandle === '') {
+            $appHandle = strtolower(trim((string) config('shopify.billing.app_handle', '')));
+        }
+
+        if ($appHandle === '' || $shop === null) {
+            return '';
+        }
+
+        // `myshopify` style needs only the domain, which is never wrong about itself; the admin
+        // form needs the store slug, and an empty one builds a URL Shopify will not resolve.
+        if (strtolower((string) config('shopify.billing.plans_url_style', 'admin')) === 'myshopify') {
+            return trim((string) $shop->domain) === ''
+                ? ''
+                : $shop->myshopifyAdminUrl().'/charges/'.$appHandle.'/pricing_plans';
+        }
+
+        if ($shop->adminHandle() === '') {
             return '';
         }
 
         return $shop->adminBaseUrl().'/charges/'.$appHandle.'/pricing_plans';
+    }
+
+    /**
+     * What Shopify says this installation's app handle is.
+     *
+     * One field, and it is the one the whole plan link hangs on: the admin page lives at
+     * `/charges/{app handle}/pricing_plans`, and a wrong handle is not a 404 the merchant can see
+     * the reason for — Shopify answers by opening its Apps list, which reads as the button doing
+     * nothing. Reading it from the store instead of trusting an `.env` line turns "check the config"
+     * into a solved problem.
+     *
+     * Cached for a day because it is read on the billing paths, not on every page load, and a
+     * rename is a deploy-shaped event. `--force` is for the command, where a human wants the answer
+     * now. Failure is silent by design: the config value keeps working, and the caller is told the
+     * link is unverified rather than being denied it.
+     */
+    public function reportedAppHandle(bool $force = false): ?string
+    {
+        $check = (array) $this->shop->setting('billing.app_handle_check', []);
+        $held  = (string) ($check['handle'] ?? '');
+        $fresh = $held !== '' && strtotime((string) ($check['checked_at'] ?? '')) > time() - 86400;
+
+        if (!$force && $fresh) {
+            return $held;
+        }
+
+        // Assigned first, on purpose: the closing identifier has to sit on its own line with only a
+        // semicolon after it, which is how every other query in this class is written.
+        $query = <<<'GQL'
+        {
+          currentAppInstallation {
+            app { handle }
+          }
+        }
+        GQL;
+
+        try {
+            $data = (new ShopifyClient($this->shop))->graphql($query);
+        } catch (\Throwable $e) {
+            Log::info('Billing: could not read the app handle from Shopify', [
+                'shop' => $this->shop->domain, 'err' => $e->getMessage(),
+            ]);
+
+            return $held !== '' ? $held : null;      // a stale answer beats no answer, and beats breaking the page
+        }
+
+        $handle = strtolower(trim((string) data_get($data, 'currentAppInstallation.app.handle', '')));
+
+        if ($handle === '' || !preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/', $handle)) {
+            return $held !== '' ? $held : null;
+        }
+
+        $configured = strtolower(trim((string) config('shopify.billing.app_handle', '')));
+
+        if ($configured !== '' && $configured !== $handle) {
+            // The bug this whole method exists for, said once in the log instead of discovered by
+            // a merchant whose plan button kept landing them on the Apps list.
+            Log::warning('SHOPIFY_APP_HANDLE disagrees with the handle Shopify reports; using Shopify\'s', [
+                'shop'      => $this->shop->domain,
+                'env_value' => $configured,
+                'reported'  => $handle,
+            ]);
+        }
+
+        $this->shop->setSetting('billing.app_handle_check', [
+            'handle'     => $handle,
+            'checked_at' => now()->toIso8601String(),
+            'domain'     => $this->shop->domain,
+        ]);
+        $this->shop->save();
+
+        return $handle;
+    }
+
+    /**
+     * The handle behind the plan link, and whether it can be trusted. `source` is what the Plan tab
+     * and `taskpe:plans` print, because "unverified" is actionable and "unknown" is not.
+     *
+     * @return array{handle:string,source:string,verified:bool,matches_config:bool}
+     */
+    public function appHandleStatus(): array
+    {
+        $reported   = $this->shop->shopifyAppHandle();
+        $configured = strtolower(trim((string) config('shopify.billing.app_handle', '')));
+
+        if ($reported !== '') {
+            return [
+                'handle'         => $reported,
+                'source'         => 'shopify',
+                'verified'       => true,
+                'matches_config' => $configured === '' || $configured === $reported,
+            ];
+        }
+
+        return [
+            'handle'         => $configured,
+            'source'         => $configured !== '' ? 'env (not confirmed with Shopify)' : 'none',
+            'verified'       => false,
+            'matches_config' => true,
+        ];
     }
 
     /** True when the app can send a merchant to Shopify's plan page for this store. */
@@ -294,7 +415,7 @@ class BillingService
      * the ACTIVE subscription server-side and persist the plan. Never trust
      * the return URL params alone.
      */
-    public function syncActiveSubscription(): array
+    public function syncActiveSubscription(?string $planHandle = null): array
     {
         $query = <<<'GQL'
         {
@@ -316,11 +437,13 @@ class BillingService
             return ['plan' => $this->shop->plan, 'active' => false, 'billing' => $this->shop->setting('billing')];
         }
 
-        $planKey = collect(config('shopify.plans'))
-            ->filter(fn ($p, $key) => static::isPaidPlan($key))
-            ->keys()
-            ->first(fn ($key) => str_contains($active['name'], config("shopify.plans.{$key}.name")))
-            ?: 'starter';
+        // Which of OUR plans is this? Shopify only tells us a name and, on the way back from its
+        // plan page, a handle. The handle is the reliable one — it is the string Shopify itself
+        // issued, and this app has remembered it for any store that changed plan once. Name
+        // matching is the fallback, and a *silent* fallback is how "the plan did not change" gets
+        // reported: a Dashboard plan called "Scale" would otherwise be written off as Starter and
+        // the merchant would pay for Growth while the board kept Starter limits.
+        [$planKey, $mappedBy] = $this->resolvePlanKey((string) ($active['name'] ?? ''), $planHandle);
 
         $this->shop->forceFill(['plan' => $planKey, 'charge_id' => $active['id']])->save();
 
@@ -328,7 +451,12 @@ class BillingService
         // mode, and by nothing at all here) disagrees. The log line is for the developer
         // who edits one and not the other; the merchant just sees Shopify's number.
         $bill = $this->readBilling();
-        $this->shop->setSetting('billing', $bill + ['plan_key' => $planKey]);
+        $this->shop->setSetting('billing', $bill + [
+            'plan_key'          => $planKey,
+            'mapped_by'         => $mappedBy,
+            'shopify_plan_name' => (string) ($active['name'] ?? ''),
+            'shopify_handle'    => (string) ($planHandle ?? ''),
+        ]);
         $this->shop->save();
 
         $ours = static::resolvePrice($planKey, (string) ($bill['currency'] ?? ($this->shop->currency ?: 'USD')));
@@ -343,7 +471,59 @@ class BillingService
             ]);
         }
 
-        return ['plan' => $planKey, 'active' => true, 'billing' => $bill, 'managed_by' => static::shopifyManaged() ? 'shopify' : 'app'];
+        if ($mappedBy === 'fallback') {
+            Log::warning('Billing: Shopify plan name matched no plan in config/shopify.php; using the lowest paid plan', [
+                'shop'         => $this->shop->domain,
+                'shopify_name' => (string) ($active['name'] ?? ''),
+                'plan_key'     => $planKey,
+                'fix'          => 'name the Dashboard plan so it contains a plan name from config, '
+                    .'or set TASKPE_PLAN_*_HANDLE / let the app learn it from a plan change',
+            ]);
+        }
+
+        return [
+            'plan'       => $planKey,
+            'active'     => true,
+            'mapped_by'  => $mappedBy,
+            'billing'    => $bill,
+            'managed_by' => static::shopifyManaged() ? 'shopify' : 'app',
+        ];
+    }
+
+    /**
+     * Which entry of `config/shopify.php → plans` a Shopify subscription belongs to.
+     *
+     * handle (what Shopify issued) → name (what a human typed in the Dashboard) → fallback.
+     *
+     * @return array{0:string,1:string}  plan key, and how it was decided
+     */
+    public function resolvePlanKey(string $shopifyName, ?string $planHandle = null): array
+    {
+        $paid = collect(config('shopify.plans'))
+            ->filter(fn ($p, $key) => static::isPaidPlan($key))
+            ->keys();
+
+        $planHandle = trim((string) $planHandle);
+
+        if ($planHandle !== '') {
+            foreach ((array) $this->shop->setting('billing.plan_handles', []) as $key => $known) {
+                if ((string) $known === $planHandle && $paid->contains($key)) {
+                    return [(string) $key, 'handle'];
+                }
+            }
+        }
+
+        foreach ($paid as $key) {
+            $label = trim((string) config("shopify.plans.{$key}.name"));
+
+            if ($label !== '' && mb_stripos($shopifyName, $label) !== false) {
+                return [(string) $key, 'name'];
+            }
+        }
+
+        // Last resort, and never a quiet one: the caller logs it, the Plan tab can say so, and
+        // `taskpe:plans` prints the pair it ended up believing.
+        return [(string) ($paid->first() ?? config('shopify.default_plan')), 'fallback'];
     }
 
     /**

@@ -31,7 +31,8 @@ class BoardController extends Controller
         // whether we have a price in the store's billing currency at all; `drift` is set when
         // Shopify's number and our table disagree, so a stale row can be seen instead of trusted.
         $managed = BillingService::shopifyManaged();
-        $plans  = (new BillingService($shop))->planCatalog();
+        $billingService = new BillingService($shop);
+        $plans  = $billingService->planCatalog();
 
         return response()->json([
             'billing' => [
@@ -41,6 +42,10 @@ class BoardController extends Controller
                 // Plan tab renders real buttons from this rather than directions.
                 'plans_url' => BillingService::plansUrl($shop),
                 'picker'    => BillingService::canPickPlans($shop),
+                // Where that URL's app handle came from. `verified: false` is not a warning for the
+                // merchant — it is the signal for the SPA to ask Shopify once, quietly, before the
+                // first click turns into a trip to the Apps list.
+                'handle'    => $billingService->appHandleStatus(),
                 'shopify'   => (array) $shop->setting('billing', []),
             ],
             'shop' => [

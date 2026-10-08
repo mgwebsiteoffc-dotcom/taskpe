@@ -44,7 +44,7 @@ class BillingController extends Controller
 
         try {
             $service = new BillingService($shop);
-            $result  = $service->syncActiveSubscription();
+            $result  = $service->syncActiveSubscription($planHandle !== '' ? $planHandle : null);
             $status  = $result['active'] ? 'active' : 'declined';
 
             // Shopify named the plan it just sold. Keep that pairing: the next switch can then

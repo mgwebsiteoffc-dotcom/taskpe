@@ -123,6 +123,16 @@ REVIEW STORE (provided for testing)
    handles the proration, and every charge and cancellation appears in the store's app charge
    history at Shopify admin -> Settings -> Apps and sales channels -> TaskPe -> Billing.
 
+   If the click opens Shopify's Apps list instead of the plan page, the app handle is what is wrong,
+   not the button - Shopify answers an unknown /charges/{handle} address that way. The app asks Shopify
+   for its own handle by itself when the Plan tab is opened with an unconfirmed link; to see the whole
+   picture on the server: `php artisan taskpe:plans --links --verify` (it also warns when the store
+   slug is the suspect, and `SHOPIFY_PLANS_URL_STYLE=myshopify` is the one-line fix for that).
+
+   If the plan was approved but the board still shows the old limits, check the mapping line the same
+   command prints: a Dashboard plan whose name does not contain "Starter" or "Growth" is matched by
+   fallback, and the fix is to name it so (or set TASKPE_PLAN_*_HANDLE) and press Check again.
+
    Two honest details: if a change has not propagated by the time you are back, the tab says
    "Shopify is applying the change..." and re-reads itself after a few seconds rather than
    reporting a refusal; and "Check again" re-reads on demand. The app also re-reads on the

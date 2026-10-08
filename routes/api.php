@@ -78,4 +78,8 @@ Route::middleware('shopify.token')->group(function () {
     Route::post('/billing/cancel', [BillingApiController::class, 'cancel'])
         ->middleware('throttle:12,1');
     Route::post('/billing/sync', [BillingApiController::class, 'sync']);
+    // One call per Plan tab, only when the handle behind the plan link is unconfirmed: asks Shopify
+    // for its own app handle so the next click lands on the approval page, not on the Apps list.
+    Route::post('/billing/verify-handle', [BillingApiController::class, 'verifyHandle'])
+        ->middleware('throttle:6,1');
 });

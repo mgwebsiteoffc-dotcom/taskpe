@@ -114,6 +114,13 @@ class BillingApiController extends Controller
     {
         $service = new BillingService($shop);
 
+        // Before admitting the link cannot be built, ask Shopify what the handle is. A store whose
+        // .env line is missing still has a correct answer available to it, and the merchant should
+        // never be the one to discover that this is a configuration problem.
+        if (BillingService::plansUrl($shop) === '' && $shop->hasUsableToken()) {
+            $service->reportedAppHandle(true);
+        }
+
         $link = $planKey === ''
             ? ['kind' => BillingService::plansUrl($shop) === '' ? 'none' : 'shopify-picker',
                'url'  => BillingService::plansUrl($shop)]
@@ -164,15 +171,46 @@ class BillingApiController extends Controller
         ]);
     }
 
-    /** POST /api/billing/sync — refresh status (also used after approve). */
+    /**
+     * POST /api/billing/sync — refresh status (also used after approve).
+     *
+     * This is also where the app handle gets confirmed, because it is the one call the Plan tab
+     * makes on purpose: the link to Shopify's plan page is built from that handle, and a wrong one
+     * does not error — Shopify answers by opening its Apps list, so the merchant just sees the
+     * button fail to do anything. Once Shopify has told us the handle it is cached on the shop row
+     * and every later link uses the verified value, with SHOPIFY_APP_HANDLE only as the fallback
+     * before the first check.
+     */
     public function sync(ShopContext $ctx)
     {
+        $service = new BillingService($ctx->shop());
+
         try {
-            $result = (new BillingService($ctx->shop()))->syncActiveSubscription();
+            $result = $service->syncActiveSubscription();
         } catch (\Throwable $e) {
             return response()->json(['error' => 'sync_failed', 'message' => $e->getMessage()], 502);
         }
 
+        $result['app_handle'] = $service->appHandleStatus();
+
         return response()->json($result);
+    }
+
+    /**
+     * Ask Shopify for its own app handle, then rebuild the plan link.
+     *
+     * The recovery path for a store whose `SHOPIFY_APP_HANDLE` was never set or was set wrong: the
+     * Plan tab calls this when it has a link it could not verify, and the click that follows goes to
+     * Shopify's approval page instead of Shopify's app list.
+     */
+    public function verifyHandle(ShopContext $ctx)
+    {
+        $service = new BillingService($ctx->shop());
+        $service->reportedAppHandle(true);
+
+        return response()->json([
+            'app_handle' => $service->appHandleStatus(),
+            'plans_url'  => BillingService::plansUrl($ctx->shop()),
+        ]);
     }
 }

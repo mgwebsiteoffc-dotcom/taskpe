@@ -194,14 +194,36 @@ return [
         |
         |   https://admin.shopify.com/store/{store handle}/charges/{app handle}/pricing_plans
         |
-        | The store handle is already on the shop row (taken from the domain at OAuth), so the
+        | The store handle is already on the shop row (taken from the domain at OAuth, and
+        | re-derived from the domain when an old row has an empty one), so the
         | only missing piece is OUR app handle: Partner Dashboard → App → Settings → General →
         | App handle (the same string as `handle` in shopify.app.toml, and the last part of an
         | app URL). Set SHOPIFY_APP_HANDLE and every Plan card gets a working button.
         | SHOPIFY_APP_PLANS_URL overrides the whole URL when Shopify gives you a different one.
         */
+        /*
+        | One more thing about that handle: a value one character off does not look broken. Shopify
+        | answers an unknown address by opening its Apps list, which reads to a merchant as "the plan
+        | button ignored me". So the app also ASKS Shopify what its handle is
+        | (`currentAppInstallation.app.handle`, cached per store by BillingService::reportedAppHandle)
+        | and prefers that answer over SHOPIFY_APP_HANDLE. `php artisan taskpe:plans --links` prints
+        | both, says which one a link was built from, and flags the disagreement.
+        */
         'app_handle' => strtolower(trim((string) env('SHOPIFY_APP_HANDLE', ''))),
         'plans_url'  => rtrim((string) env('SHOPIFY_APP_PLANS_URL', ''), '/'),
+
+        /*
+        | Which form of that address to build, when it is not given outright by SHOPIFY_APP_PLANS_URL.
+        |
+        |   admin      https://admin.shopify.com/store/{store}/charges/{app}/pricing_plans  (documented)
+        |   myshopify  https://{shop}.myshopify.com/admin/charges/{app}/pricing_plans — the same page
+        |              through the store's own domain, so nothing depends on the store slug matching
+        |              the admin handle (renamed stores, transfers, dev stores where the two differ).
+        |
+        | Switch only when `taskpe:plans --links` says the app handle is VERIFIED and Shopify still
+        | bounces the `admin` form. It changes how the link is spelled and nothing else.
+        */
+        'plans_url_style' => strtolower(trim((string) env('SHOPIFY_PLANS_URL_STYLE', 'admin'))),
     ],
 
     'default_plan' => 'free',

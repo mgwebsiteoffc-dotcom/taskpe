@@ -23,7 +23,17 @@ use Illuminate\Support\Collection;
  *
  *   php artisan taskpe:plans                          the table, then every store
  *   php artisan taskpe:plans --live                   ask Shopify again first (one request per store)
+ *   php artisan taskpe:plans --links                  what each plan button will actually open,
+ *                                                     which app handle it was built from, and whether
+ *                                                     Shopify has confirmed that handle
+ *   php artisan taskpe:plans --links --verify           ...after asking Shopify, per store
  *   php artisan taskpe:plans house-of-indha.myshopify.com
+ *
+ * `--links` exists because of a specific bug report: "the plan doesn't change, it just sends me to
+ * the app list". Shopify does not answer a wrong /charges/{app}/... address with an error the merchant
+ * can read — it opens its Apps list, which looks like a button that was ignored. The one input to
+ * that URL is the app handle, so the command prints the URL, where the handle came from, and whether
+ * it came from Shopify itself.
  *
  * The exit code is non-zero while any list price disagrees with what Shopify bills, so a deploy
  * script can fail on it. A visible price is a number somebody now has to maintain — that is the
@@ -33,9 +43,11 @@ class PlansCommand extends Command
 {
     protected $signature = 'taskpe:plans
                             {shop? : myshopify.com domain (default: every shop)}
-                            {--live : read each store\'s subscription from Shopify again before comparing}';
+                            {--live : read each store\'s subscription from Shopify again before comparing}
+                            {--links : print the plan-page URLs and where each app handle came from}
+                            {--verify : with --links, ask Shopify for its own handle first}';
 
-    protected $description = 'Show the plan price table and compare it with what Shopify bills each store';
+    protected $description = 'Show the plan price table, what Shopify bills each store, and where a plan button actually leads';
 
     public function handle(): int
     {
@@ -125,7 +137,129 @@ class PlansCommand extends Command
             $this->line('or SHOPIFY_APP_PLANS_URL to a full URL — then: php artisan config:clear');
         }
 
-        return $stale === 0 ? self::SUCCESS : self::FAILURE;
+        $this->mappingReport($shops);
+
+        $links = $this->option('links') ? $this->linksReport($shops) : self::SUCCESS;
+
+        return $stale === 0 ? $links : self::FAILURE;
+    }
+
+    /**
+     * What Shopify calls each store's plan, and how this app decided which of its own plans that is.
+     *
+     * `handle` and `name` are real matches. `fallback` means the Dashboard plan is named something
+     * this app cannot recognise ("Scale", "Growth - monthly" with a config label of "TaskPe Growth")
+     * and the store was therefore mapped to the cheapest paid plan: the merchant is billed correctly
+     * and unlocked wrongly, which is precisely a "I paid and nothing changed" report. Fix it by
+     * naming the Dashboard plan so it contains the config plan name, or by setting the plan handle.
+     */
+    protected function mappingReport(Collection $shops): void
+    {
+        $rows = [];
+
+        foreach ($shops as $shop) {
+            $bill = (array) $shop->setting('billing', []);
+
+            if (!($bill['subscribed'] ?? false)) {
+                continue;
+            }
+
+            $how = (string) ($bill['mapped_by'] ?? 'never synced');
+
+            $rows[] = [
+                $shop->domain,
+                (string) ($bill['shopify_plan_name'] ?? '—') ?: '—',
+                (string) ($bill['plan_key'] ?? $shop->plan),
+                $how,
+                $how === 'fallback'
+                    ? 'rename the plan in Partner Dashboard, or set TASKPE_PLAN_*_HANDLE'
+                    : 'fine',
+            ];
+        }
+
+        if ($rows === []) {
+            return;
+        }
+
+        $this->line('');
+        $this->line('Plan mapping — what Shopify calls the subscription, and how this app matched it');
+        $this->table(['store', 'Shopify plan name', 'matched to', 'by', 'action'], $rows);
+
+        $fallbacks = collect($rows)->filter(fn ($r) => $r[3] === 'fallback')->count();
+
+        if ($fallbacks > 0) {
+            $this->line('<comment>'.$fallbacks.' store(s) are matched by fallback, not by name or handle.</comment> '
+                .'They are billed by Shopify for whatever plan they bought, while this app applies the '
+                .'cheapest paid plan\'s limits to them.');
+        }
+    }
+
+    /**
+     * What the plan buttons will do, per store — the answer to "it redirects to the app list".
+     *
+     * Two things can bounce a merchant to Shopify's Apps list instead of the plan page, and both
+     * are visible from the shop row alone: an app handle that is not the one the admin routes on,
+     * and a store slug that does not match the domain. `verified: no` means the handle came from
+     * SHOPIFY_APP_HANDLE and Shopify has never confirmed it, which is the case worth checking.
+     */
+    protected function linksReport(Collection $shops): int
+    {
+        $this->line('');
+        $this->line('Plan links — what each button opens (style: '
+            .config('shopify.billing.plans_url_style', 'admin').')');
+
+        $rows   = [];
+        $broken = 0;
+
+        foreach ($shops as $shop) {
+            if ($this->option('verify')) {
+                (new BillingService($shop))->reportedAppHandle(true);
+                $shop->refresh();
+            }
+
+            $service = new BillingService($shop);
+            $status  = $service->appHandleStatus();
+            $picker  = BillingService::plansUrl($shop);
+
+            $known = [];
+
+            foreach ((array) config('shopify.plans') as $key => $plan) {
+                $known[] = $key.':'.(($service->planHandleFor((string) $key) !== '') ? 'direct' : 'list');
+            }
+
+            if ($picker === '' || !$status['verified']) {
+                $broken++;
+            }
+
+            $rows[] = [
+                $shop->domain,
+                $shop->adminHandle() ?: '<none — derived from the domain>',
+                $status['handle'] ?: '<none>',
+                $status['source'].($status['matches_config'] ? '' : ' (config disagrees!)'),
+                $picker === '' ? 'NO LINK — buttons will explain, not open' : $picker,
+                implode('  ', $known),
+            ];
+        }
+
+        $this->table(['store', 'store slug', 'app handle', 'handle source', 'plan page it opens', 'per-plan deep link'], $rows);
+
+        $this->line('');
+
+        if ($broken === 0) {
+            $this->line('Every store has a plan link built from a handle Shopify itself reported, so a plan click');
+            $this->line('lands on the approval page. "list" next to a plan means its Shopify plan handle is not known');
+            $this->line('yet — the merchant picks there and the app remembers it for next time; that is the plan list,');
+            $this->line('not a failure.');
+        } else {
+            $this->line('<comment>'.$broken.' store(s) have a plan link that Shopify has not confirmed.</comment>');
+            $this->line('Run this with --verify to ask Shopify for the real handle, and confirm App Pricing lists at');
+            $this->line('least one plan (Partner Dashboard -> your app -> App pricing): with no plans there is no page');
+            $this->line('at that address, and Shopify answers with its Apps list. If a link is right and the admin');
+            $this->line('still opens its Apps list, the store slug is the suspect: set SHOPIFY_PLANS_URL_STYLE=myshopify');
+            $this->line('to build the same URL through {shop}.myshopify.com/admin instead, then php artisan config:clear.');
+        }
+
+        return self::SUCCESS;
     }
 
     /**

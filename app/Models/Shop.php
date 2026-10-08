@@ -346,6 +346,24 @@ class Shop extends Model
         return trim((string) explode('.', (string) $this->domain)[0]);
     }
 
+    /**
+     * The app handle Shopify reported for THIS installation, cached by
+     * BillingService::reportedAppHandle(). Read on every board load to build the plan link, so
+     * this must never reach the network — an empty string just means "not verified yet".
+     */
+    public function shopifyAppHandle(): string
+    {
+        return strtolower(trim((string) data_get(
+            (array) $this->setting('billing.app_handle_check', []), 'handle', ''
+        )));
+    }
+
+    /** The store's own admin address through its myshopify domain (see shopify.billing.plans_url_style). */
+    public function myshopifyAdminUrl(): string
+    {
+        return 'https://'.strtolower(trim((string) $this->domain)).'/admin';
+    }
+
     public function adminBaseUrl(): string
     {
         return 'https://admin.shopify.com/store/'.$this->adminHandle();

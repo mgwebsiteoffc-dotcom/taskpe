@@ -187,6 +187,7 @@ const okBoard = {
     mode: 'shopify',
     plans_url: 'https://admin.shopify.com/store/demo/charges/taskpe/pricing_plans',
     picker: true,
+    handle: { handle: 'taskpe', source: 'shopify', verified: true, matches_config: true },
     shopify: { available: true, subscribed: false, read_at: '2026-10-08T09:00:00+00:00' },
   },
   task_templates: {

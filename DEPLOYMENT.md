@@ -883,6 +883,48 @@ answers 200 with `redirect_url` when a page owns the decision, and is throttled
 `throttle:12,1` because it can spend money. `/billing/callback` then re-reads the store's own
 subscription and, while it is there, records the handle for next time.
 
+### "The plan doesn't change — it sends me to the app list"
+
+Reported as a dead button, and it usually is not the button. `…/charges/{app handle}/pricing_plans` is
+built from one string, and when that string is not the handle the admin routes on, **Shopify answers by
+opening its Apps list** — no 404, no message, nothing a merchant can act on. Three causes, in the order
+they are actually found:
+
+| Cause | How to tell | What the app does about it |
+|---|---|---|
+| `SHOPIFY_APP_HANDLE` is a typo, or is the app *title*, or the API key | `taskpe:plans --links` shows `handle source: env (not confirmed with Shopify)` | The app now asks Shopify for its own handle (`currentAppInstallation.app.handle`), caches it per store in `shops.settings → billing.app_handle_check`, and **prefers it** over the `.env` value; a disagreement is logged and printed |
+| The store slug in the URL does not match the admin's (`/store/{slug}`) | `--links` prints the slug; `myshopify` style fixes it | `SHOPIFY_PLANS_URL_STYLE=myshopify` builds `https://{shop}.myshopify.com/admin/charges/{app}/pricing_plans` — the same page, addressed through the domain, which cannot be wrong about the store |
+| The link left the iframe without the admin context | the URL in the address bar has no `host` | `withShopifyContext()` appends `host` (from the boot payload, not `location.search`, because the SPA rewrites it) and `shop` to every admin URL it opens |
+
+```bash
+php artisan taskpe:plans --links              # per store: slug, handle, where it came from, the URL
+php artisan taskpe:plans --links --verify     # …after asking Shopify for its own handle
+```
+
+Self-healing, not self-advertising: opening the Plan tab on a store whose link is unconfirmed makes one
+`POST /api/billing/verify-handle` (throttled 6/min, once per page load), and if the answer changes the
+link the board is re-read so the buttons are rebuilt from the verified handle. A store with a good link
+pays nothing for this, and a store whose admin call fails keeps using the config value — an unverified
+link is still better than no link.
+
+### The other "the plan did not change": a name this app cannot match
+
+After approval the app maps Shopify's subscription back to one of its own plans. It does that by the
+**plan handle Shopify sent on the redirect** (which is also stored, so every later change matches
+exactly), then by the plan **name** containing a name from `config/shopify.php → plans`. If neither
+matches, the store is mapped to the cheapest paid plan and that decision is *said out loud*: a
+`Log::warning` naming the Shopify plan name, `'mapped_by' => 'fallback'` on the shop's billing setting,
+and a row in `php artisan taskpe:plans`:
+
+    Plan mapping — what Shopify calls the subscription, and how this app matched it
+    | store            | Shopify plan name | matched to | by       | action                                                |
+    | demo.myshopify…  | Scale             | starter    | fallback | rename the plan in Partner Dashboard, or set TASKPE_PLAN_*_HANDLE |
+
+So "I paid and the board still shows Starter limits" has an answer that is not a support ticket: rename
+the Dashboard plan so it contains `Growth`, or set `TASKPE_PLAN_GROWTH_HANDLE`, and Check again re-maps
+it. Silent fallback is the failure mode here — Shopify bills the right amount while the app unlocks the
+wrong features, and only the mapping column shows the disagreement.
+
 ### Prices on the Plan tab, and the drift check that keeps them honest
 
 The day the buttons worked, the next question arrived: *show the price*. Stripping `prices` out of

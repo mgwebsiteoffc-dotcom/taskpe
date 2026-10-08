@@ -74,6 +74,7 @@
     board: null,          // /api/board payload
     view: viewFromLocation(),   // board | team | settings | plan
     planChoice: null,     // plan the switcher on the Plan tab is pointed at (a choice, not a change)
+    handleChecked: false, // the one-shot "what is our real app handle?" call, per page load
     settings: null,       // /api/settings payload (lazy)
     me: Number(readPref('taskpe_me') || 0),
     drawerTaskId: null,
@@ -257,7 +258,41 @@
     } catch { return iso; }
   }
 
-  function openAdmin(url) { open(url, '_top'); }
+  /*
+   * Leaving the iframe for a Shopify admin page, with the context that page expects.
+   *
+   * Two things this appends, both of which have caused a plan button to "do nothing":
+   *
+   *   host   the admin session pointer Shopify gave this page. A top-level navigation into
+   *          /admin/… without it can be answered with the Apps list instead of the target page,
+   *          which looks exactly like a broken link (and is what the plan page is for).
+   *   shop   the store this link is about — the plan page reads it when the URL is not the
+   *          /store/{handle}/ form.
+   *
+   * Anything that already carries the parameter is left alone, and non-admin URLs (an app store
+   * page set in SHOPIFY_APP_PLANS_URL) pass through untouched.
+   */
+  function withShopifyContext(url) {
+    if (!url || !/^https?:\/\/(admin\.shopify\.com|.+\.myshopify\.com)\//i.test(url)) return url;
+
+    let parsed;
+    try { parsed = new URL(url); } catch (e) { return url; }
+
+    if (!/admin\.shopify\.com/i.test(parsed.host) && !/\.myshopify\.com$/i.test(parsed.host)) return url;
+
+    const boot = window.__TASKPE__ || {};
+    const here = new URLSearchParams(location.search || '');
+
+    const host = boot.host || here.get('host') || '';
+    const shop = here.get('shop') || boot.shop || '';
+
+    if (host && !parsed.searchParams.has('host')) parsed.searchParams.set('host', host);
+    if (shop && !parsed.searchParams.has('shop')) parsed.searchParams.set('shop', shop);
+
+    return parsed.toString();
+  }
+
+  function openAdmin(url) { open(withShopifyContext(url), '_top'); }
 
   function debounce(fn, ms) {
     let t;
@@ -2921,6 +2956,9 @@
 
   // When the picker link cannot be built, a dead button still has to say why, instead of
   // looking like the app refuses to take money.
+  // The app asks Shopify for the handle itself when a Plan tab is opened, so this sentence is about
+  // the case where even that failed — and it stays a sentence a merchant can act on, not a config
+  // reference.
   const BillingMissingHint = () => 'This app has not been given its Shopify app handle yet, so it '
     + 'cannot open Shopify\u2019s plan page. Until then: Shopify admin \u2192 Settings \u2192 Apps and sales '
     + 'channels \u2192 ' + ((state.board && state.board.shop.name) || 'this app') + ' \u2192 plan / billing.';
@@ -2964,6 +3002,28 @@
    */
   function renderPlan() {
     const s = state.board;
+
+    // A plan link built from SHOPIFY_APP_HANDLE that Shopify has never confirmed is a link that can
+    // bounce to the admin's Apps list — the failure looks like an ignored button, so it is not left
+    // to be discovered. One request per session resolves it: the answer is cached on the shop row
+    // and every link from then on is built from Shopify's own value.
+    const handleInfo = (s.billing && s.billing.handle) || null;
+
+    if (handleInfo && handleInfo.verified === false && !state.handleChecked) {
+      state.handleChecked = true;
+      api('/billing/verify-handle', { method: 'POST' })
+        .then(r => {
+          const before = (s.billing && s.billing.plans_url) || '';
+
+          if (!r || !r.plans_url || r.plans_url === before) return;
+
+          // Re-read the board rather than rewriting URLs here: the plan-page link, the deep links on
+          // each plan card and the verification flag are all built server-side from the handle the
+          // call just cached, so the board is the only place that can state them correctly.
+          return refreshBoard().then(render);
+        })
+        .catch(() => { /* the unverified link is still worth opening */ });
+    }
     const cur = s.shop.currency || 'USD';
     const bill = (s.billing && s.billing.shopify) || {};
     const byShopify = ((s.billing && s.billing.mode) || 'api') === 'shopify';
@@ -3025,9 +3085,9 @@
         }
 
         if (!url) throw new Error((r && r.message) || 'Shopify returned no page to open.');
-        open(url, '_top');
+        open(withShopifyContext(url), '_top');
       } catch (err) {
-        if (plansUrl) { open(plansUrl, '_top'); return; }
+        if (plansUrl) { open(withShopifyContext(plansUrl), '_top'); return; }
         toast(err.message, true);
       } finally { if (btnEl) btnEl.disabled = false; }
     }
@@ -3060,7 +3120,7 @@
           ? h('div', { class: 'row-flex mt' },
               h('button', { class: 'btn primary sm', onclick: ev => choosePlan(s.shop.plan || 'starter', ev.currentTarget) },
                 'Change plan at Shopify'),
-              h('a', { class: 'small', href: plansUrl, target: '_top', rel: 'noopener' }, 'or open it in a new tab'))
+              h('a', { class: 'small', href: withShopifyContext(plansUrl), target: '_top', rel: 'noopener' }, 'or open it in a new tab'))
           : null,
         byShopify && !plansUrl
           ? h('p', { class: 'mt small' }, 'To change the plan: Shopify admin \u2192 Settings \u2192 Apps and sales channels \u2192 '

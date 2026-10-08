@@ -97,6 +97,11 @@
             // value merchants/Shopify see (and what OAuth redirect_uri uses).
             appUrl: @json($appUrl),
             shop: @json($shop),
+            // Shopify's admin session context, as this page was opened with it. The SPA routes with
+            // pushState and loses the query string, so a link out of the frame (to the plan page)
+            // has to carry `host` from here rather than from location.search — without it the admin
+            // answers an /admin deep link by opening its own Apps list.
+            host: @json($host),
             embedded: @json($embedded),
             billingFlag: new URLSearchParams(location.search).get('billing') || null,
             openTask: new URLSearchParams(location.search).get('task') || null,
