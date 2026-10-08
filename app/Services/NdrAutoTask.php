@@ -79,10 +79,10 @@ class NdrAutoTask
 
         $desc = '';
         if ($reason) {
-            $desc = '🚚 Courier NDR reason: '.$reason."\n";
+            $desc = 'Courier NDR reason: '.$reason."\n";
         }
         if ($awb) {
-            $desc .= '📦 AWB: '.$awb."\n";
+            $desc .= 'AWB: '.$awb."\n";
         }
         $desc .= "\n".CodAutoTask::checklist($tpl);
 

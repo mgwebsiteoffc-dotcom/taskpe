@@ -45,14 +45,16 @@ class DigestService
                 ->where('due_at', '<', now())
                 ->count();
 
-            $icon = $overdue > 0 ? '🔴' : ($doneYesterday > 0 ? '🟢' : '⚪');
+            // Plain text, no emoji: this string is also rendered inside the app
+            // (Settings → digest preview), where pictographs look out of place
+            // and render per-OS. Status is carried by the numbers.
             $lines[] = sprintf(
-                '%s %s — ✅ %d done yesterday · 📌 %d open · ⏰ %d overdue',
-                $icon,
+                '%s — done yesterday: %d · open: %d · overdue: %d%s',
                 $member->name,
                 $doneYesterday,
                 $open,
-                $overdue
+                $overdue,
+                $overdue > 0 ? '  (needs attention)' : ''
             );
         }
 
@@ -61,7 +63,7 @@ class DigestService
             ->whereNull('completed_at')
             ->count();
         if ($unassigned > 0) {
-            $lines[] = "👥 {$unassigned} task(s) unassigned";
+            $lines[] = "Unassigned: {$unassigned} task(s)";
         }
 
         return implode("\n", $lines);

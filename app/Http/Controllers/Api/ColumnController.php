@@ -13,8 +13,9 @@ class ColumnController extends Controller
     public function store(Request $request, ShopContext $ctx)
     {
         $data = $request->validate([
-            'name'         => ['required', 'string', 'max:60'],
+            'name'          => ['required', 'string', 'max:60'],
             'is_done_stage' => ['boolean'],
+            'team'          => ['nullable', 'string', 'max:40'],
         ]);
 
         abort_if($ctx->shop()->columns()->count() >= 8, 422, 'Maximum 8 columns');
@@ -22,6 +23,7 @@ class ColumnController extends Controller
         $col = $ctx->shop()->columns()->create([
             'name'          => $data['name'],
             'is_done_stage' => $data['is_done_stage'] ?? false,
+            'team'          => $this->team($data['team'] ?? null),
             'position'      => (int) $ctx->shop()->columns()->max('position') + 1,
         ]);
 
@@ -37,7 +39,12 @@ class ColumnController extends Controller
             'name'          => ['sometimes', 'string', 'max:60'],
             'is_done_stage' => ['sometimes', 'boolean'],
             'position'      => ['sometimes', 'integer', 'min:0'],
+            'team'          => ['sometimes', 'nullable', 'string', 'max:40'],
         ]);
+
+        if (array_key_exists('team', $data)) {
+            $data['team'] = $this->team($data['team']);
+        }
 
         $col->update($data);
 
@@ -56,6 +63,14 @@ class ColumnController extends Controller
         $col->delete();
 
         return response()->json(['ok' => true, 'moved_to' => $remaining->id]);
+    }
+
+    /** Empty string from the UI means "no team"; store it as NULL, not ''. */
+    protected function team(?string $team): ?string
+    {
+        $team = trim((string) $team);
+
+        return $team === '' ? null : $team;
     }
 
     protected function findColumn(ShopContext $ctx, int $id): BoardColumn

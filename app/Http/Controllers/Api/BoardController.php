@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Task;
+use App\Services\BillingService;
 use App\Support\ShopContext;
 
 class BoardController extends Controller
@@ -18,10 +19,35 @@ class BoardController extends Controller
             'name'          => $col->name,
             'position'      => $col->position,
             'is_done_stage' => $col->is_done_stage,
+            'team'          => $col->team,
             'tasks'         => $col->tasks->map(fn (Task $t) => $this->taskJson($t))->values(),
         ])->values();
 
+        // Who owns the price, and what may therefore be printed. A Plan page with no numbers on
+        // it is what a merchant calls "I don't know what this costs before I click", so the prices
+        // go out in BOTH modes now — but each one arrives labelled. `billed` (only on the plan this
+        // store is actually on) is Shopify's own read-back and is the only figure presented as
+        // "what you pay"; `list` is this app's table for the plans it is not on; `exact` says
+        // whether we have a price in the store's billing currency at all; `drift` is set when
+        // Shopify's number and our table disagree, so a stale row can be seen instead of trusted.
+        $managed = BillingService::shopifyManaged();
+        $billingService = new BillingService($shop);
+        $plans  = $billingService->planCatalog();
+
         return response()->json([
+            'billing' => [
+                'mode'      => $managed ? 'shopify' : 'api',
+                // The store-specific URL of Shopify's hosted plan page (empty when this install
+                // cannot build one). 1.2.3 wants a plan change possible from inside the app, so the
+                // Plan tab renders real buttons from this rather than directions.
+                'plans_url' => BillingService::plansUrl($shop),
+                'picker'    => BillingService::canPickPlans($shop),
+                // Where that URL's app handle came from. `verified: false` is not a warning for the
+                // merchant — it is the signal for the SPA to ask Shopify once, quietly, before the
+                // first click turns into a trip to the Apps list.
+                'handle'    => $billingService->appHandleStatus(),
+                'shopify'   => (array) $shop->setting('billing', []),
+            ],
             'shop' => [
                 'domain'   => $shop->domain,
                 'name'     => $shop->name,
@@ -31,9 +57,12 @@ class BoardController extends Controller
                 'currency' => $shop->currency ?: config('shopify.billing_fallback_currency', 'USD'),
                 'onboarded' => !is_null($shop->setting('onboarded_at')),   // first-run tour
             ],
-            'plans' => config('shopify.plans'),   // localized price table for the Plan tab
+            'plans' => $plans,   // price table for the Plan tab — only when this app sets prices
             'task_templates' => config('task_templates'),   // COD/NDR one-click checklist pack
             'columns' => $columns,
+            // The shop's own list of team names. Columns carry a `team` tag, but the
+            // list is what lets a department exist before anyone remembers to use it.
+            'teams' => array_values($shop->setting('teams', [])),
             'members' => $shop->members()->orderBy('name')->get()->map(fn ($m) => [
                 'id'                => $m->id,
                 'name'              => $m->name,
@@ -80,6 +109,10 @@ class BoardController extends Controller
                 'label' => $t->resourceLabel(),
                 'title' => $t->resource_title,
                 'url'   => $t->resource_url,
+                // false only for a hand-typed order number: the link is real, the fact
+                // that the order exists is not something this app could confirm. The card
+                // marks it, and the task's activity says who typed it.
+                'verified' => !is_null($t->resource_id),
             ] : null,
         ];
     }

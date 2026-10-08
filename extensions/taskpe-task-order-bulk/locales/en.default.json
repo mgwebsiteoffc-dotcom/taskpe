@@ -1,0 +1,21 @@
+{
+  "name": "Create TaskPe tasks",
+  "description": "File one pre-filled follow-up task per selected order (COD confirm, NDR rescue, address fix…).",
+  "create-n": "Create tasks",
+  "cancel": "Cancel",
+  "close": "Close",
+  "done-heading": "Done",
+  "selected": "selected",
+  "template-label": "Template",
+  "assignee-label": "Assign to",
+  "column-label": "Board column",
+  "unassigned": "Unassigned",
+  "notify": "Ping the assignee on WhatsApp (max 3 per batch)",
+  "no-templates": "No templates fit this page — check config/task_templates.php.",
+  "skipped-hint": "those orders already have an open task with this title.",
+  "limited": "Stopped at your plan's open-task limit. Upgrade to queue more.",
+  "plan-full": "You are already at your plan's open-task limit — nothing new can be filed until you upgrade.",
+  "pick-template": "Pick a template first.",
+  "unreachable": "Could not reach TaskPe. Is the app installed on this store?",
+  "failed": "Could not create the tasks."
+}

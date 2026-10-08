@@ -5,7 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#008060">
     <title>{{ config('app.name') }} — Staff board</title>
-    <link rel="stylesheet" href="{{ asset('css/app.css') }}">
+    {{-- Cache-busted by file mtime: an FTP upload must never leave a merchant running
+         last week's app.js — the admin app menu, the board layout and the fetch layer
+         all live in that one file, so "deployed but nothing changed" and "the code is
+         wrong" used to look identical. One version string covers both assets. --}}
+    @php $taskpeVer = (string) (max((int) @filemtime(public_path('js/app.js')), (int) @filemtime(public_path('css/app.css'))) ?: 1); @endphp
+    <link rel="stylesheet" href="{{ asset('css/app.css') }}?v={{ $taskpeVer }}">
     <style>
         .staff-brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:18px; }
         .login-wrap { min-height: 100dvh; display:flex; align-items:center; justify-content:center; padding:20px; background:#f6f6f7; }
@@ -22,8 +27,32 @@
     {{-- Authenticated staff — the same board shell as the admin app. --}}
     <main id="root">
         <div class="boot">
-            <div class="boot-logo">{{ mb_substr(config('app.name'), 0, 1) }}</div>
-            <div class="boot-text">Loading your board…</div>
+            <div class="boot-card">
+                <div class="boot-row">
+                    <div class="boot-logo">{{ mb_substr(config('app.name'), 0, 1) }}</div>
+                    <div>
+                        <div class="boot-name">{{ config('app.name') }}</div>
+                        <div class="boot-text">Loading your board — columns, tasks and settings.</div>
+                        @if ($member)<div class="boot-who">Signed in as {{ $member->name }}</div>@endif
+                    </div>
+                </div>
+                <div class="skcols">
+                    @foreach ([3, 2, 2, 1] as $cards)
+                        <div class="skcol">
+                            <span class="skbar"></span>
+                            @for ($i = 0; $i < $cards; $i++)
+                                <span class="skcard"><span class="skline w80"></span><span class="skline w55"></span></span>
+                            @endfor
+                        </div>
+                    @endforeach
+                </div>
+                {{-- CSS reveals this after ~8s only. A first embedded load can take a
+                     few seconds legitimately, so do not hint at a problem earlier. --}}
+                <div class="skslow">
+                    <span>Still waiting? Your session with Shopify may have expired.</span>
+                    <a class="btn sm" href="{{ request()->fullUrl() }}">Reload</a>
+                </div>
+            </div>
         </div>
     </main>
     <script>
@@ -37,7 +66,7 @@
             },
         };
     </script>
-    <script src="{{ asset('js/app.js') }}" defer></script>
+    <script src="{{ asset('js/app.js') }}?v={{ $taskpeVer }}" defer></script>
 @else
     {{-- Signed-out: phone + WhatsApp OTP, or manager-sent invite link. --}}
     <div class="login-wrap">
@@ -77,12 +106,14 @@
     </div>
     <script>
     (function () {
-        const APP = @json($appUrl);
+        // Same-origin relative on purpose: the sign-in endpoints belong to this
+        // very app, so a stale APP_URL (or a proxied Host header) can never send
+        // a staff login POST somewhere else.
         const $ = id => document.getElementById(id);
         const err = t => { $('sl-err').textContent = t || ''; };
 
         async function post(path, body) {
-            const res = await fetch(APP + path, {
+            const res = await fetch(path, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                 body: JSON.stringify(body),

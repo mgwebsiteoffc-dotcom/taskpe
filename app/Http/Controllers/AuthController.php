@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\BoardColumn;
 use App\Models\Shop;
 use App\Services\ShopifyClient;
+use App\Services\TokenVault;
 use App\Services\WebhookRegistrar;
 use App\Support\JwtToken;
 use App\Support\ShopifyHmac;
@@ -19,6 +20,12 @@ use Illuminate\Support\Str;
  * cookie) because embedded apps cannot rely on third-party cookies.
  * An offline token is required so background jobs (daily WhatsApp digest)
  * can call the Admin API when the merchant is not in the app.
+ *
+ * The exchange asks for the EXPIRING kind (`expiring=1` in
+ * ShopifyClient::exchangeCode) because the GraphQL Admin API rejects the
+ * non-expiring one for public apps. What Shopify returns is a pair with two
+ * lifetimes, and TokenVault owns it from here — nothing in this controller
+ * compares expiry dates or renews anything, it just lands a fresh grant.
  */
 class AuthController extends Controller
 {
@@ -66,12 +73,21 @@ class AuthController extends Controller
         $model = Shop::firstOrNew(['domain' => $shop]);
         $model->fill([
             'handle'         => Str::before($shop, '.'),
-            'access_token'   => $token['access_token'],
             'scopes'         => $token['scope'] ?? config('shopify.scopes'),
             'installed_at'   => now(),
             'uninstalled_at' => null,
             'plan'           => $model->plan ?: config('shopify.default_plan'),
         ])->save();
+
+        // The token itself goes in through the vault, because that is the one method that
+        // knows an expiring response is FOUR values (access token, refresh token, and when
+        // each dies) and not the single string installs used to save. Saving only the first
+        // is what left public apps working for an hour and then refusing every API call.
+        (new TokenVault($model))->store($token);
+
+        // A fresh grant is the answer to a rejected one — drop the complaint so the
+        // gate, the log and taskpe:doctor stop reporting a problem that is gone.
+        $model->clearTokenRejection();
 
         $this->hydrateShopProfile($model);
         $this->seedBoard($model);

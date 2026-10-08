@@ -1,4 +1,7 @@
-import { render } from "preact";
+/* @jsxRuntime classic */
+/** @jsx h */
+/** @jsxFrag Fragment */
+import { render, h, Fragment } from "preact";
 import { useEffect, useState } from "preact/hooks";
 
 /* ==========================================================================
@@ -9,46 +12,18 @@ import { useEffect, useState } from "preact/hooks";
      taskpe-task-product       → admin.product-details.action.render
      taskpe-task-customer      → admin.customer-details.action.render
 
-   ⚠️  REQUIRED BEFORE DEPLOY: set APP_URL to your production app domain
-   (the same value as APP_URL in your Laravel .env), then `shopify app deploy`.
-
-   Auth: the extension gets a Shopify session-token JWT via the Standard API
-   (shopify.auth.idToken) and authenticates to this Laravel backend exactly
-   like the embedded SPA does — same VerifyShopifySessionToken middleware.
+   REQUIRED BEFORE DEPLOY: set APP_URL in shared/api.js to your production app
+   domain (the same value as APP_URL in your Laravel .env), then
+   `shopify app deploy`. Auth + the GID→resource-type map live in that file too,
+   so the modal, the order-page card and the bulk action can never disagree.
    ========================================================================== */
 
-const APP_URL = "https://app.yourdomain.com"; // ← CHANGE ME before deploy
-
-const TYPE_MAP = {
-  Order: "order",
-  DraftOrder: "draft_order",
-  Product: "product",
-  Customer: "customer",
-};
-
-async function sessionToken() {
-  const s = globalThis.shopify;
-  if (s?.auth?.idToken) return s.auth.idToken();
-  if (s?.idToken) return s.idToken(); // older runtimes
-  throw new Error("Shopify session token unavailable in this context");
-}
-
-async function api(path, options = {}) {
-  const { method = "GET", body } = options;
-  const res = await fetch(`${APP_URL}/api${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${await sessionToken()}`,
-      ...(body ? { "Content-Type": "application/json" } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.message || data.error || `Request failed (${res.status})`);
-  }
-  return data;
-}
+import {
+  api,
+  appUrlNotSet as urlIsPlaceholder,
+  firstResource,
+  toast,
+} from "./api.js";
 
 export function createCreateTaskExtension(resourceLabel) {
   return function extension() {
@@ -57,13 +32,10 @@ export function createCreateTaskExtension(resourceLabel) {
 }
 
 function CreateTaskAction({ resourceLabel }) {
-  const { close, data, i18n } = shopify;
+  const { close, i18n } = shopify;
 
-  const gid = data?.selected?.[0]?.id || "";
-  const numericId = gid.split("/").pop() || "";
-  const typename = gid.split("/")[3] || "";
-  const resourceType = TYPE_MAP[typename] || null;
-  const appUrlNotSet = APP_URL.includes("yourdomain");
+  const { gid, numericId, type: resourceType } = firstResource(shopify);
+  const appUrlNotSet = urlIsPlaceholder();
 
   const [form, setForm] = useState({
     title: "",
@@ -80,21 +52,29 @@ function CreateTaskAction({ resourceLabel }) {
   useEffect(() => {
     if (appUrlNotSet) return;
     let alive = true;
-    (async () => {
-      try {
-        const [boardData, resourceData] = await Promise.all([
-          api("/board"),
-          resourceType
-            ? api(`/resources/search?type=${resourceType}&id=${encodeURIComponent(numericId)}`)
-            : Promise.resolve({ items: [] }),
-        ]);
-        if (!alive) return;
-        setBoard(boardData);
-        setResource(resourceData?.items?.[0] || null);
-      } catch (e) {
+
+    // Two independent calls, on purpose. The board is what this form needs in order to
+    // file the task; the search only buys a nicer "Linked: Order #1042" line. Awaiting
+    // both together meant one failed lookup sank the other: the search threw, `board`
+    // stayed null, the POST went out without a column, and the merchant read "The column
+    // id field is required." on a store that has columns. A missing title is survivable
+    // the same way now — /api/tasks looks the order number up itself.
+    api("/board")
+      .then((d) => {
+        if (alive) setBoard(d);
+      })
+      .catch((e) => {
         if (alive) setError(e.message || "Could not reach TaskPe. Is the app installed on this store?");
-      }
-    })();
+      });
+
+    if (resourceType) {
+      api(`/resources/search?type=${resourceType}&id=${encodeURIComponent(numericId)}`)
+        .then((d) => {
+          if (alive) setResource(d?.items?.[0] || null);
+        })
+        .catch(() => {});
+    }
+
     return () => {
       alive = false;
     };
@@ -124,11 +104,7 @@ function CreateTaskAction({ resourceLabel }) {
           resource_url: resource?.url || null,
         },
       });
-      try {
-        shopify?.toast?.show?.("Task added to TaskPe");
-      } catch (e) {
-        /* toast is best-effort */
-      }
+      toast(shopify, "Task added to TaskPe");
       close();
     } catch (e) {
       setError(e.message || "Could not create the task.");
@@ -141,8 +117,9 @@ function CreateTaskAction({ resourceLabel }) {
     return (
       <s-admin-action heading="Create task">
         <s-banner tone="critical">
-          APP_URL is not configured. Edit extensions/shared/CreateTaskAction.jsx,
-          set your live domain, then run shopify app deploy again.
+          This bundle has no backend address. Set `APP_URL` in
+          extensions/shared/api.js to the same https:// domain as APP_URL in the
+          Laravel .env, then run shopify app deploy again.
         </s-banner>
       </s-admin-action>
     );
@@ -160,8 +137,9 @@ function CreateTaskAction({ resourceLabel }) {
       {error ? <s-banner tone="critical">{error}</s-banner> : null}
 
       <s-text appearance="subdued">
-        Linked: {resourceLabel}
-        {resource?.title ? ` — ${resource.title}` : ""}
+        {resource?.title
+          ? `Linked: ${resource.title}`
+          : `Linked to ${resourceLabel}${numericId ? ` #${numericId}` : ""}.`}
       </s-text>
 
       <s-box padding-block-start="large">

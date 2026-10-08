@@ -12,6 +12,9 @@
 |   resource_type : which Shopify object the task should link to (null = none)
 |   due_in_hours  : default due date offset from creation
 |   title         : {order} and {date} placeholders are replaced at creation
+|   icon          : key into the ICONS map in public/js/app.js (inline SVG,
+|                   never emoji — emoji render differently per OS and cannot
+|                   be tinted); fall back is "box";
 |   checklist     : rendered as "- [ ] ..." lines in the task description;
 |                   the board UI turns them into a clickable checklist
 |
@@ -22,7 +25,7 @@
 return [
 
     'cod-confirm' => [
-        'emoji'         => '💵',
+        'icon'          => 'phone',
         'name'          => 'COD confirmation',
         'tagline'       => 'Verify a Cash-on-Delivery order before you ship — the #1 RTO killer.',
         'resource_type' => 'order',
@@ -40,7 +43,7 @@ return [
     ],
 
     'ndr-followup' => [
-        'emoji'         => '🔄',
+        'icon'          => 'refresh',
         'name'          => 'NDR follow-up',
         'tagline'       => 'Courier could not deliver — rescue the order before it becomes RTO.',
         'resource_type' => 'order',
@@ -58,7 +61,7 @@ return [
     ],
 
     'rto-high-risk' => [
-        'emoji'         => '🚨',
+        'icon'          => 'alert-circle',
         'name'          => 'High-risk order check',
         'tagline'       => 'New customer + COD + high value? Score the risk before dispatch.',
         'resource_type' => 'order',
@@ -76,7 +79,7 @@ return [
     ],
 
     'prepaid-convert' => [
-        'emoji'         => '💳',
+        'icon'          => 'wallet',
         'name'          => 'Prepaid conversion',
         'tagline'       => 'Turn a COD order into a paid one — zero RTO risk, faster cash.',
         'resource_type' => 'order',
@@ -92,7 +95,7 @@ return [
     ],
 
     'address-fix' => [
-        'emoji'         => '📍',
+        'icon'          => 'map',
         'name'          => 'Address correction',
         'tagline'       => 'Customer asked to change address or phone — fix it before dispatch.',
         'resource_type' => 'order',
@@ -108,7 +111,7 @@ return [
     ],
 
     'delayed-shipment' => [
-        'emoji'         => '🐢',
+        'icon'          => 'truck',
         'name'          => 'Delayed shipment save',
         'tagline'       => 'Package is stuck — tell the customer before they chase you.',
         'resource_type' => 'order',
@@ -124,7 +127,7 @@ return [
     ],
 
     'cod-remittance' => [
-        'emoji'         => '🧾',
+        'icon'          => 'receipt',
         'name'          => 'COD remittance reconciliation',
         'tagline'       => 'Weekly: make sure the courier actually banked your COD cash.',
         'resource_type' => null,
@@ -141,7 +144,7 @@ return [
     ],
 
     'return-pickup' => [
-        'emoji'         => '↩️',
+        'icon'          => 'reopen',
         'name'          => 'Return / exchange pickup',
         'tagline'       => 'Coordinate the reverse pickup and close the loop fast.',
         'resource_type' => 'order',

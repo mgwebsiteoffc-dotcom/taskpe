@@ -63,6 +63,23 @@ class ProcessShopifyWebhook implements ShouldQueue
                 }
                 break;
 
+            case 'app_subscriptions/update':
+                // Shopify owns the plan, so it can be upgraded, downgraded or cancelled while
+                // nobody has this app open — and the app would then be enforcing yesterday's
+                // limits against today's invoice. Re-read the subscription (which also refreshes
+                // the amount/currency the Plan tab quotes). A failure here must not kill the
+                // event: the next board load's sync, or the Plan tab, recovers it.
+                if ($shop) {
+                    try {
+                        (new \App\Services\BillingService($shop))->syncActiveSubscription();
+                    } catch (\Throwable $e) {
+                        Log::warning('app_subscriptions/update: could not re-read the subscription', [
+                            'shop' => $event->shop_domain, 'err' => $e->getMessage(),
+                        ]);
+                    }
+                }
+                break;
+
             case 'customers/data_request':
             case 'customers/redact':
                 // By design we hold no customer PII for this shop — nothing

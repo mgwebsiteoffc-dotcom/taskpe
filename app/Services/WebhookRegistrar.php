@@ -28,6 +28,21 @@ class WebhookRegistrar
      */
     public function ensureTopic(Shop $shop, string $topic): void
     {
+        if (!$shop->isInstalled()) {
+            // Registering with a rejected token fails 401 per topic — which read as an
+            // unexplained pile of "Webhook registration failed" warnings while the real
+            // fix was one reconnect. Say it once, in words, and make no call.
+            Log::info('Webhook registration skipped', [
+                'shop'  => $shop->domain,
+                'topic' => $topic,
+                'why'   => $shop->tokenRejected()
+                    ? 'access token rejected — reconnect the store, then php artisan taskpe:register-webhooks '.$shop->domain
+                    : 'no live install on this store',
+            ]);
+
+            return;
+        }
+
         $client = new ShopifyClient($shop);
         $url    = rtrim((string) config('shopify.app_url'), '/').'/webhooks/shopify';
 

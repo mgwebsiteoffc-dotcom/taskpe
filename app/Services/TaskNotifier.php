@@ -100,7 +100,7 @@ class TaskNotifier
             kind: 'digest',
             template: $template,
             templateParams: [$dateLabel, $summaryBody],
-            text: "📋 *Team task summary — {$dateLabel}*\n\n{$summaryBody}",
+            text: "*Team task summary — {$dateLabel}*\n\n{$summaryBody}",
         );
     }
 
@@ -112,7 +112,7 @@ class TaskNotifier
             kind: 'test',
             template: null,
             templateParams: [],
-            text: '✅ '.config('app.name', 'TaskPe').' is connected to your WhatsApp. Task alerts will land here.',
+            text: config('app.name', 'TaskPe').' is connected to your WhatsApp. Task alerts will land here.',
         );
     }
 
@@ -200,7 +200,7 @@ class TaskNotifier
     protected function assignedText(Task $task, Member $member): string
     {
         $lines = [
-            "👋 Hi {$member->name}, a new task is assigned to you:",
+            "Hi {$member->name}, a new task is assigned to you:",
             "*{$task->title}*",
             'Due: '.$this->dueText($task),
         ];

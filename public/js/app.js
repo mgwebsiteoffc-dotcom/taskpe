@@ -10,12 +10,85 @@
   const root = document.getElementById('root');
   const IS_STAFF = !!cfg.staff;   // staff web portal (cookie auth, no App Bridge)
 
+  // One sentence, used by both the boot gate and any toast raised by a later
+  // call, so "no Shopify session" never surfaces as a stack-trace-ish string.
+  const NO_SESSION_MSG = 'No Shopify session for this page — open TaskPe from your Shopify admin (Apps → TaskPe).';
+
+  // The four sections of the app. `icon` keys into ICONS; `path` is what the
+  // merchant's own Shopify sidebar links to (see mountAdminNav). Laravel serves
+  // the same shell on each path and tells us which section to open — there is
+  // deliberately no second, in-app tab strip competing with the admin's nav.
+  const SECTIONS = [
+    { view: 'dashboard', label: 'Dashboard', icon: 'chart',    path: '/dashboard' },
+    { view: 'board',     label: 'Board',     icon: 'board',    path: '/board' },
+    { view: 'team',      label: 'Team',      icon: 'people',   path: '/team' },
+    { view: 'settings',  label: 'Settings',  icon: 'settings', path: '/settings' },
+    { view: 'plan',      label: 'Plan',      icon: 'premium',  path: '/plan' },
+  ];
+  const SECTION_BY_VIEW = Object.fromEntries(SECTIONS.map(sec => [sec.view, sec]));
+
+  // Which section was actually asked for — a sidebar item, a ?view= deep link, or
+  // the last path segment. null means nobody asked (the app was opened from its
+  // icon in the admin), and boot() then picks by role.
+  function askedSection() {
+    const fromServer = cfg.view;                      // path-derived, by Laravel
+    if (SECTION_BY_VIEW[fromServer]) return fromServer;
+    const fromQuery = new URLSearchParams(location.search).get('view');
+    if (SECTION_BY_VIEW[fromQuery]) return fromQuery;   // deep links still work
+    // Last segment, not the first: a subdirectory deploy lives at
+    // /taskpe/public/team and the first segment there is the folder, not the app.
+    const seg = String(location.pathname || '/').replace(/\/+$/, '').split('/').pop();
+    return SECTION_BY_VIEW[seg] ? seg : null;
+  }
+
+  function viewFromLocation() { return askedSection() || 'board'; }
+
+  // Owners open the app to read the numbers; everyone else opens it to work the
+  // board. Only ever consulted when nothing asked for a section, so a sidebar
+  // item or a deep link is never overridden.
+  // Owners get the dashboard, and the few controls that reshape the board (column
+  // settings) belong to them alone.
+  function isOwnerActor() {
+    const s = state.board;
+    if (!s || IS_STAFF) return false;
+    const me = (s.members || []).find(m => m.id === (state.me || s.me));
+    return !!(me && /owner|admin/i.test(String(me.role || '')));
+  }
+
+  function landingView() {
+    return IS_STAFF ? 'board' : (isOwnerActor() ? 'dashboard' : 'board');
+  }
+
+  // A blocked-cookie browser (private mode, a partitioned iframe) can make even
+  // *reading* localStorage throw, and a lost preference is not worth a blank
+  // board — so every access in the app goes through these two.
+  function readPref(key) {
+    try { return localStorage.getItem(key); } catch { return null; }
+  }
+
+  function writePref(key, value) {
+    try { localStorage.setItem(key, String(value)); } catch { /* the preference is optional */ }
+  }
+
   const state = {
     board: null,          // /api/board payload
-    view: 'board',        // board | team | settings | plan
+    view: viewFromLocation(),   // board | team | settings | plan
+    planChoice: null,     // plan the switcher on the Plan tab is pointed at (a choice, not a change)
+    handleChecked: false, // the one-shot "what is our real app handle?" call, per page load
     settings: null,       // /api/settings payload (lazy)
-    me: Number(localStorage.getItem('taskpe_me') || 0),
+    me: Number(readPref('taskpe_me') || 0),
     drawerTaskId: null,
+    quickAdd: null,      // column id whose "add task" editor should auto-open
+    filter: null,        // stat cell the board is currently narrowed to (see STAT_FILTERS)
+    team: null,          // column team tag the board + stats are narrowed to (Accounting, Warehouse…)
+    // One database, three ways to read it (Notion's model): the board for the
+    // queue, the table to scan and sort everything, the calendar to plan a week.
+    mode: ['board', 'table', 'calendar'].includes(readPref('taskpe_mode')) ? readPref('taskpe_mode') : 'board',
+    cal: null,            // 'YYYY-MM' being shown in the month view
+    // `d` hides the count band for the session. It used to be remembered, and a
+    // store that had hidden it once could never find the tiles again — the tiles are
+    // the board filter, so a hidden band is a board with no filter.
+    dashHidden: false,
     loading: false,
   };
 
@@ -52,47 +125,123 @@
     setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 2600);
   }
 
-  async function token() {
-    return await window.shopify.idToken();
+  function fail(message, code, extra) {
+    const e = new Error(message);
+    e.code = code || message;
+    return Object.assign(e, extra || {});
   }
 
-  async function api(path, { method = 'GET', body } = {}) {
+  // Shopify hands embedded apps a session token through App Bridge. Outside
+  // the admin iframe (someone pasted the app URL into a new tab, a monitor
+  // link, an email…) there is no bridge and therefore no token — that is a
+  // *state we can explain*, not a board failure, so detect it up front.
+  function appBridge() {
+    return window.shopify && typeof window.shopify.idToken === 'function' ? window.shopify : null;
+  }
+
+  async function token() {
+    if (IS_STAFF) return null;                 // cookie auth, no bridge needed
+    const bridge = appBridge();
+    if (!bridge) throw fail(NO_SESSION_MSG, 'not_embedded');
+
+    // App Bridge can still be mid-handshake on a cold iframe load; give it a
+    // bounded window instead of failing the whole board instantly.
+    let timer;
+    try {
+      const jwt = await Promise.race([
+        bridge.idToken(),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(fail('bridge_timeout')), 8000); }),
+      ]);
+      if (typeof jwt !== 'string' || !jwt) throw fail(NO_SESSION_MSG, 'not_embedded');
+      return jwt;
+    } catch (e) {
+      if (e.code === 'not_embedded') throw e;
+      throw fail(NO_SESSION_MSG, 'not_embedded', { detail: String(e.message || e) });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function shopFromQuery() {
+    return new URLSearchParams(location.search).get('shop') || '';
+  }
+
+  // Same-origin by default. The SPA is served by the same Laravel app that
+  // owns /api/*, so a stale or wrong APP_URL in .env must never be allowed to
+  // point the XHRs at another host (a classic "board won't load" cause after
+  // a domain change or a subdirectory deploy).
+  function apiBase() {
+    const configured = String(cfg.appUrl || '').replace(/\/+$/, '');
+    if (!configured) return '';
+    try {
+      return new URL(configured, location.href).origin === location.origin ? '' : configured;
+    } catch {
+      return '';
+    }
+  }
+
+  function appUrl() { return apiBase(); }
+
+  async function api(path, { method = 'GET', body, retry = true } = {}) {
     const init = {
       method,
-      headers: { ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      // Accept: JSON → Laravel renders API failures as JSON instead of an
+      // HTML error page, which is what makes the real reason readable here.
+      headers: { Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     };
 
     let url;
     if (IS_STAFF) {
-      url = cfg.appUrl + '/staff/api' + path;   // cookie-authed (SameSite=Lax cookie)
+      url = appUrl() + '/staff/api' + path;     // cookie-authed (SameSite=Lax cookie)
     } else {
-      url = cfg.appUrl + '/api' + path;
-      init.headers.Authorization = 'Bearer ' + (await token());
+      url = appUrl() + '/api' + path;
+      const jwt = await token();
+      init.headers.Authorization = 'Bearer ' + jwt;
+      // Apache/LiteSpeed on shared hosting sometimes strips Authorization
+      // before PHP sees it; the middleware accepts this twin as a fallback.
+      init.headers['X-TaskPe-Auth'] = jwt;
       init.headers['X-TaskPe-Member'] = state.me || '';
     }
 
-    const res = await fetch(url, init);
+    let res;
+    try {
+      res = await fetch(url, init);
+    } catch (e) {
+      throw fail('Cannot reach the TaskPe server (' + (e.message || 'network error') + ')',
+        'network', { url });
+    }
 
     if (res.status === 401) {
-      if (IS_STAFF) { location.assign('/staff'); throw new Error('staff_auth'); }
-      // Not installed / token rejected → restart OAuth at top level.
-      let shop = '';
-      try { shop = (await res.json()).shop || ''; } catch { /* noop */ }
-      shop = shop || new URLSearchParams(location.search).get('shop') || '';
+      const body401 = await res.json().catch(() => ({}));
+      if (IS_STAFF) { location.assign('/staff'); throw fail('staff_auth', 'staff_auth'); }
+
+      // A token we never had vs. a token the server refused are different
+      // fixes — don't restart OAuth in a loop when App Bridge isn't there.
+      if ((body401.error === 'missing_session_token' || body401.error === 'invalid_session_token') && retry) {
+        await new Promise(r => setTimeout(r, 700));            // let the bridge settle
+        return api(path, { method, body, retry: false });      // then try exactly once
+      }
+
+      // Not installed → restart OAuth at top level.
+      let shop = body401.shop || shopFromQuery();
       if (shop && !api._redirecting) {
         api._redirecting = true;
-        open(cfg.appUrl + '/auth/shopify?shop=' + encodeURIComponent(shop), '_top');
+        open(appUrl() + '/auth/shopify?shop=' + encodeURIComponent(shop), '_top');
       }
-      throw new Error('reauth');
+      throw fail('reauth', 'reauth', {
+        shop, reason: body401.error || 'unauthorized',
+        // The middleware's finer cause (`token_rejected`, `never_installed`) — without
+        // it a revoked grant and a never-installed store print the same sentence.
+        cause: body401.reason || null,
+        server: body401.message || null,
+      });
     }
 
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const err = new Error(data.message || data.error || 'Request failed');
-      err.code = data.error;
-      err.status = res.status;
-      throw err;
+      throw fail(data.message || data.error || 'Request failed (' + res.status + ')',
+        data.error || 'http_' + res.status, { status: res.status, url, body: data });
     }
     return data;
   }
@@ -109,19 +258,280 @@
     } catch { return iso; }
   }
 
-  function openAdmin(url) { open(url, '_top'); }
+  /*
+   * Leaving the iframe for a Shopify admin page, with the context that page expects.
+   *
+   * Two things this appends, both of which have caused a plan button to "do nothing":
+   *
+   *   host   the admin session pointer Shopify gave this page. A top-level navigation into
+   *          /admin/… without it can be answered with the Apps list instead of the target page,
+   *          which looks exactly like a broken link (and is what the plan page is for).
+   *   shop   the store this link is about — the plan page reads it when the URL is not the
+   *          /store/{handle}/ form.
+   *
+   * Anything that already carries the parameter is left alone, and non-admin URLs (an app store
+   * page set in SHOPIFY_APP_PLANS_URL) pass through untouched.
+   */
+  function withShopifyContext(url) {
+    if (!url || !/^https?:\/\/(admin\.shopify\.com|.+\.myshopify\.com)\//i.test(url)) return url;
+
+    let parsed;
+    try { parsed = new URL(url); } catch (e) { return url; }
+
+    if (!/admin\.shopify\.com/i.test(parsed.host) && !/\.myshopify\.com$/i.test(parsed.host)) return url;
+
+    const boot = window.__TASKPE__ || {};
+    const here = new URLSearchParams(location.search || '');
+
+    const host = boot.host || here.get('host') || '';
+    const shop = here.get('shop') || boot.shop || '';
+
+    if (host && !parsed.searchParams.has('host')) parsed.searchParams.set('host', host);
+    if (shop && !parsed.searchParams.has('shop')) parsed.searchParams.set('shop', shop);
+
+    return parsed.toString();
+  }
+
+  function openAdmin(url) { open(withShopifyContext(url), '_top'); }
 
   function debounce(fn, ms) {
-    let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+    let t;
+    const later = (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+    // `run()` fires now — the retry button in the search picker should not make the
+    // person wait another 350ms for something they just asked for.
+    later.run = (...a) => { clearTimeout(t); return fn(...a); };
+    return later;
   }
 
   function esc(s) { return s === null || s === undefined ? '' : String(s); }
 
+  /* ------------------------------------------------------------------- icons
+     Inline SVG instead of emoji. Emoji render differently on every OS, cannot
+     be recoloured or sized to the text, and look toy-like at 13px in an admin
+     panel. Every path here is stroke-only + currentColor, so an icon inherits
+     the colour of the button, pill or link it sits in. 24px Polaris grid. */
+
+  const ICONS = {
+    board:      [['path', { d: 'M4 5.4h4.6v13.2H4zM10.4 5.4H15v8.2h-4.6zM16.7 5.4h3.9v11h-3.9z' }]],
+    people:     [['circle', { cx: 9.6, cy: 8.6, r: 3.2 }], ['path', { d: 'M4.2 18.8a5.4 5.4 0 0 1 10.8 0' }],
+                 ['path', { d: 'M15.6 6.2a3.2 3.2 0 0 1 0 4.9' }], ['path', { d: 'M17.2 18.8a5.5 5.5 0 0 0-1.7-3.9' }]],
+    settings:   [['path', { d: 'M4 7.6h8.8M17.4 7.6H20M4 16.4h4.4M12.9 16.4H20' }],
+                 ['circle', { cx: 15, cy: 7.6, r: 2.3 }], ['circle', { cx: 10.7, cy: 16.4, r: 2.3 }]],
+    premium:    [['path', { d: 'M12 3.9l2.5 5 5.6.9-4.1 3.9 1 5.6-5-2.6-5 2.6 1-5.6-4.1-3.9 5.6-.9z' }]],
+    chart:      [['path', { d: 'M4.6 19.4h14.8' }], ['path', { d: 'M7.6 16.4v-4.6M12 16.4V6.2M16.4 16.4v-6.8' }]],
+    table:      [['rect', { x: 4.2, y: 5.4, width: 15.6, height: 13.2, rx: 2 }],
+                 ['path', { d: 'M4.2 9.8h15.6M9.6 9.8v8.8M15.2 9.8v8.8' }]],
+    calendar:   [['rect', { x: 4.2, y: 5.8, width: 15.6, height: 13.4, rx: 2 }],
+                 ['path', { d: 'M4.2 10.2h15.6M8.6 3.8v3.4M15.4 3.8v3.4' }]],
+    sort:       [['path', { d: 'M7.4 5.6v12.8M7.4 5.6L4.6 8.6M7.4 5.6l2.8 3' }],
+                 ['path', { d: 'M16.6 18.4V5.6M16.6 18.4l-2.8-3M16.6 18.4l2.8-3' }]],
+    plus:       [['path', { d: 'M12 5.4v13.2M5.4 12h13.2' }]],
+    minus:      [['path', { d: 'M5.4 12h13.2' }]],
+    edit:       [['path', { d: 'M4.6 19.4h4L20 8a2.1 2.1 0 0 0-3-3L5.6 16.4z' }], ['path', { d: 'M14.9 7.1l3 3' }]],
+    delete:     [['path', { d: 'M4.6 7h14.8M9.4 7V4.8h5.2V7M6.7 7l.9 12.3h8.8L17.3 7' }],
+                 ['path', { d: 'M10.4 10.6v5.6M13.6 10.6v5.6' }]],
+    clock:      [['circle', { cx: 12, cy: 12, r: 7.8 }], ['path', { d: 'M12 7.5V12l3.1 1.9' }]],
+    check:      [['path', { d: 'M5 12.7l4.5 4.5L19 6.9' }]],
+    'check-circle': [['circle', { cx: 12, cy: 12, r: 8 }], ['path', { d: 'M8.1 12.2l2.7 2.7 5-5.4' }]],
+    'alert-circle': [['circle', { cx: 12, cy: 12, r: 8 }], ['path', { d: 'M12 7.9v4.7M12 16.2h.01' }]],
+    'info-circle':  [['circle', { cx: 12, cy: 12, r: 8 }], ['path', { d: 'M12 11.2v4.9M12 7.9h.01' }]],
+    link:       [['path', { d: 'M10.3 13.7a3.6 3.6 0 0 0 5.1 0l2.4-2.4a3.6 3.6 0 1 0-5.1-5.1l-1.2 1.2' }],
+                 ['path', { d: 'M13.7 10.3a3.6 3.6 0 0 0-5.1 0L6.2 12.7a3.6 3.6 0 1 0 5.1 5.1l1.2-1.2' }]],
+    text:       [['path', { d: 'M4.6 7.6h14.8M4.6 12h10.6M4.6 16.4h12.8' }]],
+    stack:      [['path', { d: 'M12 4.2l8 3.5-8 3.4-8-3.4z' }], ['path', { d: 'M4 12.1l8 3.4 8-3.4M4 16.1l8 3.4 8-3.4' }]],
+    bell:       [['path', { d: 'M6.6 16.3V11a5.4 5.4 0 0 1 10.8 0v5.3l1.5 2.1H5.1z' }], ['path', { d: 'M10 20.5a2.2 2.2 0 0 0 4 0' }]],
+    'bell-off': [['path', { d: 'M6.6 16.3V11a5.4 5.4 0 0 1 8.3-4.5M17.4 12.6v3.7l1.5 2.1H7.4' }],
+                 ['path', { d: 'M4.4 4.4l15.2 15.2' }]],
+    close:      [['path', { d: 'M6.6 6.6l10.8 10.8M17.4 6.6L6.6 17.4' }]],
+    search:     [['circle', { cx: 11, cy: 11, r: 6 }], ['path', { d: 'M15.4 15.4L19.6 19.6' }]],
+    send:       [['path', { d: 'M4.6 12l14.8-7-3.6 14.6-4.5-5.3z' }], ['path', { d: 'M11.3 14.3l11.4-9.3' }]],
+    refresh:    [['path', { d: 'M19.4 12a7.4 7.4 0 1 1-2.2-5.3' }], ['path', { d: 'M19.6 4.4v4.3h-4.3' }]],
+    reopen:     [['path', { d: 'M4.6 12a7.4 7.4 0 1 0 2.2-5.3' }], ['path', { d: 'M4.4 4.4v4.3h4.3' }]],
+    'arrow-left': [['path', { d: 'M19 12H5.6' }], ['path', { d: 'M11.2 5.6L4.8 12l6.4 6.4' }]],
+    'chevron-right': [['path', { d: 'M9.6 5.6L16 12l-6.4 6.4' }]],
+    'chevron-left':  [['path', { d: 'M14.4 5.6L8 12l6.4 6.4' }]],
+    'chevron-down':  [['path', { d: 'M5.6 9.4L12 15.8l6.4-6.4' }]],
+    globe:      [['circle', { cx: 12, cy: 12, r: 7.8 }],
+                 ['path', { d: 'M4.2 12h15.6M12 4.2c2.2 2.2 3.3 5 3.3 7.8s-1.1 5.6-3.3 7.8c-2.2-2.2-3.3-5-3.3-7.8s1.1-5.6 3.3-7.8z' }]],
+    chat:       [['path', { d: 'M4.6 12a7.4 7.4 0 1 1 3 5.9l-3.6 1.2 1.2-3.4A7.3 7.3 0 0 1 4.6 12z' }],
+                 ['path', { d: 'M8.8 10.8h6.4M8.8 13.8h4.2' }]],
+    logout:     [['path', { d: 'M14.4 5.2H6.6a1.4 1.4 0 0 0-1.4 1.4v10.8a1.4 1.4 0 0 0 1.4 1.4h7.8' }],
+                 ['path', { d: 'M17.6 8.4L21 12l-3.4 3.6M21 12h-9.4' }]],
+    phone:      [['path', { d: 'M5.4 5.4h3.4l1.5 3.8-2 1.4a9.6 9.6 0 0 0 4.7 4.7l1.4-2 3.8 1.5v3.4c0 .8-.7 1.5-1.5 1.4C10 19.2 4.8 14 4.4 7c-.1-.8.6-1.5 1.4-1.6z' }]],
+    wallet:     [['path', { d: 'M4.6 7.7a2.2 2.2 0 0 1 2.2-2.2h11v13.1h-11a2.2 2.2 0 0 1-2.2-2.2z' }],
+                 ['path', { d: 'M4.6 10.6h13.2M15 14.2h2.8' }]],
+    receipt:    [['path', { d: 'M6.4 4.5h11.2v15l-2.8-1.6-2.8 1.6-2.8-1.6-2.8 1.6z' }],
+                 ['path', { d: 'M9.2 8.6h5.6M9.2 12.2h5.6' }]],
+    map:        [['path', { d: 'M12 20.6s6-5.3 6-9.5a6 6 0 1 0-12 0c0 4.2 6 9.5 6 9.5z' }], ['circle', { cx: 12, cy: 11, r: 2.2 }]],
+    truck:      [['path', { d: 'M3.6 7.3h9.2v8.4H3.6zM12.8 10.4h3.5l2.7 2.8v2.5h-6.2z' }],
+                 ['circle', { cx: 7, cy: 17.6, r: 1.7 }], ['circle', { cx: 16.5, cy: 17.6, r: 1.7 }]],
+    calendar:   [['path', { d: 'M4.8 6.8h14.4v12H4.8z' }], ['path', { d: 'M4.8 10.6h14.4M9 4.8v3.4M15 4.8v3.4' }]],
+    'user-plus':[['circle', { cx: 10, cy: 8.4, r: 3.2 }], ['path', { d: 'M4.4 18.8a5.6 5.6 0 0 1 11.2 0' }],
+                 ['path', { d: 'M18.6 6.2v5.2M16 8.8h5.2' }]],
+    rupee:      [['path', { d: 'M7.4 5.6h9.2M7.4 9.4h9.2M15.4 5.6c0 3.1-2.3 4.3-5.8 4.3H7.4l7.4 8.9' }],
+                 ['path', { d: 'M7.4 13.2h4.8' }]],
+    box:        [['path', { d: 'M4.6 8.2L12 4.4l7.4 3.8v7.6L12 19.6 4.6 15.8z' }],
+                 ['path', { d: 'M4.6 8.2L12 12l7.4-3.8M12 12v7.6' }]],
+  };
+
+  // opts: { size, label } — `label` makes it an accessible, focus-revealing
+  // element; without a label it is pure decoration and hidden from AT.
+  function icon(name, opts = {}) {
+    const spec = ICONS[name] || ICONS['info-circle'];
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('class', 'icon' + (opts.class ? ' ' + opts.class : ''));
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', String(opts.size || 18));
+    svg.setAttribute('height', String(opts.size || 18));
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', String(opts.stroke || '1.7'));
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', opts.label ? 'false' : 'true');
+    if (opts.label) svg.setAttribute('role', 'img');
+    for (const [tag, attrs] of spec) {
+      const el = document.createElementNS(NS, tag);
+      for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+      svg.append(el);
+    }
+    if (opts.label) {
+      const title = document.createElementNS(NS, 'title');
+      title.textContent = opts.label;
+      svg.append(title);
+    }
+    return svg;
+  }
+
+  // Icon + text, the shape 90% of the callsites need.
+  function withIcon(name, label, opts = {}) {
+    return [icon(name, opts), label];
+  }
+
+  // Icon-only control: the visible glyph is the button, so the name has to
+  // live in aria-label (and title, for hover). Never a bare emoji.
+  function iconButton(name, { title, onClick, className = 'icon-btn', disabled }) {
+    return h('button', {
+      class: className, title: title, 'aria-label': title, disabled: !!disabled,
+      onclick: onClick,
+    }, icon(name, { size: 16 }));
+  }
+
+  /* ------------------------------------------------- Shopify sidebar menu */
+
+  // App Bridge reads <ui-nav-menu> out of the document and renders those links
+  // in the admin's own left sidebar (on mobile, the title-bar dropdown). Its
+  // rules: the first link is the app's home route and is NOT shown as an item
+  // (it needs rel="home" + href="/") — which suits us exactly, because the app
+  // name in the sidebar already opens the board.
+  // App Bridge 4 — what the unversioned cdn.shopify.com/shopifycloud/app-bridge.js in
+  // app.blade.php serves — reads <s-app-nav> with <s-link> children. The older
+  // <ui-nav-menu>/<a> pair is gone from the docs and is ignored by that script, so an
+  // app that still emits it gets NO menu in the sidebar: the declaration is simply never
+  // read. That is why this element is <s-app-nav> and its children are <s-link>.
+  //
+  // It is declarative configuration, not UI: Shopify paints the left sidebar (and the
+  // mobile title-bar dropdown) from these links, so the element itself is display:none —
+  // otherwise the app would render a duplicate nav inside the frame.
+  function mountAdminNav() {
+    if (IS_STAFF || !appBridge()) return null;
+
+    let nav = document.getElementById('taskpe-app-nav');
+    if (!nav) {
+      nav = document.createElement('s-app-nav');
+      nav.setAttribute('id', 'taskpe-app-nav');
+      nav.style.display = 'none';        // consumed by App Bridge, never painted
+      document.body.append(nav);
+
+      // A nav click would otherwise reload the whole iframe (the known App
+      // Bridge issue #240): we take it first and switch sections in place, so
+      // nothing on the board — a half-typed task, a scroll position, the open
+      // drawer — is thrown away.
+      nav.addEventListener('click', ev => {
+        const link = dataViewLink(ev.target);
+        if (!link) return;
+        ev.preventDefault();
+        if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
+        goView(link.dataset.view);
+      }, true);
+    }
+
+    // rel="home" makes the admin's app name open this href and hides the entry from
+    // the list, so it points at bare `/`: no section asked for, which is what lets
+    // landingView() send an owner to the dashboard and a teammate to the board.
+    const home = document.createElement('s-link');
+    home.setAttribute('href', sectionPath(null));
+    home.setAttribute('rel', 'home');
+    home.textContent = 'Dashboard';
+    home.dataset.view = landingView();
+
+    nav.replaceChildren(home, ...SECTIONS.map(sec => {
+      const link = document.createElement('s-link');      // not <a>: s-app-nav takes s-link children
+      link.setAttribute('href', sectionPath(sec.view));
+      link.textContent = sec.label;
+      link.dataset.view = sec.view;
+      if (sec.view === state.view) link.setAttribute('aria-current', 'page');
+      return link;
+    }));
+
+    return nav;
+  }
+
+  // The admin sidebar (and the browser URL) needs the section path *relative to
+  // wherever the shell is mounted*, so a subdirectory deploy — where the board is
+  // /taskpe/public/ — swaps its last segment instead of assuming root paths.
+  function sectionPath(view) {
+    const label = view ? SECTION_BY_VIEW[view].path.split('/').pop() : '';
+    const here = String(location.pathname || '/').replace(/\/+$/, '');
+    const parent = here.includes('/') ? here.slice(0, here.lastIndexOf('/') + 1) : '/';
+    return label ? parent + label : (parent.replace(/\/+$/, '') || '/');
+  }
+
+  function dataViewLink(node) {
+    for (let el = node, depth = 0; el && depth < 4; depth++) {
+      if (el.dataset && el.dataset.view) return el;
+      el = el.parentElement || el.parentNode || el.parent;
+    }
+    return null;
+  }
+
+  // One way to change section: update state, keep the admin URL in sync (that is
+  // what drives the sidebar's active highlight), re-render.
+  function goView(view) {
+    if (!SECTION_BY_VIEW[view]) view = 'board';
+    if (state.view !== view) {
+      state.view = view;
+      state.drawerTaskId = null;
+      // A team filter is a way of reading *the board*. Leaving it on would quietly
+      // narrow the dashboard's totals too, and a dashboard that reports one
+      // department under the title "Dashboard" is how numbers get mistrusted.
+      if (view !== 'board') state.team = null;
+    }
+
+    const path = sectionPath(view);
+    if (!IS_STAFF && appBridge() && location.pathname !== path) {
+      try { history.pushState({ view: state.view }, '', path); } catch (e) { /* odd base URL: the view still switched */ }
+    }
+
+    mountAdminNav();
+    render();
+  }
+
   /* ---------------------------------------------------------------- board */
 
   async function loadBoard() {
-    state.board = await api('/board');
-    document.title = (state.board.shop.name || '') + ' · TaskPe';
+    const data = await api('/board');
+    // Shape check, not decoration: a 200 with an HTML body (captive portal,
+    // old cache, an opcache-served page) used to land here and die somewhere
+    // deep inside render() with a TypeError.
+    if (!data || !data.shop || !Array.isArray(data.columns)) {
+      throw fail('The server replied to /api/board without a board payload — '
+        + 'usually an HTML/error page instead of JSON. Check storage/logs/laravel.log.',
+        'bad_payload', { body: data });
+    }
+    state.board = data;
+    document.title = (data.shop.name || '') + ' · TaskPe';
   }
 
   function render() {
@@ -130,34 +540,67 @@
     if (cfg.openTask && state.board) { openTaskDrawer(Number(cfg.openTask)); cfg.openTask = null; }
   }
 
+  /**
+   * What the app shows while it waits. Two rules: draw the *shape* of what is coming
+   * (columns and cards, so the wait reads as "arriving" and the swap to the real board
+   * barely moves), and say what it is waiting for. A bare brand letter with "Loading…"
+   * looks like a crash, and a first embedded load inside Shopify Admin really can take a
+   * few seconds — so the slow hint only fades in after eight of them.
+   */
+  function bootView(text, opts) {
+    const o = opts || {};
+    const card = () => h('span', { class: 'skcard' }, h('span', { class: 'skline w80' }), h('span', { class: 'skline w55' }));
+    const cols = h('div', { class: 'skcols' },
+      [3, 2, 2, 1].map((n) => h('div', { class: 'skcol' }, h('span', { class: 'skbar' }), Array.from({ length: n }, card))));
+    const inner = [
+      h('div', { class: 'boot-row' },
+        h('div', { class: 'boot-logo' }, 'T'),
+        h('div', null,
+          h('div', { class: 'boot-name' }, 'TaskPe'),
+          h('div', { class: 'boot-text' }, text),
+          cfg.shop ? h('div', { class: 'boot-who' }, cfg.shop) : null)),
+      cols,
+    ];
+    if (!o.noHint) {
+      inner.push(h('div', { class: 'skslow' },
+        h('span', null, o.slow || 'Still waiting? Your session with Shopify may have expired.'),
+        h('a', { class: 'btn sm', href: window.location.href }, 'Reload')));
+    }
+    return h('div', { class: 'boot' }, h('div', { class: 'boot-card' }, ...inner));
+  }
+
   function renderShell() {
     const s = state.board;
-    if (!s) return h('div', { class: 'boot' }, h('div', { class: 'boot-text' }, 'Loading…'));
+    if (!s) return bootView(cfg.embedded ? 'Loading your board — columns, tasks and settings.' : 'Waiting for your Shopify session…');
 
-    // Staff portal: board-only surface, own topbar, no admin tabs.
+    // Staff portal: board-only surface, so no section nav — just who you are
+    // and how to get out. Same row shape as the admin nav, minus the tabs.
     if (IS_STAFF) {
       return h('div', null,
-        h('div', { class: 'topbar' },
-          h('div', { class: 'brand' }, h('div', { class: 'brand-badge' }, 'T'), 'TaskPe',
-            s.shop.name ? h('span', { class: 'staff-shop' }, '· ' + s.shop.name) : null),
+        h('div', { class: 'appnav' },
+          h('div', { class: 'appnav-title' },
+            icon('board', { size: 18 }),
+            h('span', null, s.shop.name || 'Your board'),
+            h('span', { class: 'appnav-sub' }, 'Staff board')),
           h('span', { class: 'spacer' }),
-          h('span', { class: 'staff-chip', title: 'Signed in via staff portal' }, cfg.staff.initials ? cfg.staff.initials + ' · ' + cfg.staff.name : cfg.staff.name),
-          h('button', { class: 'btn plain sm', onclick: staffLogout }, 'Log out')),
+          h('span', { class: 'staff-chip', title: 'Signed in via staff portal' },
+            h('span', { class: 'avatar' }, cfg.staff.initials || ''),
+            cfg.staff.name),
+          h('button', { class: 'btn plain sm', onclick: staffLogout },
+            ...withIcon('logout', 'Log out', { size: 15 })),
+          iconButton('info-circle', { title: 'Keyboard shortcuts', onClick: openShortcutsHelp })),
         renderBoard(),
         state.drawerTaskId ? renderTaskDrawer(state.drawerTaskId) : null,
       );
     }
 
-    const tabs = [['board', '📋 Board'], ['team', '👥 Team'], ['settings', '⚙️ Settings'], ['plan', '⭐ Plan']];
-
+    // No nav of our own here on purpose: Board / Team / Settings / Plan are menu
+    // items in the Shopify admin sidebar (mountAdminNav), so the app starts at
+    // its content. The board's own tools row carries the "who am I" chips and
+    // the shortcut help, because those are utilities, not a second menu.
     return h('div', null,
-      h('div', { class: 'topbar' },
-        h('div', { class: 'brand' }, h('div', { class: 'brand-badge' }, 'T'), 'TaskPe',
-          s.shop.plan !== 'free' ? h('span', { class: 'pill medium' }, s.shop.plan.toUpperCase()) : null),
-        h('nav', null, tabs.map(([v, label]) =>
-          h('button', { class: state.view === v ? 'active' : '', onclick: () => { state.view = v; render(); } }, label))),
-        renderMeChips()),
       renderBanners(),
+      state.view === 'dashboard' ? renderDashboard() :
       state.view === 'board' ? renderBoard() :
       state.view === 'team' ? renderTeam() :
       state.view === 'settings' ? renderSettings() : renderPlan(),
@@ -166,7 +609,7 @@
   }
 
   async function staffLogout() {
-    try { await fetch(cfg.appUrl + '/staff/logout', { method: 'POST' }); } catch { /* still navigate */ }
+    try { await fetch(appUrl() + '/staff/logout', { method: 'POST' }); } catch { /* still navigate */ }
     location.assign('/staff');
   }
 
@@ -179,8 +622,8 @@
       wrap.append(h('div', { class: 'banner warn' },
         h('div', null,
           h('div', { class: 'b-title' }, 'You are on the Free plan'),
-          h('div', { class: 'b-body' }, 'Upgrade to Starter (≈ ₹499/mo) to enable WhatsApp alerts for your team, unlimited tasks and the daily owner digest.')),
-        h('button', { class: 'btn primary sm', onclick: () => { state.view = 'plan'; render(); } }, 'View plans')));
+          h('div', { class: 'b-body' }, planBannerBody(s))),
+        h('button', { class: 'btn primary sm', onclick: () => goView('plan') }, 'View plans')));
       return wrap;
     }
 
@@ -192,7 +635,7 @@
         h('div', null,
           h('div', { class: 'b-title' }, 'WhatsApp is ON — connect your Whatify account to finish'),
           h('div', { class: 'b-body' }, 'Paste your Whatify API key in Settings — takes 2 minutes. Task alerts then land directly on your staff\'s WhatsApp.')),
-        h('button', { class: 'btn primary sm', onclick: () => { state.view = 'settings'; render(); } }, 'Connect')));
+        h('button', { class: 'btn primary sm', onclick: () => goView('settings') }, 'Connect')));
     }
 
     const anyMember = s.members.some(m => m.role === 'owner' && m.whatsapp_verified);
@@ -201,23 +644,28 @@
         h('div', null,
           h('div', { class: 'b-title' }, 'Verify your own number'),
           h('div', { class: 'b-body' }, 'Add yourself in the Team tab with the Owner role so the morning digest reaches you.')),
-        h('button', { class: 'btn sm', onclick: () => { state.view = 'team'; render(); } }, 'Add me')));
+        h('button', { class: 'btn sm', onclick: () => goView('team') }, 'Add me')));
     }
     return wrap;
   }
 
   function renderMeChips() {
     const s = state.board;
-    if (IS_STAFF || !s || !s.members.length) return h('div', { class: 'me-chips' });
+    if (IS_STAFF || !s) return h('div', { class: 'me-chips' });
+    // A deactivated login must not stay selectable as the author of a new task.
+    const people = (s.members || []).filter(m => m.active);
+    if (!people.length) return h('div', { class: 'me-chips' });
 
-    return h('div', { class: 'me-chips' },
-      h('span', { class: 'lbl' }, 'Working as:'),
-      s.members.filter(m => m.active).map(m =>
+    // Three faces with no label is a riddle, so the row says what it is. It stays
+    // short because the alternative — a dropdown labelled "Act as" — is worse.
+    return h('div', { class: 'me-chips', title: 'New tasks are added for the highlighted person' },
+      h('span', { class: 'lbl' }, 'Working as'),
+      people.map(m =>
         h('button', {
           class: 'me-chip' + (state.me === m.id ? ' on' : ''),
           onclick: () => {
             state.me = state.me === m.id ? 0 : m.id;
-            localStorage.setItem('taskpe_me', state.me || '');
+            writePref('taskpe_me', state.me || '');
             render();
           },
           title: m.role + (m.whatsapp_verified ? ' · WhatsApp verified' : ''),
@@ -226,30 +674,643 @@
 
   /* ------------------------------------------------------------- kanban UI */
 
+  // The five numbers a Shopify ops team actually scans for. Each cell is also a
+  // filter, so the board needs no separate controls for the same questions —
+  // that duplication (plus a pill on every card) is what read as clutter.
+  const isOpenTask = t => !t.completed_at;
+
+  const STAT_FILTERS = [
+    { key: 'open', label: 'Open', test: isOpenTask,
+      sub: st => state.team ? st.open + ' in ' + state.team
+        : st.cap ? st.open + ' of ' + st.cap + ' used' : st.total + ' on the board' },
+    { key: 'overdue', label: 'Late', tone: 'crit', test: t => isOpenTask(t) && !!t.overdue,
+      sub: st => st.oldestOverdue ? 'worst is ' + st.oldestOverdue + ' days' : 'nothing is late' },
+    { key: 'due', label: 'Due today', tone: 'warn', test: t => isOpenTask(t) && !t.overdue && isToday(t.due_at),
+      sub: st => st.dueUnclaimed ? st.dueUnclaimed + ' still need an owner' : 'all taken' },
+    { key: 'unclaimed', label: 'No owner', test: t => isOpenTask(t) && !t.assignee,
+      sub: st => st.unclaimed ? 'nobody has these yet' : 'every task has an owner' },
+    { key: 'closed', label: 'Done today', tone: 'ok', test: t => !!t.completed_at && isToday(t.completed_at),
+      sub: st => st.week + ' this week' + (st.weekDelta ? ' (' + (st.weekDelta > 0 ? '+' : '') + st.weekDelta + ' vs last)' : '') },
+  ];
+
+  const daysAgoKey = n => {
+    const d = new Date();
+    d.setDate(d.getDate() - n);
+    return dateKey(d);
+  };
+
+  const dateKey = value => {
+    const d = value instanceof Date ? value : new Date(value);
+    if (isNaN(d.getTime())) return '';
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  };
+
+  const ageDays = value => {
+    const then = new Date(value);
+    if (isNaN(then.getTime())) return 0;
+    return Math.max(0, Math.floor((Date.now() - then.getTime()) / 86400000));
+  };
+
+  function isToday(value) {
+    if (!value) return false;
+    const d = new Date(value);
+    if (isNaN(d.getTime ? d.getTime() : NaN)) return false;
+    const now = new Date();
+    return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  }
+
+  // Every number and the board itself are drawn from these columns, so tagging a
+  // column with a team is also what makes "just Accounting" a thing you can click.
+  const boardColumns = () => (state.board?.columns || []).filter(c => !state.team || (c.team || null) === state.team);
+  const allTasks = () => boardColumns().reduce((acc, c) => acc.concat(c.tasks || []), []);
+
+  function boardStats() {
+    const all = allTasks();
+    const open = all.filter(isOpenTask);
+    const cap = state.board?.shop?.plan_cfg?.task_limit || 0;
+    const closedIn = n => all.filter(t => t.completed_at && ageDays(t.completed_at) < n).length;
+
+    const out = {
+      total: all.length,
+      open: open.length,
+      cap,
+      unclaimed: open.filter(t => !t.assignee).length,
+      dueUnclaimed: open.filter(t => !t.overdue && isToday(t.due_at) && !t.assignee).length,
+      oldestOverdue: open.filter(t => t.overdue).reduce((n, t) => Math.max(n, ageDays(t.created_at)), 0),
+      oldestOpen: open.reduce((n, t) => Math.max(n, ageDays(t.created_at)), 0),
+      week: closedIn(7),
+      weekDelta: closedIn(7) - (closedIn(14) - closedIn(7)),
+      // Closed on or before its due date — the number a team is actually judged on,
+      // and only shown once there are enough samples to mean something (one late task
+      // out of one is not a 0% track record, and a dashboard that lies once is ignored).
+      onTime: (() => {
+        const done = all.filter(t => t.completed_at && t.due_at);
+        if (done.length < 3) return null;
+        const late = done.filter(t => new Date(t.completed_at) > new Date(t.due_at.slice(0, 10) + 'T23:59:59')).length;
+        return Math.round(((done.length - late) / done.length) * 100);
+      })(),
+      series: seriesFor(all, 14),
+      twoWeeks: closedIn(14),
+      teams: teamRows(),
+      // "Nothing is moving" and "we are busy" look the same in a total. Ageing is
+      // the difference, and 8+ days is the bucket an owner needs to see.
+      age: [['new', t => ageDays(t.created_at) <= 1],
+            ['2–3 days', t => ageDays(t.created_at) > 1 && ageDays(t.created_at) <= 3],
+            ['4–7 days', t => ageDays(t.created_at) > 3 && ageDays(t.created_at) <= 7],
+            ['8+ days', t => ageDays(t.created_at) > 7]]
+        .map(([label, test], i) => ({ label, n: open.filter(test).length, hot: i >= 2 })),
+    };
+    for (const f of STAT_FILTERS) out[f.key] = all.filter(f.test).length;
+    return out;
+  }
+
+  // Closed tasks per day, oldest first. The label is the day of the month rather
+  // than a weekday letter: 14 single letters is a puzzle, while "6" under a bar of 3
+  // is the whole sentence. Today is picked out in CSS.
+  function seriesFor(list, days) {
+    return Array.from({ length: days }, (_, i) => {
+      const key = daysAgoKey(days - 1 - i);
+      return {
+        key,
+        today: i === days - 1,
+        label: String(Number(key.slice(8, 10))),
+        n: list.filter(t => t.completed_at && dateKey(t.completed_at) === key).length,
+      };
+    });
+  }
+
+  // `team` is a free-text tag on a column (Accounting, Warehouse, Fulfilment…).
+  // Grouping by it is what turns one flat list of columns into numbers an owner can
+  // read per department — and the untagged bucket is kept visible on purpose, so a
+  // half-tagged board reports itself instead of quietly dropping work.
+  function teamRows() {
+    const rows = new Map();
+    for (const col of state.board?.columns || []) {
+      const key = col.team || '';
+      if (!rows.has(key)) rows.set(key, { team: key, columns: [], open: 0, overdue: 0, week: 0, oldest: 0, people: new Set() });
+      const r = rows.get(key);
+      r.columns.push(col.name);
+      for (const t of col.tasks || []) {
+        if (t.completed_at) { if (ageDays(t.completed_at) < 7) r.week++; continue; }
+        r.open++;
+        if (t.overdue) r.overdue++;
+        r.oldest = Math.max(r.oldest, ageDays(t.created_at));
+        if (t.assignee && t.assignee.name) r.people.add(String(t.assignee.name).split(' ')[0]);
+      }
+    }
+
+    // The shop's own list of names is merged in even when no column carries one yet:
+    // "we will have a Returns desk" is a thing an owner wants to say before the work
+    // exists, and a team defined but never used is exactly the finding a dashboard
+    // should surface rather than hide.
+    for (const name of state.board?.teams || []) {
+      const key = String(name).toLowerCase();
+      if (![...rows.keys()].some(k => String(k).toLowerCase() === key)) {
+        rows.set(name, { team: name, columns: [], open: 0, overdue: 0, week: 0, oldest: 0, people: new Set() });
+      }
+    }
+
+    return [...rows.values()]
+      .map(r => ({ ...r, people: [...r.people] }))
+      .sort((a, b) => (b.open + b.overdue) - (a.open + a.overdue) || (a.team || '￿').localeCompare(b.team || '￿'));
+  }
+
+  function setFilter(key) {
+    state.filter = state.filter === key ? null : key;
+    render();
+  }
+
+  // Polaris page shape: heading, one subdued context line, actions right-aligned.
+  // The picker row, the "working as" chips and the help button all used to live in
+  // their own strip under the header; there is now one row of chrome, not three.
+  function renderPageHead() {
+    const shop = state.board.shop;
+    const st = boardStats();
+
+    return h('header', { class: 'page-head' },
+      h('div', { class: 'page-id' },
+        h('h1', null, IS_STAFF ? (shop.name || 'Your board') : 'Today\u2019s work'),
+        // Store and plan, and the counts only when the tiles are hidden — saying a
+        // number twice on one screen is how a header turns into noise.
+        h('div', { class: 'page-sub' },
+          [shop.name || shop.domain,
+           shop.plan === 'free' ? 'Free plan' : cap(shop.plan) + ' plan',
+           state.dashHidden ? st.open + ' open \u00b7 ' + st.week + ' done this week' : null]
+            .filter(Boolean).join(' \u00b7 '))),
+      h('div', { class: 'page-actions' },
+        IS_STAFF ? null : renderMeChips(),
+        h('button', { class: 'btn sm', onclick: openTemplatesModal,
+          title: 'One-click checklists for COD confirmation, NDR rescue and RTO' },
+          ...withIcon('stack', 'Templates')),
+        h('button', { class: 'btn primary sm', onclick: startQuickAdd }, ...withIcon('plus', 'Add task', { size: 15 }))));
+  }
+
+  function renderStats(st) {
+    return h('div', { class: 'kpis', role: 'group', 'aria-label': 'Task counts — click a tile to filter the board' },
+      STAT_FILTERS.map(f => {
+        const n = st[f.key] || 0;
+        // Colour only when it means something: red for overdue, amber for due today,
+        // green for closed; a zero greys out instead of shouting in black.
+        const cls = 'kpi'
+          + (f.tone && n ? ' ' + f.tone : '')
+          + (!n && state.filter !== f.key ? ' zero' : '')
+          + (state.filter === f.key ? ' on' : '');
+
+        return h('button', {
+          class: cls,
+          onclick: () => {
+            if (state.view === 'board') { setFilter(f.key); return; }
+            state.filter = state.filter === f.key ? null : f.key;
+            goView('board');                       // from the dashboard: jump to the filtered board
+          },
+          title: state.filter === f.key ? 'Show every task again' : 'Show only ' + f.label.toLowerCase() + ' tasks',
+          'aria-pressed': String(state.filter === f.key),
+        },
+          h('span', { class: 'kpi-l' }, f.label),
+          h('span', { class: 'kpi-v' }, String(n)),
+          h('span', { class: 'kpi-s' }, f.sub ? f.sub(st) : ''));
+      }));
+  }
+
+  // Throughput on the left, throughput's owner-level context on the right, then
+  // teams, then people, then the tasks that deserve the next click. Nothing here is
+  // decoration: each panel answers a question a shop owner asks in the first ten
+  // seconds of the day, and every row is a way into the board that holds the work.
+  function renderThroughput(st) {
+    return h('section', { class: 'panel sp2' },
+      h('div', { class: 'p-head' },
+        h('h2', null, 'Done each day'),
+        h('span', { class: 'sub' }, st.twoWeeks + ' in 2 weeks' + (st.onTime === null ? '' : ' · ' + st.onTime + '% on time')),
+        h('span', { class: 'spacer' }),
+        h('span', { class: 'pill ' + (st.weekDelta > 0 ? 'medium' : st.weekDelta < 0 ? 'high' : 'low') },
+          (st.weekDelta > 0 ? '+' : '') + st.weekDelta + ' vs last week')),
+      h('div', { class: 'p-body' }, renderChart(st)));
+  }
+
+  function renderChart(st) {
+    const max = Math.max(1, ...st.series.map(d => d.n));
+
+    return h('div', { class: 'chart', role: 'img', 'aria-label': st.twoWeeks + ' tasks closed in the last 14 days' },
+      st.series.map(d => h('div', {
+        class: 'c-col' + (d.today ? ' today' : ''),
+        title: d.key + ' — ' + d.n + (d.n === 1 ? ' task closed' : ' tasks closed'),
+      },
+        h('span', { class: 'c-num' }, d.n ? String(d.n) : ''),
+        h('div', { class: 'c-bar' + (d.n ? '' : ' zero'), style: 'height:' + (d.n ? Math.max(12, Math.round((d.n / max) * 100)) : 3) + '%' }),
+        h('span', { class: 'c-cap' }, d.label))));
+  }
+
+  function renderTeams(st) {
+    const tagged = st.teams.filter(r => r.team);
+    const used = tagged.filter(r => r.columns.length);
+    const untagged = st.teams.find(r => !r.team);
+    const max = Math.max(1, ...tagged.map(r => r.open + r.week));
+    const bar = (share, cls) => h('div', { class: 'wl-fill ' + cls, style: 'width:' + Math.round((share / max) * 100) + '%' });
+    const named = (state.board.teams || []).length;
+
+    const head = h('div', { class: 'p-head' },
+      h('h2', null, 'Teams'),
+      h('span', { class: 'sub' }, used.length
+        ? 'tap a team to see its board'
+        : named ? 'nothing is tagged yet' : 'no teams named yet'),
+      h('span', { class: 'spacer' }),
+      // The panel only reads; the list is kept on the Team page, where the rest of
+      // the people settings live, so this stays a way in rather than a second editor.
+      IS_STAFF ? null : h('button', { class: 'btn plain sm', onclick: () => goView('team') },
+        named ? 'Manage teams' : 'Add teams'));
+
+    const row = r => {
+      const empty = !r.columns.length;
+      const title = empty
+        ? 'No column carries this name yet — tag one on the board'
+        : r.columns.join(' \u00b7 ') + (r.people.length ? ' \u2014 ' + r.people.join(', ') : '');
+      const bits = empty
+        ? ['nothing tagged yet']
+        : [r.open + ' open'].concat(r.overdue ? [r.overdue + ' late'] : [], r.week ? ['+' + r.week] : []);
+      const inner = [
+        h('span', { class: 'tm-name' + (empty ? ' quiet' : '') }, r.team),
+        h('span', { class: 'wl-track' },
+          empty || !r.week ? null : bar(r.week, 'done'),
+          empty || !r.open ? null : bar(r.open, r.overdue ? 'late' : 'open')),
+        h('span', { class: 'tm-n' + (empty ? ' quiet' : '') }, bits.join(' \u00b7 ')),
+      ];
+
+      // A team with no work behind it is not a filter, so it must not look like one.
+      return empty
+        ? h('div', { class: 'tm-row', title }, inner)
+        : h('button', { class: 'tm-row' + (state.team === r.team ? ' on' : ''), title, onclick: () => openTeamBoard(r.team) }, inner);
+    };
+
+    const body = tagged.length
+      ? h('div', { class: 'p-body flush' }, tagged.map(row))
+      : h('div', { class: 'p-body' }, h('div', { class: 'muted small' },
+        IS_STAFF
+          ? 'Nobody has named a team for this store yet — an owner adds them under Team.'
+          : 'Add a team (Accounting, Warehouse, Returns) under Team, then tag a column with it. This panel fills itself in.'));
+
+    // A half-tagged board is the failure mode here, so say how much is untagged
+    // instead of letting the totals quietly disagree with the rows above.
+    const foot = untagged && used.length
+      ? h('div', { class: 'p-foot' },
+        h('span', { class: 'muted small' }, untagged.open + ' open in ' + untagged.columns.length
+          + ' column' + (untagged.columns.length === 1 ? '' : 's') + ' with no team'),
+        h('button', { class: 'btn plain sm', onclick: () => goView('board') }, 'Tag a column'))
+      : null;
+
+    return h('section', { class: 'panel' }, head, body, foot);
+  }
+
+  function renderAging(st) {
+    const max = Math.max(1, ...st.age.map(b => b.n));
+
+    return h('section', { class: 'panel' },
+      h('div', { class: 'p-head' },
+        h('h2', null, 'How old the work is'),
+        h('span', { class: 'sub' }, st.oldestOpen ? 'the oldest open task is ' + st.oldestOpen + ' days' : 'nothing open')),
+      h('div', { class: 'p-body' }, h('div', { class: 'wl' }, st.age.map(b => h('div', {
+          class: 'wl-row' + (b.hot && b.n ? ' late' : ''),
+        },
+        h('span', { class: 'wl-name' }, b.label),
+        h('span', { class: 'wl-track' }, b.n ? h('div', { class: 'wl-fill ' + (b.hot ? 'late' : 'open'), style: 'width:' + Math.round((b.n / max) * 100) + '%' }) : null),
+        h('span', { class: 'wl-n' }, String(b.n)))))));
+  }
+
+  function dashPanel(title, sub, bodyEl, flush) {
+    return h('section', { class: 'panel' },
+      h('div', { class: 'p-head' }, h('h2', null, title), sub ? h('span', { class: 'sub' }, sub) : null),
+      h('div', { class: 'p-body' + (flush ? ' flush' : '') }, bodyEl));
+  }
+
+  // The page an owner actually opens the app for: what is moving, what is stuck,
+  // who and which department is carrying it. One sentence up front, because a
+  // dashboard nobody reads is a chart collection.
+  function renderDashboard() {
+    const st = boardStats();
+    const shop = state.board.shop;
+
+    return h('div', { class: 'page dash-page' },
+      h('header', { class: 'page-head' },
+        h('div', { class: 'page-id' },
+          h('h1', null, 'Dashboard'),
+          h('div', { class: 'page-sub' },
+            [shop.name || shop.domain,
+             shop.plan === 'free' ? 'Free plan' : cap(shop.plan) + ' plan',
+             new Intl.DateTimeFormat('en-IN', { weekday: 'long', day: 'numeric', month: 'short' }).format(new Date())]
+              .filter(Boolean).join(' \u00b7 '))),
+        h('div', { class: 'page-actions' },
+          h('button', { class: 'btn sm', onclick: () => goView('board') }, ...withIcon('board', 'Open board', { size: 15 })),
+          h('button', { class: 'btn primary sm', onclick: () => { goView('board'); startQuickAdd(); } },
+            ...withIcon('plus', 'Add task', { size: 15 })))),
+
+      h('p', { class: 'dash-lede' }, dashLede(st)),
+      renderStats(st),
+      // One grid, five panels, and the wide chart spans two columns: on a 1900px
+      // screen two rows of two left a third of the page empty, which reads as a
+      // broken layout rather than as breathing room.
+      h('div', { class: 'panels' },
+        renderThroughput(st),
+        renderTeams(st),
+        dashPanel('Who is busy', 'open and done this week', renderWorkload()),
+        renderAging(st),
+        renderAttention()));
+  }
+
+  function dashLede(st) {
+    const bits = [st.open
+      + (st.open === 1 ? ' task still open' : ' tasks still open')];
+    if (st.overdue) bits.push(st.overdue + ' late' + (st.oldestOverdue ? ' (worst ' + st.oldestOverdue + ' days)' : ''));
+    if (st.unclaimed) bits.push(st.unclaimed + ' with no owner');
+    bits.push(st.week + ' done this week' + (st.weekDelta ? ', ' + (st.weekDelta > 0 ? '+' : '') + st.weekDelta + ' on last week' : ''));
+    const top = st.teams.find(r => r.team && r.open);
+    if (top) bits.push(top.team + ' has the most');
+    return bits.join(' \u00b7 ') + '.';
+  }
+
+  function openTeamBoard(team) {
+    state.team = state.team === team ? null : team;
+    state.filter = null;
+    goView('board');
+  }
+
+  function renderWorkload() {
+    const all = allTasks();
+    const open = all.filter(isOpenTask);
+    const closed7 = all.filter(t => t.completed_at && ageDays(t.completed_at) < 7);
+    const rows = (state.board.members || []).filter(m => m.active).map(m => {
+      const mine = open.filter(t => t.assignee && t.assignee.id === m.id);
+      return {
+        m,
+        open: mine.length,
+        late: mine.filter(t => t.overdue).length,
+        closed: closed7.filter(t => t.assignee && t.assignee.id === m.id).length,
+      };
+    });
+    const unclaimed = open.filter(t => !t.assignee).length;
+
+    const max = Math.max(1, ...rows.map(r => r.open + r.closed), unclaimed);
+    const bar = (share, cls) => h('div', { class: 'wl-fill ' + cls, style: 'width:' + Math.round((share / max) * 100) + '%' });
+
+    return h('div', { class: 'wl' },
+      rows.length ? rows.map(r => h('div', { class: 'wl-row' + (r.late ? ' late' : ''), title: r.m.name + ' — ' + r.open + ' open' + (r.late ? ', ' + r.late + ' overdue' : '') + ', ' + r.closed + ' closed this week' },
+        h('span', { class: 'avatar' + (r.open ? '' : ' gray') }, r.m.initials),
+        h('span', { class: 'wl-name' }, r.m.name.split(' ')[0]),
+        h('span', { class: 'wl-track' }, r.closed ? bar(r.closed, 'done') : null, r.open ? bar(r.open, r.late ? 'late' : 'open') : null),
+        h('span', { class: 'wl-n' }, r.open + (r.closed ? ' · +' + r.closed : '')))) : null,
+      unclaimed ? h('div', { class: 'wl-row ghost', title: 'Nobody has these yet' },
+        h('span', { class: 'avatar gray' }, '·'),
+        h('span', { class: 'wl-name' }, 'Unclaimed'),
+        h('span', { class: 'wl-track' }, bar(unclaimed, 'open')),
+        h('span', { class: 'wl-n' }, String(unclaimed))) : null,
+      !rows.length && !unclaimed ? h('div', { class: 'muted small' }, 'No open tasks — the board is clear.') : null);
+  }
+
+  function renderAttention() {
+    const rows = allTasks().filter(isOpenTask).map(t => ({
+      t,
+      // Overdue first (and oldest among them), then urgent, then unclaimed, then age.
+      score: (t.overdue ? 1000 + ageDays(t.created_at) : 0)
+        + (t.priority === 'urgent' ? 400 : t.priority === 'high' ? 200 : 0)
+        + (t.due_at && isToday(t.due_at) && !t.overdue ? 300 : 0)
+        + (t.assignee ? 0 : 60)
+        + ageDays(t.created_at),
+    })).sort((x, y) => y.score - x.score).slice(0, 4);
+
+    return h('section', { class: 'panel at-panel' },
+      h('div', { class: 'p-head' },
+        h('h2', null, 'Do these first'),
+        h('span', { class: 'sub' }, rows.length ? 'tap to open' : 'nothing waiting')),
+      rows.length
+        ? h('div', { class: 'p-body flush' }, rows.map(({ t }) => h('button', {
+            class: 'at-row', onclick: () => openTaskDrawer(t.id),
+          },
+          h('span', { class: 'at-dot ' + (t.overdue ? 'late' : t.priority) }),
+          h('span', { class: 'at-title' }, t.title),
+          h('span', { class: 'at-when' + (t.overdue ? ' late' : '') }, whenText(t)),
+          t.assignee ? h('span', { class: 'avatar', title: t.assignee.name }, t.assignee.initials)
+            : h('span', { class: 'avatar gray', title: 'No owner yet' }, '·'))))
+        : h('div', { class: 'p-body' }, h('div', { class: 'muted small' },
+            'Nothing open. Add a task, or tick one off the board.')));
+  }
+
+  function toggleDash() {
+    state.dashHidden = !state.dashHidden;
+    render();
+  }
+
+  function clearFilters() { state.filter = null; state.team = null; render(); }
+
+  function renderFilterBar(st) {
+    const f = STAT_FILTERS.find(x => x.key === state.filter);
+    if (!f && !state.team) return null;
+    const shown = f ? st[f.key] || 0 : 0;
+
+    return h('div', { class: 'filter-bar' },
+      h('span', { class: 'muted small' },
+        [state.team ? 'Team: ' + state.team : null,
+         f ? shown + ' ' + f.label.toLowerCase() + ' of ' + st.total + ' task' + (st.total === 1 ? '' : 's') : null]
+          .filter(Boolean).join(' · ')),
+      h('button', { class: 'btn plain sm', onclick: clearFilters }, 'Show all'));
+  }
+
+  function setMode(mode) {
+    state.mode = mode;
+    writePref('taskpe_mode', mode);
+    render();
+  }
+
+  const MODES = [['board', 'Board', 'board'], ['table', 'List', 'table'], ['calendar', 'Month', 'calendar']];
+
+  // Views, and the only two filters there are, on one line. It is a segmented
+  // control rather than text links because the people using this app all day are
+  // warehouse and accounts staff, not people who read UI affordances.
+  function renderViewBar(st) {
+    return h('div', { class: 'view-bar' },
+      h('div', { class: 'vtabs', role: 'group', 'aria-label': 'Ways to see the tasks' },
+        MODES.map(([key, label, ic]) => h('button', {
+          class: 'vtab' + (state.mode === key ? ' on' : ''),
+          'aria-pressed': String(state.mode === key),
+          onclick: () => setMode(key),
+        }, icon(ic, { size: 15 }), label))),
+      renderFilterBar(st));
+  }
+
   function renderBoard() {
-    const s = state.board;
+    const st = boardStats();
+
+    return h('div', { class: 'board-page' },
+      renderPageHead(),
+      state.dashHidden ? null : h('div', { class: 'dash' }, renderStats(st)),
+      renderViewBar(st),
+      state.mode === 'table' ? renderTable(st)
+        : state.mode === 'calendar' ? renderCalendar(st)
+        : renderColumnsView(st));
+  }
+
+  function renderColumnsView(st) {
     const board = h('div', { class: 'board' });
+    for (const col of boardColumns()) board.append(renderColumn(col));
+    board.append(h('button', { class: 'add-col-btn', onclick: promptAddColumn }, ...withIcon('plus', 'Add column', { size: 16 })));
+    return board;
+  }
 
-    for (const col of s.columns) board.append(renderColumn(col));
-    board.append(h('button', { class: 'add-col-btn', onclick: promptAddColumn }, '+ Add column'));
+  const colName = id => (state.board.columns.find(c => c.id === id) || {}).name || 'No stage';
+  const colTeam = id => (state.board.columns.find(c => c.id === id) || {}).team || null;
 
-    return h('div', null,
-      h('div', { class: 'board-tools' },
-        h('button', { class: 'btn sm', onclick: openTemplatesModal }, '📦 COD / NDR task templates'),
-        h('span', { class: 'muted small' }, 'One-click checklists built for Indian D2C: COD confirm, NDR rescue, RTO checks…')),
-      board);
+  /* ------------------------------------------------------------------ words */
+
+  // A date is a puzzle for someone who opens this twice a week. "Due tomorrow" and
+  // "2 days late" are not, and they survive a phone screen with no tooltips.
+  const dayDelta = iso => Math.round(
+    (new Date(iso.slice(0, 10) + 'T12:00:00') - new Date(dateKey(new Date()) + 'T12:00:00')) / 864e5);
+
+  function whenText(t) {
+    if (t.completed_at) {
+      const n = dayDelta(t.completed_at);
+      return n === 0 ? 'Done today' : n === -1 ? 'Done yesterday' : 'Done ' + fmtDate(t.completed_at);
+    }
+    if (!t.due_at) return 'No date';
+    const n = dayDelta(t.due_at);
+    if (n < -1) return Math.abs(n) + ' days late';
+    if (n === -1) return '1 day late';
+    if (n === 0) return 'Due today';
+    if (n === 1) return 'Due tomorrow';
+    if (n <= 6) return 'Due in ' + n + ' days';
+    return 'Due ' + fmtDate(t.due_at);
+  }
+
+  const PRIORITY_WORDS = { urgent: 'Urgent', high: 'High', medium: 'Normal', low: 'Low' };
+
+  /* --------------------------------------------------------------- list view */
+
+  function renderTable(st) {
+    const list = allTasks().slice().sort((a, b) => {
+      if (!!a.completed_at !== !!b.completed_at) return a.completed_at ? 1 : -1;      // open first, always
+      const byDue = (a.due_at ? dayDelta(a.due_at) : 9999) - (b.due_at ? dayDelta(b.due_at) : 9999);
+      return byDue || String(a.title).localeCompare(String(b.title));
+    });
+
+    const rows = groups => groups.map(g => [
+      h('div', { class: 'tgroup' },
+        h('span', { class: 'tg-name' }, g.label),
+        h('span', { class: 'tg-count' }, String(g.items.length)),
+        g.late ? h('span', { class: 'tg-late' }, g.late + ' late') : null),
+      g.items.map(t => h('div', { class: 'trow' + (t.completed_at ? ' is-done' : ''), onclick: () => openTaskDrawer(t.id) },
+        h('button', {
+          class: 'tcheck' + (t.completed_at ? ' on' : ''),
+          title: t.completed_at ? 'Open this task again' : 'Mark this done',
+          onclick: ev => { ev.stopPropagation(); void tickTask(t); },
+        }, t.completed_at ? icon('check', { size: 12 }) : null),
+        h('div', { class: 't-title' }, t.title,
+          h('span', { class: 't-when' + (t.overdue && !t.completed_at ? ' late' : '') }, whenText(t))),
+        h('div', { class: 't-cell' }, h('span', { class: 'dot ' + t.priority }), PRIORITY_WORDS[t.priority] || 'Normal'),
+        h('div', { class: 't-cell who' }, t.assignee
+          ? [h('span', { class: 'avatar sm' }, t.assignee.initials), t.assignee.name.split(' ')[0]]
+          : h('span', { class: 'muted' }, 'No owner')),
+        h('div', { class: 't-cell', title: colTeam(t.column_id) || '' }, colTeam(t.column_id) || h('span', { class: 'muted' }, '—')),
+        h('button', { class: 'btn tiny', onclick: ev => { ev.stopPropagation(); openTaskDrawer(t.id); } }, 'Open'))),
+    ]);
+
+    const buckets = new Map();
+    for (const t of list) {
+      const key = t.column_id;
+      if (!buckets.has(key)) buckets.set(key, { label: colName(key), items: [], late: 0 });
+      buckets.get(key).items.push(t);
+      if (!t.completed_at && t.overdue) buckets.get(key).late++;
+    }
+    const groups = [...buckets.values()];
+
+    return h('div', { class: 'table-wrap' },
+      groups.length
+        ? h('div', { class: 'table' }, rows(groups))
+        : h('div', { class: 't-empty' }, state.filter || state.team
+          ? 'Nothing matches this filter.' : 'No tasks yet — add one and it appears here.'));
+  }
+
+  async function tickTask(t) {
+    try {
+      await api('/tasks/' + t.id + '/complete', { method: 'POST' });
+      await refreshBoard();
+      toast(t.completed_at ? 'Reopened: ' + t.title : 'Done: ' + t.title);
+    } catch (e) { toast(e.message, true); }
+  }
+
+  /* ------------------------------------------------------------- month view */
+
+  function renderCalendar(st) {
+    const now = new Date();
+    const cur = state.cal || (now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0'));
+    const [yy, mm] = cur.split('-').map(Number);
+    const first = new Date(yy, mm - 1, 1);
+    const shift = (first.getDay() + 6) % 7;                 // Monday first (en-IN shop weeks)
+    const days = new Date(yy, mm, 0).getDate();
+    const monthKeys = new Set();
+    const byDay = new Map();
+    for (const t of allTasks()) {
+      if (!t.due_at) continue;
+      const k = dateKey(t.due_at);
+      (byDay.get(k) || byDay.set(k, []).get(k)).push(t);
+    }
+
+    const shiftMonth = delta => {
+      const d = new Date(yy, mm - 1 + delta, 1);
+      state.cal = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+      render();
+    };
+
+    const cells = [];
+    for (let i = 0; i < shift; i++) cells.push(h('div', { class: 'cday out' }));
+    for (let d = 1; d <= days; d++) {
+      const key = cur + '-' + String(d).padStart(2, '0');
+      monthKeys.add(key);
+      const items = byDay.get(key) || [];
+      const today = key === dateKey(now.toISOString());
+
+      cells.push(h('div', { class: 'cday' + (today ? ' today' : '') },
+        h('div', { class: 'cday-n' }, String(d), items.length > 1 ? h('span', { class: 'cday-c' }, String(items.length)) : null),
+        items.slice(0, 3).map(t => h('button', {
+          class: 'c-task' + (t.completed_at ? ' is-done' : ''),
+          title: t.title,
+          onclick: () => openTaskDrawer(t.id),
+        }, h('span', { class: 'dot ' + t.priority }), t.title)),
+        items.length > 3 ? h('div', { class: 'c-more' }, '+' + (items.length - 3) + ' more') : null));
+    }
+    while (cells.length % 7) cells.push(h('div', { class: 'cday out' }));
+
+    const late = allTasks().filter(t => !t.completed_at && t.overdue && t.due_at && !monthKeys.has(dateKey(t.due_at))).length;
+    const undated = allTasks().filter(t => !t.due_at && !t.completed_at).length;
+
+    return h('div', { class: 'cal' },
+      h('div', { class: 'cal-head' },
+        h('button', { class: 'navbtn', onclick: () => shiftMonth(-1), 'aria-label': 'Previous month' }, icon('chevron-left', { size: 15 })),
+        h('h3', null, new Intl.DateTimeFormat('en-IN', { month: 'long', year: 'numeric' }).format(first)),
+        h('button', { class: 'navbtn', onclick: () => shiftMonth(1), 'aria-label': 'Next month' }, icon('chevron-right', { size: 15 })),
+        h('button', { class: 'btn tiny', onclick: () => { state.cal = null; render(); } }, 'This month'),
+        h('span', { class: 'spacer' }),
+        undated ? h('span', { class: 'muted small' }, undated + ' task' + (undated === 1 ? '' : 's') + ' with no date') : null),
+      late ? h('button', { class: 'cal-late', onclick: () => setMode('table') },
+        icon('alert-circle', { size: 14 }), late + ' task' + (late === 1 ? '' : 's') + ' still late from before this month',
+        h('b', null, 'see them ›')) : null,
+      h('div', { class: 'cal-scroll' },
+        h('div', { class: 'cal-grid' }, ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(d => h('div', { class: 'cdow' }, d))),
+        h('div', { class: 'cal-grid' }, cells)));
   }
 
   function renderColumn(col) {
+    const active = STAT_FILTERS.find(x => x.key === state.filter);
+    const tasks = active ? (col.tasks || []).filter(active.test) : (col.tasks || []);
+    const hidden = (col.tasks || []).length - tasks.length;
+
     const el = h('div', { class: 'board-col', dataset: { colId: col.id } },
       h('div', { class: 'col-head' },
         h('h3', null, col.name),
-        h('span', { class: 'col-count' }, col.tasks.length),
-        h('div', { class: 'col-actions' },
-          h('button', { title: 'Rename', onclick: () => promptRenameColumn(col) }, '✏️'),
-          state.board.columns.length > 1
-            ? h('button', { title: 'Delete column', onclick: () => deleteColumn(col) }, '🗑') : null)),
-      h('div', { class: 'col-cards' }, col.tasks.map(t => renderCard(t, col))),
+        col.team && !state.team ? h('span', { class: 'col-team' }, col.team) : null,
+        h('span', { class: 'col-count' }, tasks.length + (active && hidden ? '/' + col.tasks.length : '')),
+        isOwnerActor() && !IS_STAFF
+          ? h('button', { class: 'col-edit', onclick: () => editColumnSheet(col) }, 'Edit')
+          : null),
+      colSummary(tasks, col),
+      h('div', { class: 'col-cards' }, tasks.map(t => renderCard(t, col))),
+      active && !tasks.length && hidden ? h('div', { class: 'col-quiet' }, 'no ' + active.label.toLowerCase() + ' here') : null,
       renderAddCard(col));
 
     // HTML5 drag & drop targets
@@ -279,6 +1340,27 @@
     }).length;
   }
 
+  // What a group is worth right now, spelled out instead of counted by eye. It
+  // follows the active filter, so a filtered board never shows a stale total.
+  function colSummary(tasks, col) {
+    const open = tasks.filter(isOpenTask);
+    const late = open.filter(t => t.overdue).length;
+    const unclaimed = open.filter(t => !t.assignee).length;
+    const bits = [];
+
+    if (col.is_done_stage) {
+      const week = tasks.filter(t => t.completed_at && ageDays(t.completed_at) < 7).length;
+      bits.push(String(tasks.length) + ' done' + (week ? ' \u00b7 ' + week + ' this week' : ''));
+    } else {
+      bits.push(open.length ? h('span', null, h('b', null, String(open.length)), ' open') : 'nothing here yet');
+      if (late) bits.push(h('span', { class: 'late' }, late + ' late'));
+      if (unclaimed) bits.push(unclaimed + ' without an owner');
+    }
+
+    // An empty group needs no summary line: that is what being empty looks like.
+    return tasks.length ? h('div', { class: 'col-sum' }, ...bits) : null;
+  }
+
   function renderCard(t, col) {
     const card = h('div', {
       class: 'card' + (t.completed_at ? ' is-done' : '') + (t.priority === 'urgent' ? ' priority-urgent' : ''),
@@ -287,13 +1369,15 @@
       onclick: () => { if (!dragState.moved) openTaskDrawer(t.id); },
     },
       h('div', { class: 'card-title' }, t.title),
+      // Only the priorities that change what you do next get a coloured pill; the
+      // date is plain text, and "closed" is a tick — three badges per card read as
+      // noise when the board is the thing you are trying to scan.
       h('div', { class: 'card-meta' },
-        h('span', { class: 'pill ' + t.priority }, t.priority),
-        t.completed_at ? h('span', { class: 'pill done' }, '✓ Done')
-          : t.overdue ? h('span', { class: 'pill overdue' }, '⏰ ' + fmtDate(t.due_at))
-          : t.due_at ? h('span', { class: 'pill due' }, fmtDate(t.due_at)) : null),
+        h('span', { class: 'when' + (t.completed_at ? ' done' : t.overdue ? ' late' : '') }, whenText(t)),
+        (t.priority === 'urgent' || t.priority === 'high') && !t.completed_at
+          ? h('span', { class: 'pill ' + t.priority }, PRIORITY_WORDS[t.priority]) : null),
       t.resource ? h('div', { class: 'res-line' },
-        t.resource.image ? h('img', { src: t.resource.image, alt: '' }) : h('span', null, '🔗'),
+        t.resource.image ? h('img', { src: t.resource.image, alt: '' }) : h('span', { class: 'res-ic' }, icon('link', { size: 14 })),
         IS_STAFF
           ? h('span', { class: 'small', title: 'Opens in Shopify admin — ask your manager if you need it' }, t.resource.label + ' ' + (t.resource.title || ''))
           : h('a', { href: t.resource.url || '#', onclick: e => { e.preventDefault(); e.stopPropagation(); if (t.resource.url) openAdmin(t.resource.url); } },
@@ -301,11 +1385,17 @@
       h('div', { class: 'card-foot' },
         (() => {
           const ck = checklistLines(t.description);
-          if (ck) return h('span', { class: 'muted small', title: 'Checklist progress' }, '☑ ' + ck.items.filter(i => i.done).length + '/' + ck.items.length);
-          return t.description ? h('span', { class: 'muted small' }, '☰') : null;
+          if (ck) return h('span', { class: 'muted small ck-count', title: 'Checklist progress' }, icon('check-circle', { size: 14 }), ck.items.filter(i => i.done).length + '/' + ck.items.length);
+          return t.description ? h('span', { class: 'muted small', title: 'Has a description' }, icon('text', { size: 14 })) : null;
         })(),
+        h('span', { class: 'grow' }),
+        t.completed_at
+          ? h('button', { class: 'btn tiny', onclick: ev => { ev.stopPropagation(); void tickTask(t); } }, 'Reopen')
+          : h('button', { class: 'btn tiny done', onclick: ev => { ev.stopPropagation(); void tickTask(t); } },
+              icon('check', { size: 13 }), 'Done'),
         t.assignee ? h('span', { class: 'avatar', title: t.assignee.name }, t.assignee.initials)
-          : h('span', { class: 'avatar gray', title: 'Unassigned' }, '·')));
+          : h('span', { class: 'avatar gray', title: 'No owner yet' }, '·')
+      ));
 
     card.addEventListener('dragstart', e => {
       dragState = { taskId: t.id, moved: false };
@@ -340,7 +1430,7 @@
     try {
       const updated = await api('/tasks/' + taskId + '/move', { method: 'POST', body: { column_id: columnId, position } });
       task.completed_at = updated.completed_at; task.position = updated.position;
-      if (updated.completed_at) toast('Task completed 🎉');
+      if (updated.completed_at) toast('Task completed');
       render();
     } catch (e) { toast(e.message, true); await refreshBoard(); }
   }
@@ -374,6 +1464,14 @@
     function closeEditor() { box.replaceChildren(toggle); }
 
     toggle.addEventListener('click', openEditor);
+    // Opened by a key rather than a click (see bindShortcuts): consume the flag
+    // so a later re-render does not keep popping the editor back open.
+    if (state.quickAdd === col.id) {
+      state.quickAdd = null;
+      box.append(toggle);
+      setTimeout(openEditor, 0);
+      return box;
+    }
     box.append(toggle);
     return box;
   }
@@ -398,19 +1496,58 @@
       });
   }
 
-  function promptRenameColumn(col) {
-    openModal('Rename column', h('div', null,
-      h('div', { class: 'field' }, h('label', null, 'Column name'), h('input', { class: 'input', id: 'col-name', value: col.name, maxlength: 60 }))),
+  // Rename, team and delete used to be three unlabelled icons that only appeared
+  // on hover — invisible on a phone, and guesswork for anyone who does not live in
+  // the app. One button, one sheet, all three choices in words.
+  function editColumnSheet(col) {
+    const nameInput = h('input', { class: 'input', id: 'col-edit-name', value: col.name, maxlength: 60 });
+    // The shop's own list first, then anything a column already carries, so a board
+    // tagged before teams existed still suggests the spelling in use.
+    const known = [...new Set([...(state.board.teams || []),
+      ...(state.board.columns || []).map(c => c.team).filter(Boolean)])].sort();
+    const teamInput = h('input', { class: 'input', id: 'col-edit-team', value: col.team || '', maxlength: 40,
+      list: 'col-team-list', placeholder: 'Accounting, Warehouse, Packing\u2026' });
+
+    openModal('Edit ' + col.name, h('div', null,
+      h('div', { class: 'field' }, h('label', null, 'Column name'), nameInput),
+      h('div', { class: 'field' },
+        h('label', null, 'Which team works this column?'),
+        teamInput,
+        h('datalist', { id: 'col-team-list' }, known.map(t => h('option', { value: t }))),
+        h('div', { class: 'help' }, 'The dashboard gets a row per team. Leave it empty for no team; '
+          + 'a name you type that is not on the list is added to your teams.')),
+      h('div', { class: 'field' },
+        h('label', null, 'This column is the \u201cdone\u201d stage'),
+        h('label', { class: 'checkline' },
+          h('input', { type: 'checkbox', id: 'col-done', checked: !!col.is_done_stage }),
+          ' Tasks moved here are marked as finished')),
+      h('hr', { class: 'sep' }),
+      h('button', { class: 'btn sm danger', onclick: () => { closeSheet(); void deleteColumn(col); } },
+        'Delete this column')),
       async () => {
-        const name = document.getElementById('col-name').value.trim();
+        const name = document.getElementById('col-edit-name').value.trim();
+        const team = document.getElementById('col-edit-team').value.trim();
+        const doneEl = document.getElementById('col-done');
+        const is_done_stage = !!(doneEl && doneEl.checked);
         if (!name) return false;
-        await api('/columns/' + col.id, { method: 'PATCH', body: { name } });
+        if (state.team === col.team && team !== state.team) state.team = null;   // it just left this filter
+        await api('/columns/' + col.id, { method: 'PATCH', body: { name, team, is_done_stage } });
+        // Register the name too, so the vocabulary lives in one place and a new
+        // spelling shows up under Team the same day. A clash is not an error here:
+        // the column is saved, which is what the owner asked for.
+        if (team && !known.some(t => String(t).toLowerCase() === team.toLowerCase())) {
+          await api('/teams', { method: 'POST', body: { name: team } }).catch(() => null);
+        }
         await refreshBoard();
+        toast('Column updated');
         return true;
-      });
+      },
+      close => { closeSheet = close; });
   }
+  let closeSheet = () => {};
 
   async function deleteColumn(col) {
+    if (!state.board.columns.find(c => c.id === col.id)) return;
     if (!confirm(`Delete "${col.name}"? Its ${col.tasks.length} task(s) move to the first remaining column.`)) return;
     await api('/columns/' + col.id, { method: 'DELETE' });
     await refreshBoard();
@@ -443,7 +1580,8 @@
 
     const assigneeSel = h('select', { class: 'input' },
       h('option', { value: '' }, 'Unassigned'),
-      activeMembers.map(m => h('option', { value: m.id, selected: t.assignee?.id === m.id }, m.name + (m.whatsapp_verified ? ' 🟢' : ''))));
+      activeMembers.map(m => h('option', { value: m.id, selected: t.assignee?.id === m.id },
+                       m.name + (m.whatsapp_verified ? ' · on WhatsApp' : ''))));
     assigneeSel.value = t.assignee?.id || '';
 
     const colSel = h('select', { class: 'input' },
@@ -497,18 +1635,18 @@
             await refreshBoard();
             state.drawerTaskId = id; render();
           },
-        }, t.completed_at ? '↩ Reopen' : '✓ Mark done'),
+        }, ...(t.completed_at ? withIcon('reopen', 'Reopen', { size: 16 }) : withIcon('check', 'Mark done', { size: 16 }))),
         (t.assignee && !IS_STAFF) ? h('button', {
           class: 'btn', title: 'Send WhatsApp reminder to assignee',
           onclick: async e => {
             e.target.disabled = true;
             try {
               await api('/tasks/' + id + '/remind', { method: 'POST' });
-              toast('WhatsApp reminder queued 🔔');
+              toast('WhatsApp reminder queued');
             } catch (err) { toast(err.message, true); }
             e.target.disabled = false;
           },
-        }, '🔔 Nudge') : null,
+        }, ...withIcon('bell', 'Nudge', { size: 16 })) : null,
         h('span', { class: 'spacer' }),
         IS_STAFF ? null : h('button', {
           class: 'btn danger',
@@ -559,7 +1697,11 @@
       case 'updated': return 'Details updated';
       case 'moved': return 'Moved to ' + (m.to || '');
       case 'assigned': return 'Assigned to ' + (m.to || '');
-      case 'completed': return 'Marked as done ✅';
+      case 'completed': return 'Marked as done';
+      // The manual case is the one worth reading months later, so it says what it says:
+      // a human typed this number and Shopify would not let us confirm it.
+      case 'linked': return (m.manual ? 'Linked order #' + m.manual + ' by hand' : 'Linked to a Shopify object')
+        + (m.note ? ' \u2014 ' + m.note : '');
       case 'reopened': return 'Reopened';
       default: return a.action;
     }
@@ -576,6 +1718,11 @@
     if (t.resource) {
       wrap.append(h('div', { class: 'res-current' },
         h('span', { class: 'pill link' }, t.resource.label),
+        // 'not checked' is the whole difference between this link and every other one, so
+        // it sits on the card and not only in the activity log: staff act on cards.
+        t.resource.verified === false
+          ? h('span', { class: 'pill warn', title: 'Number typed by hand. This app may not read orders from before it was installed, so nobody checked it.' }, 'not checked')
+          : null,
         IS_STAFF
           ? h('span', { class: 'small' }, t.resource.title || 'Linked object')
           : h('a', { href: t.resource.url || '#', class: 'small', onclick: e => { e.preventDefault(); if (t.resource.url) openAdmin(t.resource.url); } }, t.resource.title || 'Open'),
@@ -587,14 +1734,98 @@
             await api('/tasks/' + t.id, { method: 'PATCH', body: { resource_type: null } });
             await refreshBoard(); state.drawerTaskId = t.id; render();
           },
-        }, '✕ Remove')));
+        }, ...withIcon('close', 'Remove', { size: 14 }))));
     } else {
-      wrap.append(h('button', { class: 'btn sm', onclick: () => openResourcePicker(t) }, '🔗 Link order, product, customer or blog post'));
+      wrap.append(h('button', { class: 'btn sm', onclick: () => openResourcePicker(t) }, ...withIcon('link', 'Link order, product, customer or blog post', { size: 16 })));
     }
     return wrap;
   }
 
   /* -------------------------------------------------------- resource picker */
+
+  /*
+   * A limited search, explained where it was hit — never a dead end. Three things, in the
+   * one place the merchant is already reading: the reason, how to lift the limit for good
+   * (the steps), and a link they can make right now without any permission, by typing the
+   * order number. `onPick` is what the calling surface does with that number: the task
+   * picker saves it, the template flow files the task with it. Only orders can be bounded
+   * this way, so only order searches get the extra lines.
+   */
+  function resNote(text, type, onPick, cta) {
+    if (type !== 'order') return h('div', { class: 'res-note' }, text);
+
+    let open = false;
+    const steps = h('div', { class: 'res-note-steps' },
+      h('div', null, '1. In the Partner Dashboard, open your app → API access → Protected customer data, and request access to read all orders. Shopify reviews this once per app.'),
+      h('div', null, '2. Once it is approved, set SHOPIFY_READ_ALL_ORDERS=true in this app\u2019s .env and run php artisan config:clear.'),
+      h('div', null, '3. Ask the store to reinstall TaskPe so the new permission is granted. This notice disappears by itself after that.'));
+
+    return h('div', { class: 'res-note' },
+      h('div', null, text),
+      h('div', { class: 'res-note-now' },
+        'Meanwhile: open the order in Shopify and use ', h('b', null, 'More actions \u2192 Create task'),
+        '. That links the order itself, so it works for old orders too.'),
+      // A class toggle rather than `hidden`, so the state is visible to the smoke test's
+      // DOM stub as well as to a browser.
+      h('button', {
+        class: 'btn plain sm',
+        onclick: (ev) => {
+          open = !open;
+          steps.className = 'res-note-steps' + (open ? ' open' : '');
+          ev.currentTarget.textContent = open ? 'Hide the steps' : 'How to open the full order history';
+        },
+      }, 'How to open the full order history'),
+      steps,
+      // And the thing that needs no approval, right here instead of three screens away.
+      onPick ? manualOrderRow(cta || 'Save', onPick) : null);
+  }
+
+  /*
+   * Link an order by its number, typed. Shopify does not let this app READ an order from
+   * before the install, but a task may still LINK one: the merchant is looking at the order
+   * in their own admin, and the number is theirs, not ours. So the row is honest in both
+   * directions — the card carries a "not checked" mark and the task gets an activity line
+   * naming who typed it, because a link that looks verified when it is not is worse than no
+   * link at all. A pasted admin URL is better than a number: it carries the order's real id,
+   * and then the link goes straight to that order.
+   */
+  function manualOrderRow(cta, onPick) {
+    const input = h('input', { class: 'input', placeholder: 'Order number, e.g. 101 — or paste the order link' });
+    const hint = h('div', { class: 'res-manual-hint' });
+    const form = h('div', { class: 'res-manual-form' },
+      input,
+      h('button', { class: 'btn sm', onclick: () => use() }, 'Use this number'),
+      hint);
+
+    function use() {
+      const raw = input.value.trim();
+      const pasted = raw.match(/\/orders\/(\d+)/);
+      const num = pasted ? null : raw.replace(/^#/, '');
+
+      if (!pasted && !/^\d{1,12}$/.test(num)) {
+        hint.textContent = 'A number like 101, or a link like …/orders/6123456789';
+        return;
+      }
+
+      onPick(pasted
+        ? { type: 'order', id: Number(pasted[1]), ref: null, gid: null, title: 'order ' + pasted[1], url: null }
+        : { type: 'order', id: null, ref: num, gid: null, title: '#' + num, url: null });
+      hint.textContent = 'Now press “' + cta + '”. TaskPe could not check this number against Shopify, so the task says so.';
+    }
+
+    let open = false;
+    return h('div', { class: 'res-manual' },
+      h('button', {
+        class: 'btn plain sm',
+        onclick: (ev) => {
+          open = !open;
+          form.className = 'res-manual-form' + (open ? ' open' : '');
+          ev.currentTarget.textContent = open ? 'Cancel' : 'Link an older order by number';
+          if (open) input.focus();
+        },
+      }, 'Link an older order by number'),
+      form);
+  }
 
   function openResourcePicker(task) {
     const types = [['order', 'Orders'], ['draft_order', 'Draft orders'], ['product', 'Products'], ['customer', 'Customers'], ['article', 'Blog posts']];
@@ -604,6 +1835,12 @@
     const searchInput = h('input', { class: 'input', placeholder: 'Search… e.g. #1001 or product name' });
     const results = h('div', null, h('div', { class: 'res-empty' }, 'Type to search'));
     const tabs = h('div', { class: 'res-tabs' });
+
+    // `searchFailed` keeps the reason next to the field instead of inside the result
+    // list, so the retry button and the sentence are read together — and a search that
+    // failed is retried by pressing the button, not by deleting a character and typing
+    // it back, which is what people otherwise do.
+    let searchFailed = null;
 
     const doSearch = debounce(async () => {
       const q = searchInput.value.trim();
@@ -615,13 +1852,20 @@
         params = 'type=' + activeType + '&id=' + paste[2];
       } else {
         if (!q) { results.replaceChildren(h('div', { class: 'res-empty' }, 'Type to search')); return; }
+        // Two characters, or a number: a single letter matches half the store, and one
+        // stray symbol (`#`, `?`) is nothing for Shopify to search for at all.
+        if (q.replace(/^#/, '').trim().length < 2 && !/^#?\d/.test(q)) {
+          results.replaceChildren(h('div', { class: 'res-empty' }, 'Type at least two characters'));
+          return;
+        }
         params = 'type=' + activeType + '&q=' + encodeURIComponent(q.replace(/^#/, ''));
       }
+      searchFailed = null;
       renderTabs();
       results.replaceChildren(h('div', { class: 'res-empty' }, 'Searching…'));
       try {
         const data = await api('/resources/search?' + params);
-        results.replaceChildren(...(data.items.length ? data.items.map(item => h('div', {
+        const rows = (data.items || []).map(item => h('div', {
           class: 'res-item',
           onclick: ev => {
             selected = item;
@@ -634,9 +1878,35 @@
             h('div', { class: 'ri-title' }, item.title || '(no title)'),
             h('div', { class: 'ri-sub' }, types.find(([k]) => k === item.type)?.[1] + (item.subtitle ? ' · ' + item.subtitle : '')),
           ),
-        )) : [h('div', { class: 'res-empty' }, 'No matches found')]));
+        ));
+
+        if (!rows.length) {
+          rows.push(h('div', { class: 'res-empty' },
+            'Nothing matched that in ' + (types.find(([k]) => k === activeType) || [, 'Shopify'])[1] + '.'));
+        }
+        // The server adds a note when it had to narrow the search (Shopify only lets us
+        // read orders created after the install until the protected customer data review
+        // approves more). Without it, "no matches" reads as "this order does not exist" —
+        // and the merchant concludes the app is broken.
+        if (data.note) rows.push(resNote(data.note, activeType, (item) => {
+          // Same `selected` a search result sets, so there is still exactly one way this
+          // dialog writes: the button at the bottom. Fewer moving parts, no second flow.
+          selected = item;
+          [...results.children].forEach(c2 => (c2.style.background = ''));
+        }));
+
+        results.replaceChildren(...rows);
       } catch (e) {
-        results.replaceChildren(h('div', { class: 'res-empty' }, e.message || 'Search failed'));
+        searchFailed = e.message || 'Shopify could not answer this search.';
+        results.replaceChildren(h('div', { class: 'res-failed' },
+          h('span', null, searchFailed),
+          // A retry is offered whenever the reason is Shopify being slow, not when the
+          // reason is a permission the store has not granted — the second does not get
+          // better on the second try, and a button that never works is worse than none.
+          /try again|a second later|busy or slow/i.test(searchFailed)
+            ? h('button', { class: 'btn sm', onclick: () => doSearch.run() }, 'Try again')
+            : null,
+          e.body && e.body.detail ? h('div', { class: 'res-detail' }, e.body.detail) : null));
       }
     }, 350);
 
@@ -660,6 +1930,10 @@
             resource_gid: selected.gid,
             resource_title: selected.title,
             resource_url: selected.url,
+            // Only set for a hand-typed number. The server builds the title and the link
+            // from it and records the activity line — never trust the browser to label its
+            // own unverified input.
+            resource_ref: selected.ref || null,
           },
         });
         await refreshBoard();
@@ -693,7 +1967,7 @@
     const doneCount = ck.items.filter(i => i.done).length;
 
     return h('div', { class: 'ck-list' },
-      h('div', { class: 'ck-progress' }, '📦 Checklist — ' + doneCount + '/' + ck.items.length + ' done'),
+      h('div', { class: 'ck-progress' }, icon('stack', { size: 15 }), 'Checklist — ' + doneCount + '/' + ck.items.length + ' done'),
       ck.items.map(item => h('button', {
         class: 'ck-item' + (item.done ? ' done' : ''),
         onclick: async () => {
@@ -705,14 +1979,21 @@
           } catch (e) { toast(e.message, true); }
         },
       },
-        h('span', { class: 'ck-box' }, item.done ? '✓' : ''),
+        h('span', { class: 'ck-box' }, item.done ? icon('check', { size: 11, stroke: '2.6' }) : null),
         h('span', { class: 'ck-text' }, item.text))));
   }
 
   /* ------------------------------------------- COD / NDR template pack modal */
 
   function fillTemplateTitle(tpl, orderTitle) {
-    const today = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+    // Deliberately identical to TaskTemplates::renderTitle() (PHP format "d M Y"),
+    // because POST /api/tasks/bulk treats "same title + same order + still open"
+    // as its duplicate test. If the two date formats drift, a task created from
+    // the board and one created from the Orders list stop recognising each other
+    // and the merchant files the same follow-up twice.
+    const d = new Date();
+    const today = String(d.getDate()).padStart(2, '0') + ' '
+      + d.toLocaleDateString('en-GB', { month: 'short' }) + ' ' + d.getFullYear();
     return (tpl.title || tpl.name).replace('{order}', orderTitle || '').replace('{date}', today).replace(/\s+/g, ' ').trim();
   }
 
@@ -726,7 +2007,7 @@
     const s = state.board;
     const templates = Object.entries(s.task_templates || {});
     const body = h('div', null);
-    const close = openModalAuto('📦 Task templates — India COD / NDR pack', body);
+    const close = openModalAuto('Task templates — India COD / NDR pack', body);
 
     function renderGrid() {
       body.replaceChildren(
@@ -735,7 +2016,7 @@
           class: 'tmpl-card',
           onclick: () => renderDetail(tpl),
         },
-          h('span', { class: 'tmpl-emoji' }, tpl.emoji || '📋'),
+          h('span', { class: 'tmpl-icon' }, icon(tpl.icon || 'box', { size: 22 })),
           h('span', { class: 'tmpl-name' }, tpl.name),
           h('span', { class: 'tmpl-tag' }, tpl.tagline || '')))));
     }
@@ -746,14 +2027,27 @@
 
       const search = h('input', { class: 'input', placeholder: 'Search order… e.g. #1001' });
       const results = h('div', null, h('div', { class: 'res-empty' }, 'Type to search'));
-      const createBtn = h('button', { class: 'btn primary', disabled: needsResource }, '✨ Create task');
+      const createBtn = h('button', { class: 'btn primary', disabled: needsResource }, ...withIcon('plus', 'Create task', { size: 16 }));
 
       const doSearch = debounce(async () => {
         const q = search.value.trim();
         if (!q) { results.replaceChildren(h('div', { class: 'res-empty' }, 'Type to search')); return; }
+        if (q.replace(/^#/, '').trim().length < 2 && !/^#?\d/.test(q)) {
+          results.replaceChildren(h('div', { class: 'res-empty' }, 'Type at least two characters'));
+          return;
+        }
         results.replaceChildren(h('div', { class: 'res-empty' }, 'Searching…'));
         try {
           const data = await api('/resources/search?type=' + tpl.resource_type + '&q=' + encodeURIComponent(q.replace(/^#/, '')));
+          // The order line says "No matches found" and nothing else, which for an older
+          // order is simply wrong — Shopify has not let us read it. The server's note is
+          // the difference between "search harder" and "go approve the scope".
+          const note = data.note ? resNote(data.note, tpl.resource_type, (item) => {
+            // A typed number is a real selection here: without it this template could not
+            // be filed against an older order at all, which is the flow merchants asked for.
+            selected = item;
+            createBtn.disabled = false;
+          }, 'Create task') : null;
           results.replaceChildren(...(data.items.length ? data.items.map(item => h('div', {
             class: 'res-item',
             onclick: ev => {
@@ -766,8 +2060,16 @@
             item.image ? h('img', { src: item.image, alt: '' }) : h('img', { alt: '' }),
             h('div', null,
               h('div', { class: 'ri-title' }, item.title || '(no title)'),
-              h('div', { class: 'ri-sub' }, item.subtitle || '')))) : [h('div', { class: 'res-empty' }, 'No matches found')]));
-        } catch (e) { results.replaceChildren(h('div', { class: 'res-empty' }, e.message || 'Search failed')); }
+              h('div', { class: 'ri-sub' }, item.subtitle || '')))) : [h('div', { class: 'res-empty' }, 'No matches found'), note].filter(Boolean)));
+        } catch (e) {
+          results.replaceChildren(h('div', { class: 'res-failed' },
+            h('span', null, e.message || 'Shopify could not answer this search.'),
+            // Only worth a retry button when a retry can help: a slow Shopify recovers,
+            // an unapproved data scope does not.
+            /try again|a second later|busy or slow/i.test(e.message || '')
+              ? h('button', { class: 'btn sm', onclick: () => doSearch.run() }, 'Try again')
+              : null));
+        }
       }, 350);
       search.addEventListener('input', doSearch);
 
@@ -785,23 +2087,24 @@
           resource_gid: selected?.gid || null,
           resource_title: selected?.title || null,
           resource_url: selected?.url || null,
+          resource_ref: selected?.ref || null,
         };
         try {
           const created = await api('/tasks', { method: 'POST', body: payload });
           close();
           await refreshBoard();
           if (created?.id) { state.drawerTaskId = created.id; render(); }
-          toast((tpl.emoji || '✨') + ' Task created — checklist ready');
+          toast('Task created — checklist ready');
         } catch (e) {
           toast(e.message, true); createBtn.disabled = false;
         }
       });
 
       body.replaceChildren(
-        h('button', { class: 'btn plain sm', onclick: renderGrid }, '← All templates'),
+        h('button', { class: 'btn plain sm', onclick: renderGrid }, ...withIcon('arrow-left', 'All templates', { size: 15 })),
         h('div', { class: 'tmpl-detail' },
           h('div', { class: 'tmpl-dhead' },
-            h('span', { class: 'tmpl-emoji big' }, tpl.emoji || '📋'),
+            h('span', { class: 'tmpl-icon big' }, icon(tpl.icon || 'box', { size: 28 })),
             h('div', null,
               h('h3', null, tpl.name),
               h('div', { class: 'muted small' }, tpl.tagline || ''))),
@@ -811,7 +2114,7 @@
             needsResource ? h('span', { class: 'pill link' }, 'links an order') : h('span', { class: 'pill done' }, 'recurring chore')),
           h('div', { class: 'ck-preview' }, (tpl.checklist || []).map(it =>
             h('div', { class: 'ck-line' }, h('span', { class: 'ck-box' }), h('span', { class: 'ck-text' }, it)))),
-          needsResource ? h('div', { class: 'field' }, h('label', null, '🔗 Link the order'), search, h('div', { class: 'mt' }, results)) : null,
+          needsResource ? h('div', { class: 'field' }, h('label', null, ...withIcon('link', 'Link the order', { size: 14 })), search, h('div', { class: 'mt' }, results)) : null,
           h('div', { class: 'row-flex mt' }, createBtn)));
       if (needsResource) setTimeout(() => search.focus(), 50);
     }
@@ -994,6 +2297,96 @@
 
   /* -------------------------------------------------------------- team view */
 
+  // Teams are the one thing an owner asks for that this page could not do: the board
+  // tags a column with a free-text name, but nothing let you say the list of
+  // departments first — so "Warehouse" and "warehouse" both appeared, and the
+  // dashboard split down the middle. Names live in the shop's settings (no table,
+  // no migration) and columns reference them.
+  function renderTeamPanel() {
+    const teams = (state.board.teams || []).slice();
+    const rows = teamRows().filter(r => r.team);
+    const statsFor = name => {
+      const r = rows.find(x => String(x.team).toLowerCase() === String(name).toLowerCase());
+      return r ? { cols: r.columns.length, open: r.open, late: r.overdue } : { cols: 0, open: 0, late: 0 };
+    };
+
+    const line = name => {
+      const c = statsFor(name);
+      const meta = c.cols
+        ? c.cols + ' column' + (c.cols === 1 ? '' : 's') + ' \u00b7 '
+          + (c.open ? c.open + ' open' : 'nothing open') + (c.late ? ' \u00b7 ' + c.late + ' late' : '')
+        : 'no column uses this name yet';
+
+      return h('div', { class: 'team-row' },
+        h('div', { class: 'team-id' }, h('b', null, name), h('span', { class: 'small' }, meta)),
+        h('button', { class: 'btn sm', onclick: () => renameTeamModal(name) }, 'Rename'),
+        h('button', {
+          class: 'btn sm plain',
+          title: 'Removes the name only. Work is never deleted, and nothing loses a column.',
+          onclick: async () => {
+            if (!confirm('Remove the team "' + name + '"?')) return;
+            try {
+              await api('/teams/' + encodeURIComponent(name), { method: 'DELETE' });
+              await refreshBoard();
+              toast('Team removed');
+            } catch (e) { toast(e.message, true); }
+          },
+        }, 'Remove'));
+    };
+
+    return h('div', { class: 'panel team-panel' },
+      h('div', { class: 'p-head' },
+        h('h2', null, 'Teams'),
+        h('span', { class: 'sub' }, teams.length
+          ? teams.length + ' named \u00b7 the dashboard groups columns by these'
+          : 'nothing named yet'),
+        h('span', { class: 'spacer' }),
+        h('button', { class: 'btn sm', onclick: addTeamModal }, ...withIcon('plus', 'Add a team', { size: 15 }))),
+      teams.length
+        ? h('div', { class: 'p-body flush' }, teams.map(line))
+        : h('div', { class: 'p-body' }, h('div', { class: 'muted small' },
+          'A team is only a name — Accounting, Warehouse, Returns. Add one, then tag a column '
+          + 'with it on the board (every column has an Edit button). The dashboard and the board '
+          + 'then split by team.')));
+  }
+
+  /** One field, two uses: the whole of what a team is. */
+  function teamNameModal(title, label, value, help, run) {
+    const input = h('input', { class: 'input', id: 'team-name', value: value || '', maxlength: 40,
+      placeholder: 'Accounting, Warehouse, Returns\u2026' });
+
+    openModal(title, h('div', null,
+      h('div', { class: 'field' }, h('label', { for: 'team-name' }, label), input),
+      h('div', { class: 'help' }, help)),
+      async () => {
+        const name = String(document.getElementById('team-name').value || '').trim();
+        if (!name) { toast('Give the team a name', true); return false; }
+        try {
+          await run(name);
+          await refreshBoard();
+          toast('Saved');
+        } catch (e) {
+          // The API answers these with a sentence meant for the merchant
+          // ("2 columns still use Store"), so it goes up as it was written.
+          toast(e.message, true);
+          return false;
+        }
+        return true;
+      });
+  }
+
+  function addTeamModal() {
+    teamNameModal('Add a team', 'Team name', '',
+      'Up to 12 per store. Naming a team does not move any work — tag a column with it to do that.',
+      name => api('/teams', { method: 'POST', body: { name } }));
+  }
+
+  function renameTeamModal(from) {
+    teamNameModal('Rename team', 'New name', from,
+      'Columns using \u201c' + from + '\u201d are retagged in the same step, so none of that work falls out of the dashboard.',
+      name => api('/teams/' + encodeURIComponent(from), { method: 'PATCH', body: { name } }));
+  }
+
   function renderTeam() {
     const s = state.board;
     const rows = s.members.map(m => h('div', { class: 'mem-row' },
@@ -1002,9 +2395,9 @@
         h('div', { class: 'm-name' }, m.name, ' ', m.role === 'owner' ? h('span', { class: 'pill medium' }, 'OWNER') : null, m.active ? null : h('span', { class: 'pill' }, ' disabled')),
         h('div', { class: 'm-sub' }, '+' + m.phone)),
       h('div', { class: 'm-actions' },
-        m.portal_active ? h('span', { class: 'verify-badge yes', title: 'Can use the web portal — no Shopify admin needed' }, '🌐 portal') : null,
+        m.portal_active ? h('span', { class: 'verify-badge yes', title: 'Can use the web portal — no Shopify admin needed' }, icon('globe', { size: 13 }), 'portal') : null,
         m.whatsapp_verified
-          ? h('span', { class: 'verify-badge yes' }, '✓ WhatsApp verified')
+          ? h('span', { class: 'verify-badge yes' }, icon('check-circle', { size: 13 }), 'WhatsApp verified')
           : h('span', { class: 'verify-badge no' }, 'Not verified'),
         h('button', {
           class: 'btn sm',
@@ -1017,7 +2410,7 @@
               await refreshBoard();
             } catch (e) { toast(e.message, true); }
           },
-        }, m.portal_active ? '↻ Portal link' : '🔗 Portal link'),
+        }, ...withIcon(m.portal_active ? 'refresh' : 'link', 'Portal link', { size: 15 })),
         m.portal_active ? h('button', {
           class: 'btn sm plain',
           title: 'Revoke this member\'s web portal access immediately',
@@ -1043,13 +2436,16 @@
         }, 'Remove'))));
 
     return h('div', { class: 'page' },
+      renderTeamPanel(),
       h('div', { class: 'two-col' },
         h('div', null,
           h('div', { class: 'panel' },
-            h('div', { class: 'p-head' }, h('h2', null, 'Team members'),
+            // "People", not "Team members": the panel above owns the word "Teams"
+            // now, and two near-identical headings on one page is its own small maze.
+            h('div', { class: 'p-head' }, h('h2', null, 'People'),
               h('span', { class: 'sub' }, `${s.members.filter(m => m.active).length} active`)),
             h('div', { class: 'p-body flush' },
-              s.members.length ? rows : h('div', { class: 'empty-state' }, h('div', { class: 'big' }, '👋'), 'Add your first team member — your VA, packer, or yourself.')))),
+              s.members.length ? rows : h('div', { class: 'empty-state' }, icon('people', { size: 34, class: 'big' }), 'Add your first team member — your VA, packer, or yourself.')))),
         h('div', null,
           h('div', { class: 'panel' },
             h('div', { class: 'p-head' }, h('h2', null, 'Add member')),
@@ -1082,13 +2478,13 @@
             h('div', { class: 'p-head' }, h('h2', null, 'No Shopify login for staff? Use the web portal')),
             h('div', { class: 'p-body small muted' },
               h('p', null, 'Shopify Basic gives you only ONE staff seat — your packer or VA usually can\'t open Shopify admin at all.'),
-              h('p', { class: 'mt' }, 'Tap 🔗 Portal link next to a member and send them the link: they get this SAME board (tasks, COD templates, checklists) in any phone browser. No Shopify account, no app install — just "Add to Home Screen".'),
+              h('p', { class: 'mt' }, 'Tap Portal link next to a member and send them the link: they get this SAME board (tasks, COD templates, checklists) in any phone browser. No Shopify account, no app install — just "Add to Home Screen".'),
               h('p', { class: 'mt' }, 'Staff can create, move and complete tasks — they can\'t delete tasks or touch settings, billing or the team list. Revoke a link anytime. Works on every plan, including Free.'))),
           h('div', { class: 'panel' },
             h('div', { class: 'p-head' }, h('h2', null, 'How WhatsApp verification works')),
             h('div', { class: 'p-body small muted' },
               h('p', null, '1. Add a member → we WhatsApp them a 6-digit code (from YOUR Whatify number).'),
-              h('p', { class: 'mt' }, '2. They share the code → enter it here → verified ✅'),
+              h('p', { class: 'mt' }, '2. They share the code → enter it here → verified'),
               h('p', { class: 'mt' }, '3. From then on, assigned tasks and reminders land on their WhatsApp instantly.'),
               h('p', { class: 'mt' }, 'Tip: ask staff to reply "hi" to your WhatsApp number once — it keeps instant messages flowing.'))))));
   }
@@ -1129,7 +2525,7 @@
   function renderSettings() {
     if (!state.settings || state.settings === 'loading') {
       void renderSettingsAsync();
-      return h('div', { class: 'page' }, h('div', { class: 'boot' }, h('div', { class: 'boot-text' }, 'Loading settings…')));
+      return h('div', { class: 'page' }, bootView('Loading your settings…', { noHint: true }));
     }
     const st = state.settings;
     if (st.error) return h('div', { class: 'page' }, h('div', { class: 'banner crit' }, 'Failed to load settings: ' + st.error));
@@ -1164,12 +2560,12 @@
                 const nowOn = checkbox.checked;
                 state.settings = null;
                 await loadBoard();
-                toast('WhatsApp alerts ' + (nowOn ? 'enabled ✅' : 'disabled'));
+                toast('WhatsApp alerts ' + (nowOn ? 'enabled' : 'disabled'));
                 render();
               } catch (err) { toast(err.message, true); e.target.disabled = false; }
             },
           }, waOn ? 'Save' : 'Enable WhatsApp'),
-          !planAllowsWA ? h('button', { class: 'btn plain sm', onclick: () => { state.view = 'plan'; render(); } }, 'View plans →') : null)));
+          !planAllowsWA ? h('button', { class: 'btn plain sm', onclick: () => goView('plan') }, 'View plans →') : null)));
 
     // COD / NDR automation hub — independent of WhatsApp, always visible
     // (every sub-feature OFF by default; merchants enable what they need).
@@ -1225,6 +2621,35 @@
             }, 'Save'))));
     })();
 
+    // What TaskPe puts *inside* the Shopify admin, and how a merchant turns it
+    // on. Both the bulk action and the block need a step from them (Shopify does
+    // not let an app place a block), so the instructions live next to the
+    // automations they belong to instead of only in extensions/README.md.
+    const adminPanel = h('div', { class: 'panel' },
+      h('div', { class: 'p-head' },
+        h('h2', null, 'In your Shopify admin'),
+        h('span', { class: 'sub' }, 'File follow-ups without leaving the order')),
+      h('div', { class: 'p-body small' },
+        h('div', { class: 'how-row' }, icon('plus', { size: 16 }),
+          h('div', null, h('b', null, 'One order'),
+            h('p', { class: 'mt' }, 'Open it → ', h('b', null, 'More actions'), ' → ', h('b', null, 'Create task'), '. The order is pre-linked, so the task never loses its context.'))),
+        h('div', { class: 'how-row' }, icon('stack', { size: 16 }),
+          h('div', null, h('b', null, 'Many orders at once'),
+            h('p', { class: 'mt' }, 'Tick them on the Orders list → ', h('b', null, 'Create TaskPe tasks'), ' → choose the template and who does them. Orders that already have that task open are skipped, so pressing it twice is safe.'))),
+        h('div', { class: 'how-row' }, icon('check-circle', { size: 16 }),
+          h('div', null, h('b', null, 'The order-page card'),
+            h('p', { class: 'mt' }, 'On an order page, choose ', h('b', null, 'Add custom app block'), ' → TaskPe. Then you can tick checklist steps and file a COD/NDR task while the order is open. Only you can pin a block — Shopify does not let apps place it.'))),
+        h('div', { class: 'how-row' }, icon('edit', { size: 16 }),
+          h('div', null, h('b', null, 'An entry missing from the admin menus?'),
+            h('p', { class: 'mt' }, 'Each one is a Shopify extension, so it only reaches this store when a new version is ',
+              h('b', null, 'released'), ': run ', h('code', null, 'shopify app deploy'),
+              ' from your own computer (', h('code', null, 'extensions/README.md'), '), then in the Partner Dashboard open your app \u2192 ',
+              h('b', null, 'Versions'), ' \u2192 release that version. A deployed but unreleased version is invisible \u2014 this is the usual reason a deploy appears to do nothing.'),
+            h('p', { class: 'mt' }, 'Then check the two placements Shopify controls: the bulk entry exists ',
+              h('b', null, 'only while rows are ticked'), ', and the order-page card must be pinned once by you under ',
+              h('b', null, 'Add custom app block'), ' \u2014 apps are not allowed to place blocks, so no deploy can make it appear by itself.'))),
+        h('p', { class: 'mt small muted' }, 'On the board: n adds a task · t opens templates · c completes the open task · 1–4 switch sections · ? lists them.')));
+
     // DISABLED state: show only the master card + explanation. Zero WhatsApp
     // UI otherwise — feature stays invisible until the merchant turns it on.
     if (!waOn) {
@@ -1234,18 +2659,19 @@
             masterPanel,
             h('div', { class: 'panel' },
               h('div', { class: 'p-body small muted' },
-                h('p', null, '📴 WhatsApp alerts are turned off. Your board, team and task linking work exactly the same — nothing is ever sent to WhatsApp.'),
+                h('p', null, '— WhatsApp alerts are turned off. Your board, team and task linking work exactly the same — nothing is ever sent to WhatsApp.'),
                 h('p', { class: 'mt' }, 'Turn the switch on when you want: instant task pings to staff, due reminders, and the owner\'s morning digest.')))),
           h('div', null,
             codPanel,
+            adminPanel,
             h('div', { class: 'panel' },
               h('div', { class: 'p-head' }, h('h2', null, 'Setup guide')),
               h('div', { class: 'p-body small muted' },
-                h('p', null, '1️⃣ Turn the switch ON above.'),
-                h('p', { class: 'mt' }, '2️⃣ Create an account at ', h('b', null, 'whatify.in'), ' and connect your WhatsApp Business number.'),
-                h('p', { class: 'mt' }, '3️⃣ Generate an API key there and paste it here.'),
-                h('p', { class: 'mt' }, '4️⃣ Add yourself as an Owner in the Team tab and verify your number.'),
-                h('p', { class: 'mt' }, '5️⃣ (Recommended) Create message templates in Whatify so alerts also work outside the 24-hour window.'),
+                h('p', null, '1. Turn the switch ON above.'),
+                h('p', { class: 'mt' }, '2. Create an account at ', h('b', null, 'whatify.in'), ' and connect your WhatsApp Business number.'),
+                h('p', { class: 'mt' }, '3. Generate an API key there and paste it here.'),
+                h('p', { class: 'mt' }, '4. Add yourself as an Owner in the Team tab and verify your number.'),
+                h('p', { class: 'mt' }, '5. (Recommended) Create message templates in Whatify so alerts also work outside the 24-hour window.'),
                 h('p', { class: 'mt' }, h('button', { class: 'btn plain sm', onclick: openTour }, 'Replay the intro tour')))))));
     }
 
@@ -1270,7 +2696,7 @@
                 (() => {
                   const sel = h('select', { class: 'input', id: 'wf-account' },
                     wf.accounts.map(a => h('option', { value: a.id, selected: a.id === (s.whatsapp_account_id || wf.default_account_id) },
-                      `${a.display_name || 'Number'} (+${a.phone_number}) ${a.quality_rating === 'GREEN' ? '🟢' : ''}`)));
+                      `${a.display_name || 'Number'} (+${a.phone_number})` + (a.quality_rating === 'GREEN' ? ' · quality: healthy' : ''))));
                   return sel;
                 })()) : null,
               wf.wallet && wf.connected ? h('p', { class: 'small muted mb' }, `Whatify wallet: ₹${Number(wf.wallet.balance ?? 0).toFixed(2)} balance`) : null,
@@ -1294,7 +2720,7 @@
                   onclick: async () => {
                     try { state.settings = await api('/settings'); render(); toast('Refreshed'); } catch (e) { toast(e.message, true); }
                   },
-                }, '↻ Test / refresh') : null))),
+                }, ...withIcon('refresh', 'Test / refresh', { size: 15 })) : null))),
 
           // ---- templates
           wf.connected ? h('div', { class: 'panel' },
@@ -1356,7 +2782,7 @@
                       toast(r.message, !r.ok);
                     } catch (err) { toast(err.message, true); }
                   },
-                }, '📤 Send digest now'),
+                }, ...withIcon('send', 'Send digest now', { size: 16 })),
                 h('button', {
                   class: 'btn plain',
                   onclick: async () => {
@@ -1384,14 +2810,15 @@
         // ---- right rail: setup guide
         h('div', null,
           codPanel,
+          adminPanel,
           h('div', { class: 'panel' },
             h('div', { class: 'p-head' }, h('h2', null, 'Setup guide')),
             h('div', { class: 'p-body small muted' },
-              h('p', null, '1️⃣ Create an account at ', h('b', null, 'whatify.in'), ' and connect your WhatsApp Business number.'),
-              h('p', { class: 'mt' }, '2️⃣ Generate an API key and paste it on this page.'),
-              h('p', { class: 'mt' }, '3️⃣ Add yourself as an Owner in the Team tab and verify your number.'),
-              h('p', { class: 'mt' }, '4️⃣ (Recommended) Create the 4 templates below in your Whatify dashboard so messages work even outside the 24-hour window.'),
-              h('p', { class: 'mt' }, '💸 Cost: task alerts are "utility" messages — about ₹0.12 each on your Whatify wallet.'),
+              h('p', null, '1. Create an account at ', h('b', null, 'whatify.in'), ' and connect your WhatsApp Business number.'),
+              h('p', { class: 'mt' }, '2. Generate an API key and paste it on this page.'),
+              h('p', { class: 'mt' }, '3. Add yourself as an Owner in the Team tab and verify your number.'),
+              h('p', { class: 'mt' }, '4. (Recommended) Create the 4 templates below in your Whatify dashboard so messages work even outside the 24-hour window.'),
+              h('p', { class: 'mt' }, 'Cost: task alerts are "utility" messages — about ₹0.12 each on your Whatify wallet.'),
               h('p', { class: 'mt' }, h('button', { class: 'btn plain sm', onclick: openTour }, 'Replay the intro tour')))),
           h('div', { class: 'panel' },
             h('div', { class: 'p-head' }, h('h2', null, 'Copy-paste templates')),
@@ -1455,14 +2882,103 @@
 
   /* -------------------------------------------------------------- plan view */
 
-  // Price displayed in the merchant's billing currency: exact entry when the
-  // plan defines it (INR for Indian stores), USD fallback otherwise — same
-  // logic as BillingService::resolvePrice on the backend.
+  /*
+   * The number on a plan card, and what kind of number it is.
+   *
+   * The backend sends both flavours under `state.board.plans.<key>`: `billed` is read back from the
+   * store's own Shopify subscription and exists only for the plan the store is actually on; `list`
+   * is this app's price table for the plans it is not on; `exact` says whether a price is defined in
+   * the store's billing currency at all. Rendering takes the first one that exists and never dresses
+   * a list price up as an invoice — that confusion is the bug this screen was rebuilt around (a
+   * hardcoded ₹499 sitting beside a $5.99 plan), and a merchant who catches it stops believing every
+   * other number on the page.
+   */
   function planPrice(key) {
-    const cur = state.board.shop?.currency || 'USD';
-    const prices = state.board.plans?.[key]?.prices || {};
-    const code = prices[cur] !== undefined ? cur : 'USD';
-    return { amount: Number(prices[code] ?? 0), code };
+    const cfg = (state.board.plans || {})[key] || {};
+
+    if (cfg.billed) {
+      return {
+        amount: Number(cfg.billed.amount), code: cfg.billed.currency, billed: true,
+        interval: cfg.billed.interval, renews: cfg.billed.renews_at, test: !!cfg.billed.test,
+        trial: cfg.billed.trial, drift: cfg.drift || null,
+      };
+    }
+
+    if (cfg.list != null) {
+      return {
+        amount: Number(cfg.list), code: cfg.code || 'USD', billed: false,
+        exact: !!cfg.exact, trial: cfg.trial_days, drift: cfg.drift || null,
+      };
+    }
+
+    const code = (state.board.shop && state.board.shop.currency) || 'USD';
+
+    // A plan that costs nothing and a plan we have no price for are different answers, and only
+    // one of them may be printed as "Free".
+    return cfg.free_plan
+      ? { amount: 0, code, free: true, billed: false }
+      : { amount: 0, code, unknown: true, billed: false };
+  }
+
+  // One line of provenance under a price. An unlabelled number on a pricing page is a promise
+  // this app cannot always keep, and the merchant is the one who finds out.
+  function planPriceNote(p) {
+    if (p.unknown) return 'This app has no price for that plan, so only Shopify can quote it.';
+    if (p.free) return 'No charge, and no card needed.';
+
+    if (p.billed) {
+      const every = p.interval === 'ANNUAL' ? 'per year' : 'every 30 days';
+      return 'Billed by Shopify ' + every + (p.test ? ' (a test charge on this store)' : '')
+        + (p.renews ? ', renews ' + fmtDate(p.renews) : '') + '.';
+    }
+
+    // In `api` mode this table is not decoration — it is the amount the charge is created with,
+    // so the card may promise the invoice. In `shopify` mode the Dashboard owns that number and
+    // the card only points at it. One sentence each, because the two are different claims.
+    const cur = (state.board.shop && state.board.shop.currency) || 'USD';
+    const trial = p.trial ? ', after a ' + p.trial + '-day free trial' : '';
+
+    if (((state.board.billing && state.board.billing.mode) || 'api') === 'api') {
+      return (p.exact
+        ? 'This is what Shopify bills: ' + fmtMoney(p.amount, p.code) + ' every 30 days, on your Shopify invoice' + trial
+        : 'Billed as ' + fmtMoney(p.amount, p.code) + ' every 30 days' + trial + ', which Shopify converts into '
+          + cur + ' at its own rate on the invoice')
+        + '. Change or cancel the plan on this tab.';
+    }
+
+    if (!p.exact) {
+      return 'List price, in US dollars — Shopify converts at its own rate for a store billed in ' + cur
+        + '. The exact amount for your store is on Shopify\u2019s plan page.';
+    }
+
+    return 'List price. Shopify\u2019s plan page shows the exact amount for your store.';
+  }
+
+  // When the picker link cannot be built, a dead button still has to say why, instead of
+  // looking like the app refuses to take money.
+  // The app asks Shopify for the handle itself when a Plan tab is opened, so this sentence is about
+  // the case where even that failed — and it stays a sentence a merchant can act on, not a config
+  // reference.
+  const BillingMissingHint = () => 'This app has not been given its Shopify app handle yet, so it '
+    + 'cannot open Shopify\u2019s plan page. Until then: Shopify admin \u2192 Settings \u2192 Apps and sales '
+    + 'channels \u2192 ' + ((state.board && state.board.shop.name) || 'this app') + ' \u2192 plan / billing.';
+
+  // Never a figure the app made up. Where Shopify owns the pricing, the banner says what
+  // the plan does and points at the tab that reads the real amount off the store's own
+  // subscription — a hardcoded ₹499 in the sentence was the exact bug merchants reported.
+  function planBannerBody(s) {
+    const bp = planPrice('starter');
+
+    if (bp.amount > 0) {
+      return 'Starter (' + fmtMoney(bp.amount, bp.code) + (bp.billed ? '' : '/mo') + ') adds WhatsApp alerts, '
+        + 'unlimited tasks and the daily digest. '
+        + (bp.billed
+          ? 'That amount came off your Shopify subscription, so it is what your invoice says.'
+          : 'Shopify prices the plan and sends the invoice; Shopify\u2019s plan page has the exact amount for your store.');
+    }
+
+    return 'Starter adds WhatsApp alerts, unlimited tasks and the daily digest. '
+      + 'Shopify sets the price and sends the invoice — the Plan tab shows what it bills this store.';
   }
 
   function fmtMoney(amount, code) {
@@ -1475,69 +2991,465 @@
     } catch { return code + ' ' + amount; }
   }
 
+  /*
+   * The Plan tab. One rule: a price is printed only where the app can be certain of it.
+   * When Shopify owns the plans (Partner Dashboard pricing, the default), every number here
+   * is read back from the store's own subscription — same currency, same amount, the thing
+   * that lands on the invoice — and this app's own price table is not shown at all, because
+   * it is not what the merchant pays. Charges are never created from here either: Shopify
+   * rejects appSubscriptionCreate for Dashboard-priced apps, and a merchant should never have
+   * to read that API's error text as if it were our advice.
+   */
   function renderPlan() {
     const s = state.board;
+
+    // A plan link built from SHOPIFY_APP_HANDLE that Shopify has never confirmed is a link that can
+    // bounce to the admin's Apps list — the failure looks like an ignored button, so it is not left
+    // to be discovered. One request per session resolves it: the answer is cached on the shop row
+    // and every link from then on is built from Shopify's own value.
+    const handleInfo = (s.billing && s.billing.handle) || null;
+
+    if (handleInfo && handleInfo.verified === false && !state.handleChecked) {
+      state.handleChecked = true;
+      api('/billing/verify-handle', { method: 'POST' })
+        .then(r => {
+          const before = (s.billing && s.billing.plans_url) || '';
+
+          if (!r || !r.plans_url || r.plans_url === before) return;
+
+          // Re-read the board rather than rewriting URLs here: the plan-page link, the deep links on
+          // each plan card and the verification flag are all built server-side from the handle the
+          // call just cached, so the board is the only place that can state them correctly.
+          return refreshBoard().then(render);
+        })
+        .catch(() => { /* the unverified link is still worth opening */ });
+    }
     const cur = s.shop.currency || 'USD';
+    const bill = (s.billing && s.billing.shopify) || {};
+    const byShopify = ((s.billing && s.billing.mode) || 'api') === 'shopify';
+    const plansUrl = (s.billing && s.billing.plans_url) || '';
     const features = {
       free: ['2 team members', '50 open tasks', 'Board + activity timeline', 'In-app only (no WhatsApp)'],
       starter: ['5 team members', 'Unlimited tasks', 'WhatsApp alerts to staff', 'Daily owner digest', '7-day free trial'],
       growth: ['Everything in Starter', 'Unlimited team members', 'Priority support', '7-day free trial'],
     };
 
-    return h('div', { class: 'page' },
-      h('div', { class: 'plans' },
-        Object.entries(s.plans || {}).map(([key, cfg]) => {
-          const p = planPrice(key);
-          const paid = p.amount > 0;
+    async function recheck(btnEl) {
+      if (btnEl) btnEl.disabled = true;
+      try {
+        const r = await api('/billing/sync', { method: 'POST' });
+        await refreshBoard();
+        render();
+        toast(r && r.billing && r.billing.available === false
+          ? 'Shopify did not answer — the amount on your invoice still stands.'
+          : 'Checked with Shopify');
+      } catch (e) {
+        toast(e.message, true);
+        await refreshBoard(); render();
+      } finally { if (btnEl) btnEl.disabled = false; }
+    }
 
-          const cta = (() => {
-            if (s.shop.plan === key) {
-              return paid ? h('button', {
-                class: 'btn danger',
-                onclick: async () => {
-                  if (!confirm('Cancel the paid plan and go back to Free?')) return;
-                  try { await api('/billing/cancel', { method: 'POST' }); await refreshBoard(); toast('Plan cancelled'); }
-                  catch (e) { toast(e.message, true); }
-                },
-              }, 'Cancel plan') : null;
-            }
-            if (!paid) return null;
-            return h('button', {
-              class: 'btn primary',
-              onclick: async e => {
-                e.target.disabled = true;
-                try {
-                  const r = await api('/billing/subscribe', { method: 'POST', body: { plan: key } });
-                  open(r.confirmation_url, '_top');   // Shopify-hosted approve page
-                } catch (err) { toast(err.message, true); e.target.disabled = false; }
-              },
-            }, 'Choose ' + cfg.name);
-          })();
+    /*
+     * One action for both billing modes: ask the server, then open whatever URL it hands back
+     * at top level. In `api` mode that is Shopify's confirmation page for the charge this app
+     * created; with Shopify-owned pricing it is Shopify's own plan page, which is where a
+     * merchant upgrades, downgrades or cancels without contacting anyone. Requirement 1.2.3 is
+     * decided by whether that page is reachable from here, so a plan card renders a button and
+     * never a sentence of instructions — the rejection this rewrite answers read "the app
+     * remains on the same route and provides no actionable way to upgrade".
+     *
+     * Going through the endpoint rather than opening the URL directly is also what tags the
+     * store for the return trip: Shopify redirects the merchant back without any session, and
+     * BillingController::callback() needs the marker to know whose plan to re-read.
+     *
+     * If the request fails but the board already carries the picker URL, use it anyway — a
+     * merchant should land on Shopify's page rather than read our error text.
+     */
+    async function choosePlan(key, btnEl) {
+      if (btnEl) btnEl.disabled = true;
+      try {
+        const r = await api('/billing/subscribe', { method: 'POST', body: { plan: key } });
+        const url = r && (r.redirect_url || r.confirmation_url);
 
-          return h('div', { class: 'plan-card' + (s.shop.plan === key ? ' current' : '') },
-            s.shop.plan === key ? h('span', { class: 'cur-badge' }, 'CURRENT') : null,
-            h('h3', null, cfg.name),
-            h('div', { class: 'price' },
-              paid ? fmtMoney(p.amount, p.code) : 'Free',
-              paid ? h('span', null, ' /month (' + p.code + ')') : null),
-            h('ul', null, (features[key] || []).map(f => h('li', null, f))),
-            cta);
+        // Going back to Free in Billing-API mode is a cancellation this app performs itself, so
+        // there is no page to open and "no URL" is the SUCCESS answer. Reading it as a failure is
+        // how a working button ends up showing an error toast.
+        if (!url && r && r.changed === 'cancelled') {
+          toast(r.plan === key || key === 'free'
+            ? 'Moved to Free — Shopify has cancelled the charge. Your boards and tasks are untouched.'
+            : 'Plan changed.');
+          state.planChoice = null;
+          await refreshBoard();
+          render();
+          return;
+        }
+
+        if (!url) throw new Error((r && r.message) || 'Shopify returned no page to open.');
+        open(withShopifyContext(url), '_top');
+      } catch (err) {
+        if (plansUrl) { open(withShopifyContext(plansUrl), '_top'); return; }
+        toast(err.message, true);
+      } finally { if (btnEl) btnEl.disabled = false; }
+    }
+
+    const billLine = bill.available === false
+      ? h('p', { class: 'muted' }, 'Shopify could not be read just now. Whatever amount is on your Shopify invoice is the one that counts — this page does not set it.')
+      : !bill.subscribed
+        ? h('p', null, 'Nothing is being charged: this store is on the Free plan.')
+        : h('div', { class: 'bill-row' },
+            h('b', null, bill.name || 'Shopify plan'),
+            bill.amount != null
+              ? h('span', null, fmtMoney(Number(bill.amount), String(bill.currency || cur))
+                  + (bill.interval === 'ANNUAL' ? ' per year' : ' every 30 days'))
+              : null,
+            bill.renews_at ? h('span', { class: 'muted' }, 'renews ' + fmtDate(bill.renews_at)) : null,
+            bill.trial_days ? h('span', { class: 'muted' }, bill.trial_days + '-day trial included') : null,
+            bill.test ? h('span', { class: 'pill warn' }, 'test charge') : null);
+
+    const billPanel = h('div', { class: 'panel' },
+      h('div', { class: 'p-head' },
+        h('h2', null, 'What Shopify bills you'),
+        h('button', { class: 'btn plain sm', onclick: ev => recheck(ev.currentTarget) }, 'Check again')),
+      h('div', { class: 'p-body small' },
+        billLine,
+        h('p', { class: 'mt muted' }, byShopify
+          ? 'The plan, its price and its trial are created at Shopify, so Shopify shows the price in your store\u2019s billing currency ('
+            + cur + ') and bills it on your Shopify invoice. This app cannot set or change that amount.'
+          : 'The amounts below are set in this app and charged through Shopify Billing on your Shopify invoice.'),
+        byShopify && plansUrl
+          ? h('div', { class: 'row-flex mt' },
+              h('button', { class: 'btn primary sm', onclick: ev => choosePlan(s.shop.plan || 'starter', ev.currentTarget) },
+                'Change plan at Shopify'),
+              h('a', { class: 'small', href: withShopifyContext(plansUrl), target: '_top', rel: 'noopener' }, 'or open it in a new tab'))
+          : null,
+        byShopify && !plansUrl
+          ? h('p', { class: 'mt small' }, 'To change the plan: Shopify admin \u2192 Settings \u2192 Apps and sales channels \u2192 '
+            + (s.shop.name || 'this app') + ' \u2192 plan / billing. That page cancels it too, so the refund and the invoice stay with Shopify.')
+          : null));
+
+    /*
+     * Switching plans without leaving the app.
+     *
+     * The merchant decides HERE; only the money is settled elsewhere, and the copy below says which
+     * of the four things is about to happen rather than dressing them all up as "Upgrade":
+     *
+     *   shopify-plan    Shopify's approval page, opened with that plan already selected. Fastest,
+     *                   and only used when we know the plan's Shopify handle — which we learn from
+     *                   the `?plan_handle=` Shopify puts on the return redirect, or from config.
+     *   shopify-picker  Shopify's plan list (the documented page, always available). This is still
+     *                   an in-app action: 1.2.3 asks that no support ticket and no reinstall is
+     *                   needed, not that the iframe never closes.
+     *   charge          Billing-API mode: this app creates the charge, Shopify requires the
+     *                   approval, and the switch REPLACES the old subscription (prorated).
+     *   cancel          Billing-API mode back to Free — the one direction with no page at all, so
+     *                   the button is honest about having done it.
+     *
+     * A choice is not a change: clicking a segment selects a plan and renders the consequence. The
+     * switch happens on the second click, and downgrades ask once more, because that is the direction
+     * a mistaken click hurts in.
+     */
+    const order = Object.keys(s.plans || {});
+    const rankOf = k => order.indexOf(k);
+    const currentRank = rankOf(s.shop.plan);
+
+    function switchCopy(key) {
+      const plan = (s.plans || {})[key] || {};
+      const sw = plan.switch || { kind: 'none', url: '' };
+      const name = plan.name || key;
+      const p = planPrice(key);
+      const price = fmtMoney(p.amount, p.code);
+
+      // The current plan is a segment too (a plan page that hides it reads as if the merchant's
+      // own plan were missing), so it needs its own answer rather than a generic "continue".
+      if (key === s.shop.plan) {
+        return {
+          label: 'This is your plan', url: '', kind: 'current', note:
+            'Nothing to change. Pick another plan below to see what switching would do'
+            + (byShopify ? ' — and to cancel, which also happens here.' : '.'),
+        };
+      }
+
+      if (sw.kind === 'shopify-plan') {
+        return { label: 'Continue at Shopify', url: sw.url, kind: sw.kind,
+          note: 'Opens Shopify’s approval page with ' + name + ' already chosen — the amount, the trial and the invoice are theirs, and nothing changes until you approve it there.' };
+      }
+
+      if (sw.kind === 'shopify-picker') {
+        return { label: 'Continue at Shopify', url: sw.url, kind: sw.kind,
+          note: 'Opens Shopify’s plan page — pick ' + name + ' there. Shopify sends the invoice, and the change comes back to this tab on its own.' };
+      }
+
+      if (sw.kind === 'charge') {
+        return { label: 'Switch to ' + name, url: '', kind: sw.kind,
+          note: 'Creates a Shopify charge of ' + price + ' every 30 days'
+            + (p.trial ? ', starting after a ' + p.trial + '-day free trial' : '')
+            + '. It replaces your current plan and Shopify prorates it; close the page without approving and nothing is billed.' };
+      }
+
+      if (sw.kind === 'cancel') {
+        return { label: 'Move to Free', url: '', kind: sw.kind,
+          note: 'Cancels the paid plan with Shopify right away. Tasks, boards, teams and history stay exactly as they are — the Free limits apply from then on.' };
+      }
+
+      return { label: 'Continue at Shopify', url: '', kind: 'none', missing: true, note: BillingMissingHint() };
+    }
+
+    const switcher = (() => {
+      if (order.length < 2) return null;
+
+      let choice = state.planChoice;
+
+      if (!choice || !order.includes(choice) || choice === s.shop.plan) {
+        // Default to the next step UP. Never to a cancellation: a store that pays must not find
+        // "Move to Free" as the highlighted button on its own plan page, even though it stays one
+        // click away. With nothing above it, the default is another paid plan, and only after that
+        // Free.
+        choice = order.find(k => k !== s.shop.plan && rankOf(k) > currentRank)
+          || order.find(k => k !== s.shop.plan && ((s.plans[k] || {}).list != null))
+          || order.find(k => k !== s.shop.plan)
+          || order[0];
+      }
+
+      const copy = switchCopy(choice);
+      const chosenName = (s.plans[choice] || {}).name || choice;
+      const downgrade = rankOf(choice) < currentRank || copy.kind === 'cancel';
+
+      async function act(btn) {
+        if (downgrade && !confirm(copy.kind === 'cancel'
+          ? 'Cancel this store’s paid plan and move it to Free? Shopify stops billing you, and the paid features go with it.'
+          : 'Switch this store from ' + ((s.plans[s.shop.plan] || {}).name || s.shop.plan) + ' to ' + chosenName
+            + '? Shopify bills the new plan and prorates it.')) return;
+
+        await choosePlan(choice, btn);
+      }
+
+      return h('section', { class: 'panel' },
+        h('div', { class: 'p-head' },
+          h('h2', null, 'Switch plan'),
+          h('span', { class: 'sub' }, 'Currently on '
+            + ((s.plans[s.shop.plan] || {}).name || 'Free')
+            + '. Picking one below is a choice, not a change — the step after it is where anything happens.')),
+        h('div', { class: 'p-body' },
+        h('div', { class: 'plan-seg' }, order.map(key => {
+          const plan = s.plans[key];
+          const pp = planPrice(key);
+
+          return h('button', {
+            class: 'plan-seg-b' + (key === choice ? ' on' : '') + (key === s.shop.plan ? ' cur' : ''),
+            title: key === s.shop.plan ? 'This is the plan the store is on' : 'Point the switch at ' + (plan.name || key),
+            onclick: () => { state.planChoice = key; render(); },
+          },
+            h('b', null, plan.name || key),
+            key === s.shop.plan
+              ? h('span', { class: 'plan-seg-cur' }, 'current')
+              : h('span', null, pp.amount > 0 ? fmtMoney(pp.amount, pp.code) + '/mo' : 'Free'));
         })),
-      h('p', { class: 'muted small mt' },
-        cur === 'INR'
-          ? '🇮🇳 Prices are shown and charged in Indian Rupees (₹) — your store\'s billing currency. Shopify bills your card/RuPay/UPI directly; no USD conversion and no forex fees on this subscription.'
-          : 'Prices are shown in your store\'s billing currency (' + cur + '). Indian stores see plans directly in ₹ (INR). All charges run through Shopify Billing — nothing is charged outside Shopify.'));
+        h('div', { class: 'plan-switch-go' },
+          (copy.missing && !plansUrl) || copy.kind === 'current'
+            ? h('button', { class: 'btn sm', disabled: true, title: copy.note }, copy.label)
+            // A move to Free is a cancellation, so it wears the destructive colour rather than
+            // the inviting one, whatever the sentence next to it says.
+            : h('button', {
+                class: 'btn sm ' + (copy.kind === 'cancel' ? 'danger' : 'primary'),
+                onclick: ev => act(ev.currentTarget),
+              }, copy.label),
+          h('p', { class: 'muted small' }, copy.note),
+          downgrade
+            ? h('p', { class: 'muted small' }, 'Downgrades are allowed on purpose: a plan change must not need a support ticket (that is Shopify’s 1.2.3 rule, and we would rather agree with it).')
+            : null)));
+    })();
+
+    const cards = h('div', { class: 'plans' },
+      Object.entries(s.plans || {}).map(([key, cfg]) => {
+        const p = planPrice(key);
+        const paid = byShopify ? key !== 'free' : p.amount > 0;
+
+        const cta = (() => {
+          if (s.shop.plan === key) {
+            if (!paid) return null;
+
+            // Cancelling belongs to whoever charges the money, and with Shopify-owned pricing
+            // that is Shopify — so the button goes to the same page instead of vanishing.
+            if (byShopify) {
+              return plansUrl
+                ? h('button', { class: 'btn', onclick: ev => choosePlan(key, ev.currentTarget) }, 'Change or cancel plan')
+                : h('button', { class: 'btn', disabled: true, title: BillingMissingHint() }, 'Change or cancel plan');
+            }
+
+            return h('button', {
+              class: 'btn danger',
+              onclick: async () => {
+                if (!confirm('Cancel the paid plan and go back to Free?')) return;
+                try { await api('/billing/cancel', { method: 'POST' }); await refreshBoard(); toast('Plan cancelled'); }
+                catch (e) { toast(e.message, true); }
+              },
+            }, 'Cancel plan');
+          }
+
+          // Free is a plan too. A merchant on Starter has to be able to come back down without
+          // emailing anyone, which is the second half of what the requirement checks.
+          if (!paid) {
+            return (byShopify && plansUrl)
+              ? h('button', { class: 'btn', onclick: ev => choosePlan('free', ev.currentTarget) }, 'Switch to Free')
+              : null;
+          }
+
+          if (byShopify && !plansUrl) {
+            return h('button', { class: 'btn', disabled: true, title: BillingMissingHint() }, 'Choose ' + cfg.name);
+          }
+
+          return h('button', {
+            class: 'btn primary',
+            onclick: e => choosePlan(key, e.currentTarget),
+          }, 'Choose ' + cfg.name);
+        })();
+
+        return h('div', { class: 'plan-card' + (s.shop.plan === key ? ' current' : '') },
+          s.shop.plan === key ? h('span', { class: 'cur-badge' }, 'CURRENT') : null,
+          h('h3', null, cfg.name),
+          h('div', { class: 'price' },
+            p.amount > 0
+              ? fmtMoney(p.amount, p.code)
+              : (p.free ? 'Free' : (paid ? 'See Shopify' : 'Free')),
+            p.amount > 0 ? h('span', null, p.billed
+              ? ' \u00b7 ' + (p.interval === 'ANNUAL' ? 'per year' : 'per month')
+              : ' /month \u00b7 ' + p.code) : null),
+          h('div', { class: 'price-note' }, planPriceNote(p)),
+          p.drift
+            ? h('p', { class: 'drift' },
+                'Shopify bills ', String(p.drift.shopify), ' for this plan; this app\u2019s list price says ',
+                String(p.drift.list), '. Your invoice follows Shopify. To line the two up, change the plan in '
+                + 'Partner Dashboard → App pricing, or update the prices in config/shopify.php to match '
+                + '(php artisan taskpe:plans shows it for every store).')
+            : null,
+          h('ul', null, (features[key] || []).map(f => h('li', null, f))),
+          cta);
+      }));
+
+    const note = h('p', { class: 'muted small mt' }, byShopify
+      ? 'The amount on the plan you are on is Shopify\u2019s, read back from your subscription — that is the one figure here that describes your invoice. Prices on the other cards are this app\u2019s list prices, so the choices are comparable before you open Shopify\u2019s page; a plan created in US dollars is billed in US dollars and one with a rupee price is billed in \u20b9. Amount, currency, trial, invoices and cancelling all belong to Shopify, and nothing on this page changes them.'
+      : cur === 'INR'
+        ? 'Indian stores are shown and charged in \u20b9 (INR) on their Shopify invoice — no USD conversion and no forex fee on this subscription.'
+        : 'Prices are shown in your store\u2019s billing currency (' + cur + ') where this app has a price for it; otherwise the US price is used and Shopify converts it at its own rate on the invoice.');
+
+    return h('div', { class: 'page' }, billPanel, switcher, cards, note);
   }
 
   function handleBillingFlag(flag) {
-    if (flag === 'active') { toast('🎉 Plan activated! WhatsApp features unlocked.'); void api('/billing/sync', { method: 'POST' }).then(refreshBoard).catch(() => {}); }
-    else if (flag === 'declined') toast('Plan not approved — still on Free settings.', true);
-    else if (flag === 'error') toast('Could not confirm the charge — hit "Sync" on Plan tab.', true);
+    if (flag === 'active') { toast('Plan activated — WhatsApp features unlocked.'); void api('/billing/sync', { method: 'POST' }).then(refreshBoard).catch(() => {}); }
+    else if (flag === 'pending') {
+      // Shopify says a plan was picked, the store's own subscription list has not caught up.
+      // Two ways to read that: call it a refusal, or read it again in a moment. The second is
+      // the one that matches the invoice the merchant is looking at.
+      toast('Shopify is applying the change…');
+      setTimeout(() => { void api('/billing/sync', { method: 'POST' }).then(refreshBoard).then(render).catch(() => {}); }, 4000);
+    }
+    else if (flag === 'error') toast('Shopify could not be reached to confirm the plan. Nothing you clicked is lost — use Check again on the Plan tab once the invoice page is closed.', true);
+    else if (flag === 'declined') toast('Plan not approved — this store is still on its previous plan.', true);
   }
 
   /* ----------------------------------------------------------------- modal */
 
-  function openModal(title, bodyEl, onSave) {
+  /* ------------------------------------------------------ keyboard shortcuts */
+
+  // The board and the Orders list are the same two pages all day, so every
+  // shortcut here is a click somebody used to make. Single keys, and inert
+  // while a field has focus — same etiquette the admin itself follows.
+  const SHORTCUTS = [
+    ['n', 'Add a task to the first open column'],
+    ['t', 'Open the COD / NDR template pack'],
+    ['c', 'Complete (or reopen) the task open in the drawer'],
+    ['d', 'Hide or show the count tiles on the board'],
+    ['1 – 5', 'Dashboard · Board · Team · Settings · Plan'],
+    ['?', 'This list'],
+    ['Esc', 'Close the open dialog'],
+  ];
+
+  function isTyping(el) {
+    if (!el || !el.tagName) return false;
+    const tag = String(el.tagName).toUpperCase();
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable === true;
+  }
+
+  // Dialogs append themselves to <body>, while the drawer is rendered inside
+  // the board tree — so "a dialog is open" means "an overlay on body", and the
+  // drawer never blocks its own `c` key.
+  function openOverlays() {
+    return (document.body.children || []).filter(el => String(el.className || '').split(' ').includes('overlay'));
+  }
+
+  function openShortcutsHelp() {
+    openModalAuto('Keyboard shortcuts', h('div', { class: 'shortcuts' },
+      h('p', { class: 'muted small', style: 'margin-top:0' }, 'They work on every view — just not while you are typing in a field.'),
+      SHORTCUTS.map(([key, label]) => h('div', { class: 'sc-row' }, h('kbd', null, key), h('span', null, label)))));
+  }
+
+  function firstOpenColumn() {
+    const cols = state.board?.columns || [];
+    return cols.find(c => !c.is_done_stage) || cols[0] || null;
+  }
+
+  const cap = word => String(word || '').replace(/[_-]+/g, ' ').replace(/^\w/, c => c.toUpperCase());
+
+  function startQuickAdd() {
+    const col = firstOpenColumn();
+    if (!col) { toast('Add a column first'); return; }
+    state.filter = null;          // else the new card can land in a filtered-out column
+    state.quickAdd = col.id;
+    state.drawerTaskId = null;
+    render();
+  }
+
+  async function completeOpenTask() {
+    const id = state.drawerTaskId;
+    if (!id) return;
+    const wasDone = !!findTask(id)?.completed_at;
+    try {
+      await api('/tasks/' + id + '/complete', { method: 'POST' });
+      await refreshBoard();
+      state.drawerTaskId = id;          // stay open — ticking off a list is the point
+      render();
+      toast(wasDone ? 'Task reopened' : 'Task completed');
+    } catch (e) { toast(e.message, true); }
+  }
+
+  function bindShortcuts() {
+    document.addEventListener('keydown', ev => {
+      if (ev.defaultPrevented || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+
+      if (ev.key === 'Escape') {
+        const overlays = openOverlays();
+        if (overlays.length) { ev.preventDefault(); overlays[overlays.length - 1].remove(); return; }
+        if (state.drawerTaskId) { ev.preventDefault(); closeDrawer(); }
+        return;
+      }
+
+      if (isTyping(ev.target) || isTyping(document.activeElement)) return;
+
+      // `?` is always live (it is how anyone finds this list); every other
+      // single key is dropped while a dialog is open, because the fields in
+      // there need the keystrokes — a stray `n` behind a template picker is
+      // how junk tasks get born.
+      if (ev.key === '?') { ev.preventDefault(); openShortcutsHelp(); return; }
+      if (openOverlays().length) return;
+
+      if (ev.key === 'c' || ev.key === 'C') {
+        if (state.drawerTaskId) { ev.preventDefault(); void completeOpenTask(); }
+        return;
+      }
+      if (ev.key === 'n' || ev.key === 'N') { ev.preventDefault(); startQuickAdd(); return; }
+      if (ev.key === 't' || ev.key === 'T') { ev.preventDefault(); openTemplatesModal(); return; }
+      if (ev.key === 'd' || ev.key === 'D') { ev.preventDefault(); toggleDash(); return; }
+
+      const idx = ['1', '2', '3', '4', '5'].indexOf(ev.key);
+      if (idx > -1 && SECTIONS[idx]) {
+        ev.preventDefault();
+        if (SECTIONS[idx].view !== state.view) goView(SECTIONS[idx].view);
+      }
+    });
+  }
+
+  function openModal(title, bodyEl, onSave, onMount) {
     const overlay = h('div', { class: 'overlay' });
     const close = () => overlay.remove();
 
@@ -1554,12 +3466,14 @@
       }, 'Save')) : null;
 
     overlay.append(h('div', { class: 'modal' },
-      h('div', { class: 'modal-head' }, h('h2', null, title), h('button', { class: 'x', onclick: close }, '×')),
+      h('div', { class: 'modal-head' }, h('h2', null, title), iconButton('close', { title: 'Close', className: 'x', onClick: close })),
       h('div', { class: 'modal-body' }, bodyEl),
       foot));
 
     overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
     document.body.append(overlay);
+    if (onMount) onMount(close);   // sheets that need to dismiss themselves (delete)
+    return close;
   }
 
   // Footer-free modal variant (wizard-style flows manage their own buttons).
@@ -1581,16 +3495,166 @@
   /* ------------------------------------------------------------------- init */
 
   async function boot() {
+    // Before anything is awaited: App Bridge reads <ui-nav-menu> while the frame
+    // initialises, so mounting it only after the board answered raced that snapshot —
+    // which is why the sidebar sometimes showed no menu items at all. It is idempotent,
+    // so it is called again after loadBoard() to refresh the highlight.
+    mountAdminNav();
     try {
       await loadBoard();
+      if (!askedSection()) {
+        // Opened from the app icon, not a nav item: owners get the dashboard, the
+        // rest get the board. replaceState keeps the admin URL in step without
+        // adding a history entry the back arrow has to climb over twice.
+        state.view = landingView();
+        if (!IS_STAFF && appBridge() && typeof history.replaceState === 'function') {
+          try { history.replaceState({ view: state.view }, '', sectionPath(state.view)); } catch (e) { /* odd base URL */ }
+        }
+      }
+      mountAdminNav();
       render();
+      bindShortcuts();
+      // In-iframe history (the admin back arrow drives it) is a section change.
+      if (typeof window.addEventListener === 'function') {
+        window.addEventListener('popstate', () => {
+          const view = viewFromLocation();
+          if (view !== state.view) { state.view = view; mountAdminNav(); render(); }
+        });
+      }
       if (!IS_STAFF && !state.board?.shop?.onboarded) setTimeout(openTour, 300);   // first-run intro (admin only)
     } catch (e) {
-      if (e.message !== 'reauth') {
-        root.replaceChildren(h('div', { class: 'boot' },
-          h('div', { class: 'boot-text' }, 'Something went wrong loading the board. Reload the page.')));
-      }
+      // Every branch renders something *specific*. Silently replacing the
+      // shell with one generic sentence is what made this failure so hard to
+      // read for merchants (and for us) — see DEPLOYMENT.md § Troubleshooting.
+      const gate = e.code === 'reauth' || e.code === 'not_embedded' || e.code === 'staff_auth';
+      if (gate) renderConnectGate(e);
+      else renderBootError(e);
     }
+  }
+
+  /* --------------------------------------------------- boot failure surfaces */
+
+  // Not embedded / not installed: explain how to get in, and offer the
+  // OAuth entry point for the store domain they type in.
+  function renderConnectGate(err) {
+    const known = cfg.shop || err?.shop || shopFromQuery() || '';
+    const asStaff = IS_STAFF;   // portal session expired — same gate, different door
+    const input = h('input', {
+      class: 'input', id: 'gate-shop', placeholder: 'mystore.myshopify.com',
+      value: known, inputmode: 'url', autocomplete: 'off', spellcheck: 'false',
+      onkeydown: ev => { if (ev.key === 'Enter') connect(); },
+    });
+
+    function connect() {
+      const shop = String(input.value || '').trim().toLowerCase()
+        .replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+      if (!/^[a-z0-9][a-z0-9-]*\.(myshopify\.com|myshopify\.io)$/.test(shop)) {
+        document.getElementById('gate-err').textContent =
+          'Enter the full myshopify domain, e.g. mystore.myshopify.com';
+        return;
+      }
+      location.assign(appUrl() + '/auth/shopify?shop=' + encodeURIComponent(shop));
+    }
+
+    // Three different real causes, three different sentences — the whole point
+    // of this screen is that you never have to guess which one you are in.
+    let why;
+    if (err?.reason === 'missing_session_token' && appBridge()) {
+      why = 'App Bridge produced a session token, but it never reached PHP. The web server is '
+        + 'stripping the Authorization header (typical on CGI/FastCGI/LiteSpeed shared hosting) — '
+        + 'see DEPLOYMENT.md → “Authorization header never arrives”. The app.js twin header and '
+        + 'public/.htaccess rules handle this; both must be deployed together.';
+    } else if (err?.reason === 'not_installed') {
+      why = err?.cause === 'token_rejected'
+        ? 'Shopify no longer accepts the access token this install is holding — the app was '
+          + 'uninstalled or reinstalled on the store, this server started with a different '
+          + 'APP_KEY than the one that stored it, or the token aged out and could not be renewed '
+          + 'by itself. Reconnect below: approving the scopes issues a fresh token and the board '
+          + 'reloads by itself. Nothing on your boards is lost — this is the login only.'
+        : 'This store is not connected to TaskPe yet — approve the app scopes below and the '
+          + 'board will open on its own.';
+    } else if (err?.code === 'reauth') {
+      why = 'TaskPe could not verify your Shopify session for this store — connect a store to continue.';
+    } else {
+      why = 'TaskPe runs inside Shopify Admin. Opened as a plain link there is no Shopify session token, '
+        + 'so the board has nothing to load — this is a login step, not a crash.';
+    }
+
+    const note = h('div', { class: 'muted small mt' });
+    if (!IS_STAFF && !appBridge()) {
+      note.append(h('div', null, 'No App Bridge detected on this page. That is normal when the URL is opened outside admin.shopify.com; inside the admin it is loaded from Shopify’s CDN. If you already see this screen inside Shopify Admin, the app URL/allowed origins in the Partner Dashboard need to match '
+        + location.origin + '.'));
+    }
+    const configured = String(cfg.appUrl || '').replace(/\/+$/, '');
+    if (configured && configured !== location.origin) {
+      note.append(h('div', { class: 'mt' },
+        h('b', null, 'Heads-up: '),
+        'APP_URL on the server is ' + configured + ' but the app is being served from ' + location.origin
+        + ' — Shopify session tokens are origin-bound, so keep the two identical.'));
+    }
+    if (err?.detail) note.append(h('div', { class: 'muted small mt' }, 'App Bridge said: ' + err.detail));
+
+    root.replaceChildren(h('div', { class: 'gate' },
+      h('div', { class: 'panel gate-card' },
+        h('div', { class: 'p-head' },
+          h('div', { class: 'brand-badge' }, 'T'),
+          h('h2', null, asStaff ? 'Your staff link has expired' : 'Open TaskPe from your Shopify admin')),
+        h('div', { class: 'p-body' },
+          h('p', { class: 'muted small' }, asStaff
+            ? 'The board needs a staff session for this store, and this browser has none (or it was revoked).'
+            : why),
+          h('ol', { class: 'gate-steps' }, asStaff
+            ? h('li', null, 'Ask your store manager for a fresh ', h('a', { href: appUrl() + '/staff' }, 'staff sign-in'),
+                ' (WhatsApp code) or a new portal link — Team tab → Portal link.')
+            : h('div', null,
+              h('li', null, 'Go to ', h('b', null, 'admin.shopify.com'), ' → ', h('b', null, 'Apps'), ' → ', h('b', null, 'TaskPe'), '.'),
+              h('li', null, 'Not installed yet? Connect your store below — you will be asked to approve the app scopes once.'),
+              h('li', null, 'Teammates without admin access should use the ',
+                h('a', { href: appUrl() + '/staff' }, 'staff board'), ' instead.'))),
+          asStaff ? null : h('div', { class: 'field mt' },
+            h('label', null, 'Your store domain'),
+            input,
+            h('div', { class: 'login-err', id: 'gate-err' })),
+          h('div', { class: 'row' },
+            asStaff
+              ? h('a', { class: 'btn primary', href: appUrl() + '/staff' }, 'Go to staff sign-in')
+              : h('button', { class: 'btn primary', onclick: connect }, 'Connect store'),
+            h('button', { class: 'btn', onclick: () => location.reload() }, 'Reload')),
+          note))));
+  }
+
+  // Anything else the API said — show it verbatim plus where to look, so the
+  // next person does not have to guess between "bad DB" and "bad deploy".
+  function renderBootError(err) {
+    const rows = [
+      ['What failed', err?.message || 'Unknown error'],
+      ['Endpoint', err?.url || (appUrl() + '/api/board')],
+      ['HTTP status', err?.status ? String(err.status) : '—'],
+    ];
+
+    root.replaceChildren(h('div', { class: 'gate' },
+      h('div', { class: 'panel gate-card' },
+        h('div', { class: 'p-head' },
+          h('div', { class: 'brand-badge', style: 'background:var(--critical)' }, '!'),
+          h('h2', null, 'The board could not be loaded')),
+        h('div', { class: 'p-body' },
+          h('div', { class: 'gate-rows' },
+            rows.map(([k, v]) => h('div', { class: 'gate-row' },
+              h('span', { class: 'k' }, k), h('span', { class: 'v' }, v)))),
+          h('div', { class: 'banner crit mt' },
+            h('div', null,
+              h('div', { class: 'b-title' }, 'If this shows inside Shopify Admin, it is a server-side problem'),
+              h('div', { class: 'b-body' },
+                'Check, in order: (1) ', h('code', null, 'php artisan migrate'), ' ran and the DB is reachable; (2) ',
+                h('code', null, 'APP_KEY'), ', ', h('code', null, 'SHOPIFY_API_KEY'), '/',
+                h('code', null, 'SHOPIFY_API_SECRET'), ' and ', h('code', null, 'APP_URL'),
+                ' are set in .env; (3) the exact message at the end of ',
+                h('code', null, 'storage/logs/laravel.log'), '.'))),
+          h('div', { class: 'row mt' },
+            h('button', { class: 'btn primary', onclick: () => location.reload() }, 'Try again'),
+            h('a', { class: 'btn', href: appUrl() + '/staff' }, 'Staff sign-in'))))));
+
+    if (window.console) console.error('[TaskPe] board load failed:', err);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

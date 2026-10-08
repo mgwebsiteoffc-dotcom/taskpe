@@ -22,7 +22,10 @@ return [
 
     'allowed_origins_patterns' => [],
 
-    'allowed_headers' => ['Authorization', 'Content-Type', 'X-Requested-With', 'X-TaskPe-Member'],
+    // X-TaskPe-Auth is the Authorization twin the SPA sends for hosts that
+    // strip Authorization before PHP (CGI/FastCGI/LiteSpeed). Same JWT, same
+    // verification — it is not a second, weaker auth surface.
+    'allowed_headers' => ['Authorization', 'Content-Type', 'X-Requested-With', 'X-TaskPe-Member', 'X-TaskPe-Auth'],
 
     'exposed_headers' => [],
 

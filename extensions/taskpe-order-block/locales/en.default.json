@@ -1,0 +1,12 @@
+{
+  "name": "TaskPe — this order",
+  "description": "Open tasks for this order with tickable checklist steps, plus one-tap COD/NDR task creation.",
+  "collapsed-empty": "No open tasks",
+  "none": "No open tasks for this order.",
+  "mark-done": "Mark done",
+  "add-from-template": "Add a task for this order:",
+  "open-board": "Open TaskPe board",
+  "plan-full": "Your plan's open-task limit is reached — upgrade to add more.",
+  "unreachable": "Could not reach TaskPe.",
+  "failed": "That did not go through. Try again."
+}

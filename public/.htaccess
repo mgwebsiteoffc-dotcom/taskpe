@@ -6,6 +6,15 @@
     RewriteEngine On
 
     # Handle Authorization Header
+    # Session-token auth (Shopify App Bridge JWT) lives or dies on this header.
+    # CGI/FastCGI/LiteSpeed SAPIs drop it before PHP runs, which makes every
+    # /api/* call look like "no session token". Both workarounds below expose
+    # it as $_SERVER['HTTP_AUTHORIZATION'] / REDIRECT_HTTP_AUTHORIZATION, which
+    # VerifyShopifySessionToken reads. Do not remove: without them the board
+    # fails with a generic load error on most cPanel boxes.
+    <IfModule mod_setenvif.c>
+        SetEnvIf Authorization "(.+)" HTTP_AUTHORIZATION=$1
+    </IfModule>
     RewriteCond %{HTTP:Authorization} .
     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 

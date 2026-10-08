@@ -1,0 +1,19 @@
+# TaskPe — inline card on the order page (checklist ticks + one-tap templates).
+# Merchants add it once: order page → "Add custom app block" → TaskPe.
+# Bump api_version together with SHOPIFY_API_VERSION in your Laravel .env.
+api_version = "2026-07"
+
+[[extensions]]
+name = "t:name"
+handle = "taskpe-order-block"
+type = "ui_extension"
+# uid is injected automatically by Shopify CLI on first deploy — do not add one.
+description = "t:description"
+
+[[extensions.targeting]]
+module = "./src/BlockExtension.jsx"
+target = "admin.order-details.block.render"
+
+# Needed so the card may call the TaskPe Laravel backend (session-token JWT).
+[extensions.capabilities]
+network_access = true

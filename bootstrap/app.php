@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\NoLaravelUser;
 use App\Http\Middleware\VerifyShopifySessionToken;
 use App\Http\Middleware\VerifyShopifyWebhook;
 use Illuminate\Foundation\Application;
@@ -17,6 +18,14 @@ return Application::configure(basePath: dirname(__DIR__))
         // Shared hosting usually sits behind a proxy/LiteSpeed — honour
         // X-Forwarded-* so URL generation and client IPs are correct.
         $middleware->trustProxies(at: '*');
+
+        // First in both groups, so it answers BEFORE anything else asks: `throttle:` calls
+        // $request->user() to decide whose quota to spend, and with no Laravel guards (by
+        // design — see config/auth.php) that question throws instead of returning nobody.
+        // Without these two lines every throttled POST — staff WhatsApp sign-in, /staff/verify,
+        // the courier NDR intake — 500s with "Auth guard [] is not defined."
+        $middleware->web(prepend: [NoLaravelUser::class]);
+        $middleware->api(prepend: [NoLaravelUser::class]);
 
         $middleware->alias([
             'shopify.token'   => VerifyShopifySessionToken::class, // App Bridge JWT for /api/*

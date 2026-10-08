@@ -1,0 +1,161 @@
+TASKPE — APP REVIEW INSTRUCTIONS
+================================
+
+WHAT THE APP IS
+TaskPe is an embedded Shopify admin app: the task board for the follow-ups a cash-on-delivery
+(COD) store has to do by hand — confirm a COD order before it ships, rescue a failed delivery
+(NDR), reconcile the COD remittance, fix an address. Tasks link to the Shopify order itself.
+Staff without a Shopify seat use the same board on a phone. Nothing is added to the storefront:
+no scripts, no theme files, no theme app embed, so storefront performance is unchanged.
+
+REVIEW STORE (provided for testing)
+  Store:       [DEV STORE].myshopify.com    collaborator/store password: [ ... ]
+  Staff portal: TaskPe in admin -> Team tab -> "Portal link" -> copy that personal link. Opening
+                it signs the member in, with no Shopify login.
+  WhatsApp step: needs a Whatify key connected in Settings (a test key is fine); skip step 8 if
+                you do not want to exercise delivery.
+  The store is pre-seeded so the board is not empty: columns, about ten tasks with checklists and
+  orders spread across several months. [adjust this line to whatever you seed] A brand-new install
+  instead shows one empty board with "+ Add column" — that is the intended empty state, not a bug.
+
+1. INSTALL AND SCOPES
+   Install from the listing and approve the permission screen.
+   Expected: the scopes offered are read_orders, read_products, read_content (plus read_customers
+   while the picker still has a Customers tab). No write scope, no read_all_orders (see step 4).
+   After the redirect the board loads inside the admin from a single /api/board request, and both
+   https://[HOST]/privacy and https://[HOST]/terms are readable without a login. Shopify issues the
+   expiring offline token that public apps require; the app keeps it renewed from the refresh token
+   in the background, so nothing here depends on a permanent credential (php artisan taskpe:tokens
+   --probe prints the state per store).
+
+2. CREATE A TASK FROM A TEMPLATE
+   Press "t" (or the "COD / NDR task templates" button at the top of the board) -> "COD
+   confirmation" -> search an order number that exists in this store -> pick the result -> Create
+   task. Expected: a task titled "Confirm COD order #<number>" in the first column, showing 0/6
+   checklist steps, linked to that order; the card links straight to the order in admin; the
+   activity timeline records who created it.
+
+3. WORK THE TASK
+   Open the card, tick two checklist items, change priority and assignee, set a due date, drag the
+   card to "In Progress", then drag it to the column marked as the done stage.
+   Expected: the card shows 2/6 and the completion is timestamped (the card is struck through in the
+   done column); each action adds an activity row naming the person; ticking a checklist item from
+   the card does the same.
+
+4. LINKING AN ORDER OLDER THAN THE INSTALL (documented limit — please review this behaviour)
+   Search an order created before the app was installed. The picker states that this app may only
+   read orders created since the install (read_all_orders is not yet approved) and offers
+   "Link an older order by number". Type that order number and save.
+   Expected: the task is created with the number as its title, a small "not checked" pill on the
+   card, and an activity line saying the order was linked by hand and not verified against Shopify.
+   Nothing is invented: no status, total or customer detail is shown for an order we cannot read.
+   Pasting a full admin URL like /admin/orders/6123456789 instead links it verified, with no pill.
+
+5. ADMIN EXTENSIONS (three surfaces, all shipped)
+   a) Order detail page -> "More actions" -> "Create task". Fill only the title.
+      Expected: the task is created and pre-linked to that order with no order read; it appears on
+      the board with the order number. Same flow on the draft order, product and customer pages.
+   b) Orders list -> select three orders -> "Create TaskPe tasks" -> choose a template.
+      Expected: three tasks, one per selected order, each linked.
+   c) Order detail page -> the "TaskPe — this order" block. Per Shopify's block rules the merchant
+      must add and pin it once (Extensions -> pin); before that the page shows nothing, which is
+      expected. Once pinned: the open tasks for that order, tickable inline, plus "Mark done".
+
+6. WEBHOOKS: THE COD AUTO-TASK (off until the merchant turns it on)
+   Settings -> "COD / NDR automation" -> tick "Auto-create a confirmation task for every new COD
+   order" -> save. Then create a COD order in the admin (Orders -> Create order, payment method
+   Cash on Delivery) and save it.
+   Expected: within a few seconds a "Confirm COD order #<number>" task is on the board, created by
+   the orders/create webhook, with nobody having opened the app. Untick the box and create a second
+   COD order: no task appears, because the automation is off by design. Deliveries run through an
+   idempotency ledger keyed on the webhook id, so a duplicate retry from Shopify creates one task,
+   not two, and the endpoint answers 2xx fast with the work done in a queued job.
+
+7. TEAM AND THE STAFF PORTAL
+   Team tab -> add a member (name + phone) -> "Portal link" -> open the link in a private window.
+   Expected: the board for that store only; the member can complete and move tasks and add their
+   own; there is no Settings tab, no task delete, no billing and no member management. A task whose
+   order was linked by hand shows the number as plain text with no admin link, because that member
+   has no Shopify access to open it with. Then test phone sign-in on /staff: number -> 6-digit
+   WhatsApp code. Expected rate limiting: a 429 once five code requests are made in a minute.
+
+8. WHATSAPP ALERTS (merchant's own provider)
+   Settings -> paste a Whatify API key -> enable alerts -> send a test reminder to a member.
+   Expected: a delivery-log row with the status and channel, and a message on the member's WhatsApp.
+   With no key or a wrong key the panel states what to fix instead of failing silently. TaskPe
+   charges nothing here: messages are billed by the merchant's own Whatify account (about INR 0.12
+   per message), which is also disclosed in the pricing section of the listing.
+
+9. BILLING AND PLAN CHANGES (plans and prices are managed by Shopify)
+   Plan tab -> the "Switch plan" panel at the top. Click the Starter pill: nothing is charged yet,
+   the pill is just chosen, and the sentence under the button says what the next click does. Then
+   "Continue at Shopify". Expected: the app leaves the iframe and opens Shopify for THAT plan.
+   The same action is available on each plan card ("Choose Starter"), so the panel is a shortcut,
+   not the only door.
+
+   A downgrade and "Move to Free" are reachable from the same strip and ask once before they post -
+   a plan change must never need a support ticket (Shopify 1.2.3), including the ones that lose money. Expected: the app leaves the iframe and opens
+   Shopify's own plan page for this store (admin.shopify.com/store/<handle>/charges/<app
+   handle>/pricing_plans) or, when Shopify's own handle for that plan is known, straight to its
+   approval page (admin.shopify.com/store/<handle>/charges/<app handle>/plans/<plan handle>). The app
+   learns plan handles from Shopify's return redirect, or from TASKPE_PLAN_STARTER_HANDLE /
+   TASKPE_PLAN_GROWTH_HANDLE if you paste them; with neither it uses the plan list, which always
+   works. In this mode the app never creates a charge - appSubscriptionCreate is
+   not called, because the plans and their prices live in the Partner Dashboard - but the cards do
+   show numbers, each one labelled with where it came from: the plan you are on carries Shopify's own
+   read-back amount ("Billed by Shopify every 30 days, renews ..."), the other cards carry this app's
+   LIST price, and a plan with no price in your billing currency says the US figure plus "Shopify
+   converts at its own rate". A paid plan is never printed as "Free", and if Shopify's amount and the
+   list price disagree, the current card says so in a warning box. Both are checked on the server with
+   `php artisan taskpe:plans` (add --live to re-read every subscription), which is the command to run
+   after changing a price in either place. On a development store owned by the same partner
+   organisation the plan is selectable at $0, so the whole flow can be completed with no card involved.
+   development store owned by the same partner organisation the plan is selectable at $0, so the
+   whole flow can be completed end to end with no card involved.
+
+   Approve the plan on Shopify's page, then return to the app. Expected: the Plan tab reads the
+   live subscription from the store's own installation - plan name, amount, currency, interval and
+   renewal date, all Shopify's numbers - WhatsApp alerts and the daily digest unlock, member and
+   task limits rise, and no support contact or reinstall was needed at any point.
+
+   Now the other direction: "Change or cancel plan" on the current card -> Growth, then back down
+   to Free. Expected: the same Shopify page each time (Free is listed there as a plan), Shopify
+   handles the proration, and every charge and cancellation appears in the store's app charge
+   history at Shopify admin -> Settings -> Apps and sales channels -> TaskPe -> Billing.
+
+   If the click opens Shopify's Apps list instead of the plan page, the app handle is what is wrong,
+   not the button - Shopify answers an unknown /charges/{handle} address that way. The app asks Shopify
+   for its own handle by itself when the Plan tab is opened with an unconfirmed link; to see the whole
+   picture on the server: `php artisan taskpe:plans --links --verify` (it also warns when the store
+   slug is the suspect, and `SHOPIFY_PLANS_URL_STYLE=myshopify` is the one-line fix for that).
+
+   If the plan was approved but the board still shows the old limits, check the mapping line the same
+   command prints: a Dashboard plan whose name does not contain "Starter" or "Growth" is matched by
+   fallback, and the fix is to name it so (or set TASKPE_PLAN_*_HANDLE) and press Check again.
+
+   Two honest details: if a change has not propagated by the time you are back, the tab says
+   "Shopify is applying the change..." and re-reads itself after a few seconds rather than
+   reporting a refusal; and "Check again" re-reads on demand. The app also re-reads on the
+   app_subscriptions/update webhook, so a change made while nobody had the app open is picked up.
+
+10. DATA, UNINSTALL AND GDPR
+   What a linked task stores: the order GID, the display label and an admin URL. No line items, no
+   customer contact fields, no documents, no analytics export.
+   Expected on uninstall: the app/uninstalled webhook clears the access token and the saved
+   Whatify key and reverts the store to the Free plan; shop/redact hard-deletes the store row and
+   cascades its columns, tasks, activity and links. customers/data_request and customers/redact
+   are handled (no customer PII is held, and the reply says so). A scheduled job prunes WhatsApp
+   delivery logs after 90 days and the webhook ledger after 7 days.
+
+KNOWN LIMITS, NOT BUGS
+  - Order search finds only orders created since the install until read_all_orders is approved;
+    step 4 is the honest fallback we built for that window.
+  - The order-page block stays invisible until the merchant pins it (Shopify's rule for blocks).
+  - WhatsApp needs the merchant's own Whatify account; TaskPe is not a BSP and sells no messages.
+  - Courier NDR events arrive on a signed token URL (POST /webhooks/ndr/{token}), so they cannot be
+    triggered from a browser; the app's own "create from order" flow covers the same task.
+
+SUPPORT
+  [SUPPORT EMAIL] · [HELP / DOCS URL] · emergency developer contact is current in the Partner
+  Dashboard. Screencast (2-3 min, English): [URL] — install, template to task, checklist, staff
+  portal on a phone, billing read-back.
