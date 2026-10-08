@@ -107,10 +107,18 @@ return [
     | Billing (Shopify Billing API — mandatory for public apps; never charge
     | through Razorpay/Stripe/etc. for the app subscription itself)
     |--------------------------------------------------------------------------
-    | Read the "Who owns the price" block below first: when billing.mode is
-    | `shopify` (the default) none of this table is displayed or sent anywhere,
-    | because the Partner Dashboard already priced the plan in the store's own
-    | currency. It only means money in `api` mode.
+    | Read the "Who owns the price" block below first. In `api` mode these numbers
+    | ARE the charge. In `shopify` mode (the default) the Partner Dashboard's plan
+    | is what gets invoiced, and this table is still shown — as a LIST price, next to
+    | a line saying so — because a Plan page with no numbers on it is a merchant
+    | asking "what does this cost before I click". Two consequences:
+    |
+    |   1. keep the amount for a currency in step with the Dashboard plan, or the app
+    |      shows a price the invoice contradicts. `php artisan taskpe:plans` compares
+    |      them per store and exits non-zero while they disagree;
+    |   2. add the store's own billing currency here when you have it. A USD amount
+    |      shown to a store billed in another currency is labelled as converted, but
+    |      an exact entry is always the better page to read.
     |
     | Since the 2023-04 API, app charges may be created in the MERCHANT'S
     | BILLING CURRENCY — so Indian stores approve "₹499/mo" directly, with no

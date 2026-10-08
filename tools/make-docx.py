@@ -77,14 +77,19 @@ def start_here(doc):
         run.bold = True
     items = [
         ('Your links do not exist yet.', 'Shopify requires a privacy policy URL and expects terms of '
-         'service, a help page and a support email. /privacy is live in the app; /terms is not. Fill the '
-         'bracketed placeholders in section 2 before submitting.'),
+         'service, a help page and a support email. Both /privacy and /terms are served by the app, so '
+         'what is missing is the content: fill the two bracketed placeholders in '
+         'resources/views/terms.blade.php (legal entity, governing law) and the rest of the bracketed '
+         'URLs in section 2 before submitting.'),
         ('One data decision.', 'The order search needs Level 1 only. The picker’s Customer tab reads a '
          'name, which is Level 2 and a slower review. Section 4 gives both answers; option A (drop the '
          'customer tab) is the recommended one and is four one-line edits.'),
-        ('Do not quote a price anywhere in the images.', 'Listing images must not carry pricing. The app '
-         'also stopped inventing prices: the Plan tab now shows what Shopify bills, in the store’s '
-         'currency. Keep prices in the Pricing section only.'),
+        ('No pricing in the images.', 'Listing images must not carry pricing (4.4.x), so keep the Plan '
+         'tab out of screenshots and let the Pricing section hold the numbers. Inside the app the cards '
+         'do show amounts, each labelled with where it came from: Shopify’s read-back figure on the plan '
+         'a store is on, this app’s list price on the others. The price table in section 2 is generated '
+         'from config/shopify.php, so changing a price there and in Partner Dashboard → App pricing keeps '
+         'the app, this document and the invoice agreeing; php artisan taskpe:plans proves it.'),
     ]
     for title, body in items:
         par = cell.add_paragraph()

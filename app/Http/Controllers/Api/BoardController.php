@@ -23,21 +23,15 @@ class BoardController extends Controller
             'tasks'         => $col->tasks->map(fn (Task $t) => $this->taskJson($t))->values(),
         ])->values();
 
-        // Who owns the price. When the Partner Dashboard owns it, the `prices` table is
-        // stripped out of the payload: those numbers are what THIS app would charge, and
-        // showing them beside a plan Shopify priced is how a store ends up reading ₹499
-        // for a $5.99 plan. What is left is what Shopify says it bills, already in the
-        // store's own billing currency.
+        // Who owns the price, and what may therefore be printed. A Plan page with no numbers on
+        // it is what a merchant calls "I don't know what this costs before I click", so the prices
+        // go out in BOTH modes now — but each one arrives labelled. `billed` (only on the plan this
+        // store is actually on) is Shopify's own read-back and is the only figure presented as
+        // "what you pay"; `list` is this app's table for the plans it is not on; `exact` says
+        // whether we have a price in the store's billing currency at all; `drift` is set when
+        // Shopify's number and our table disagree, so a stale row can be seen instead of trusted.
         $managed = BillingService::shopifyManaged();
-        $plans = collect(config('shopify.plans'))->map(function ($p) use ($managed) {
-            // Plain PHP on purpose: `array_except()` is not a Laravel helper, and one
-            // undefined function in this builder 500s the whole board for every store.
-            if ($managed) {
-                unset($p['prices']);
-            }
-
-            return $p;
-        })->all();
+        $plans  = (new BillingService($shop))->planCatalog();
 
         return response()->json([
             'billing' => [

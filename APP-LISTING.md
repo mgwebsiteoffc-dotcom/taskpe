@@ -95,7 +95,17 @@ Whatify, Shiprocket, Delhivery, XpressBees
 | Additional charges (per plan) | “WhatsApp messages are billed by your own Whatify account (about ₹0.12 per message), not by TaskPe.” |
 | Charges billed outside Shopify billing — link | [YOUR PAGE] explaining the Whatify cost. Requirement 4.2 wants outside charges disclosed with a link, and our app genuinely has one. |
 | Pricing page link | [YOUR PRICING PAGE] |
-| Prices shown here | The **same numbers, same currency, as the Dashboard plan** — the app no longer quotes its own prices (see `DEPLOYMENT.md` § 17), so the listing is the one place a merchant should read a number. |
+| Prices shown here | The **same numbers, same currency, as the Dashboard plan**. The app now prints list prices on its Plan tab too (each labelled, with Shopify’s read-back amount on the plan a store is actually on), so **three** places have to agree: Dashboard → App pricing, `config/shopify.php → plans`, and this listing. The table below is generated from that config file — change the code and regenerate rather than retyping here. |
+
+#### The price table exactly as the Plan tab prints it (generated from `config/shopify.php`)
+
+| Plan | List price shown in the app | Trial | What to enter in Partner Dashboard → App pricing |
+| --- | --- | --- | --- |
+| **Free** | Free | none | same amount, same currency, plus the plan’s redirect URL `/billing/callback` |
+| **Starter** | ₹499  +  $5.99 | 7 days | same amount, same currency, plus the plan’s redirect URL `/billing/callback` |
+| **Growth** | ₹999  +  $11.99 | 7 days | same amount, same currency, plus the plan’s redirect URL `/billing/callback` |
+
+A store billed in a currency this table has no entry for is shown the US dollar figure with the line “Shopify converts it at its own rate for a store billed in INR” — true, but a worse page to read than an exact entry. Add the currency to `prices` *and* create the Dashboard plan in it for every market you actually launch in. `DEPLOYMENT.md` § 17 states what each number on a plan card is allowed to claim.
 
 ### Links, support and eligibility
 
@@ -390,8 +400,16 @@ REVIEW STORE (provided for testing)
 9. BILLING AND PLAN CHANGES (plans and prices are managed by Shopify)
    Plan tab -> "Choose Starter" on the Starter card. Expected: the app leaves the iframe and opens
    Shopify's own plan page for this store (admin.shopify.com/store/<handle>/charges/<app
-   handle>/pricing_plans). In this mode the app never quotes a price and never calls
-   appSubscriptionCreate, because the plans and their prices live in the Partner Dashboard. On a
+   handle>/pricing_plans). In this mode the app never creates a charge - appSubscriptionCreate is
+   not called, because the plans and their prices live in the Partner Dashboard - but the cards do
+   show numbers, each one labelled with where it came from: the plan you are on carries Shopify's own
+   read-back amount ("Billed by Shopify every 30 days, renews ..."), the other cards carry this app's
+   LIST price, and a plan with no price in your billing currency says the US figure plus "Shopify
+   converts at its own rate". A paid plan is never printed as "Free", and if Shopify's amount and the
+   list price disagree, the current card says so in a warning box. Both are checked on the server with
+   `php artisan taskpe:plans` (add --live to re-read every subscription), which is the command to run
+   after changing a price in either place. On a development store owned by the same partner
+   organisation the plan is selectable at $0, so the whole flow can be completed with no card involved.
    development store owned by the same partner organisation the plan is selectable at $0, so the
    whole flow can be completed end to end with no card involved.
 
@@ -444,10 +462,11 @@ a listing image must not show a picker entry the app no longer has.
 
 | Risk | Fix |
 | --- | --- |
-| **1.2.3 — a Plan page with no way to change the plan** (this is what the first review rejected) | Every plan card is a button, not a sentence. With Shopify-owned pricing the app cannot create charges, so the button opens Shopify’s hosted plan page: `https://admin.shopify.com/store/{store}/charges/{app handle}/pricing_plans`, built per store from `SHOPIFY_APP_HANDLE`. Upgrade, downgrade to Free and cancel all happen there; Shopify prorates, invoices, and the charges show in the merchant’s app charge history. Rehearse it on a development store (plans are $0 for your own organisation): Free → Starter → Growth → Free, then screenshot the charge history for the feedback thread. In this mode the app never quotes its own price — the Plan tab mirrors the live subscription. |
+| **1.2.3 — a Plan page with no way to change the plan** (this is what the first review rejected) | Every plan card is a button, not a sentence. With Shopify-owned pricing the app cannot create charges, so the button opens Shopify’s hosted plan page: `https://admin.shopify.com/store/{store}/charges/{app handle}/pricing_plans`, built per store from `SHOPIFY_APP_HANDLE`. Upgrade, downgrade to Free and cancel all happen there; Shopify prorates, invoices, and the charges show in the merchant’s app charge history. Rehearse it on a development store (plans are $0 for your own organisation): Free → Starter → Growth → Free, then screenshot the charge history for the feedback thread. The cards do carry prices, each labelled with where it came from: the plan a store is on shows Shopify’s own read-back amount (“Billed by Shopify every 30 days”), the other cards show this app’s list price with a line saying so. That list price is a number the Dashboard must match — `php artisan taskpe:plans` reports any store being shown a price its invoice contradicts. |
 | **The Admin API token is the wrong kind for a public app** (the listing looks fine, then every store starts failing one hour after install) | Shopify refuses **non-expiring** offline tokens for GraphQL Admin API calls from public apps - now for new apps, for all of them after **1 January 2027**. The app asks for the expiring pair (`expiring=1` at the token exchange), stores the refresh token and both expiry dates, and renews them itself (`app/Services/TokenVault.php`, `php artisan taskpe:tokens`, DEPLOYMENT.md section 19). Check before submitting: `php artisan taskpe:tokens --probe` must print `expiring` for every store, and the merchant must never see “re-install the app” for what is only a login problem. |
 | App icon is 1600px or 1024px | Shopify wants exactly 1200x1200. Use `assets/listing/app-icon-1200.png` (generated from the 1600 master). Corners are pre-rounded in the art; Shopify rounds its own, which is accepted, but if you can supply a full-bleed square that is cleaner. |
 | Screenshots contain pricing or a plan card | Deliberately excluded - listing images must not carry pricing (4.4.x). Keep the Plan tab out of screenshots and let the Pricing section hold the numbers. |
+| A price in the app disagreeing with the invoice | Since the Plan tab shows list prices, whoever edits one has to edit both. Keep `config/shopify.php → plans` equal to Dashboard → App pricing and run `php artisan taskpe:plans` after either change — it exits non-zero while a store is being shown a stale number, and `--live` re-reads every subscription first. The plan card warns on its own when it spots the mismatch; Shopify's amount always wins on the invoice. |
 | Screenshots look like mockups or show browser chrome | All six are real captures at exactly 1600x900 with no chrome, no overlays, unique content per image (4.4.4/4.4.5 from 26 March 2026). |
 | Alt text missing or too long | Every image has alt text in two sizes here: <=100 characters for the form, <=64 for fields that cap lower. Automated translation covers alt text for the eight languages, so write plain descriptive English and no keyword lists. |
 | Customer search reads a name field | That is Level 2 (`displayName` is derived from first/last name). Either request the Name field with the reason below, or drop the customer tab + `read_customers` and keep the request at Level 1 - the fastest approval, and the more defensible answer to 'minimum data required'. |

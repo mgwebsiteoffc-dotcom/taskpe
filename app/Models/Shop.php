@@ -328,9 +328,27 @@ class Shop extends Model
         return $token === '' ? 'none' : substr(hash('sha256', $token), 0, 8).'/'.strlen($token).'ch';
     }
 
+    /**
+     * The `mystore` slug every admin deep link is built from.
+     *
+     * Rows written before this app started saving `handle` have an empty one, and the myshopify
+     * domain always carries the same string — so derive it rather than emit
+     * https://admin.shopify.com/store/, which a merchant experiences as "the app is broken".
+     */
+    public function adminHandle(): string
+    {
+        $handle = trim((string) $this->handle);
+
+        if ($handle !== '') {
+            return $handle;
+        }
+
+        return trim((string) explode('.', (string) $this->domain)[0]);
+    }
+
     public function adminBaseUrl(): string
     {
-        return "https://admin.shopify.com/store/{$this->handle}";
+        return 'https://admin.shopify.com/store/'.$this->adminHandle();
     }
 
     /** Deep link that opens this app inside the merchant's admin. */

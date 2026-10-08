@@ -2846,14 +2846,76 @@
 
   /* -------------------------------------------------------------- plan view */
 
-  // Price displayed in the merchant's billing currency: exact entry when the
-  // plan defines it (INR for Indian stores), USD fallback otherwise — same
-  // logic as BillingService::resolvePrice on the backend.
+  /*
+   * The number on a plan card, and what kind of number it is.
+   *
+   * The backend sends both flavours under `state.board.plans.<key>`: `billed` is read back from the
+   * store's own Shopify subscription and exists only for the plan the store is actually on; `list`
+   * is this app's price table for the plans it is not on; `exact` says whether a price is defined in
+   * the store's billing currency at all. Rendering takes the first one that exists and never dresses
+   * a list price up as an invoice — that confusion is the bug this screen was rebuilt around (a
+   * hardcoded ₹499 sitting beside a $5.99 plan), and a merchant who catches it stops believing every
+   * other number on the page.
+   */
   function planPrice(key) {
-    const cur = state.board.shop?.currency || 'USD';
-    const prices = state.board.plans?.[key]?.prices || {};
-    const code = prices[cur] !== undefined ? cur : 'USD';
-    return { amount: Number(prices[code] ?? 0), code };
+    const cfg = (state.board.plans || {})[key] || {};
+
+    if (cfg.billed) {
+      return {
+        amount: Number(cfg.billed.amount), code: cfg.billed.currency, billed: true,
+        interval: cfg.billed.interval, renews: cfg.billed.renews_at, test: !!cfg.billed.test,
+        trial: cfg.billed.trial, drift: cfg.drift || null,
+      };
+    }
+
+    if (cfg.list != null) {
+      return {
+        amount: Number(cfg.list), code: cfg.code || 'USD', billed: false,
+        exact: !!cfg.exact, trial: cfg.trial_days, drift: cfg.drift || null,
+      };
+    }
+
+    const code = (state.board.shop && state.board.shop.currency) || 'USD';
+
+    // A plan that costs nothing and a plan we have no price for are different answers, and only
+    // one of them may be printed as "Free".
+    return cfg.free_plan
+      ? { amount: 0, code, free: true, billed: false }
+      : { amount: 0, code, unknown: true, billed: false };
+  }
+
+  // One line of provenance under a price. An unlabelled number on a pricing page is a promise
+  // this app cannot always keep, and the merchant is the one who finds out.
+  function planPriceNote(p) {
+    if (p.unknown) return 'This app has no price for that plan, so only Shopify can quote it.';
+    if (p.free) return 'No charge, and no card needed.';
+
+    if (p.billed) {
+      const every = p.interval === 'ANNUAL' ? 'per year' : 'every 30 days';
+      return 'Billed by Shopify ' + every + (p.test ? ' (a test charge on this store)' : '')
+        + (p.renews ? ', renews ' + fmtDate(p.renews) : '') + '.';
+    }
+
+    // In `api` mode this table is not decoration — it is the amount the charge is created with,
+    // so the card may promise the invoice. In `shopify` mode the Dashboard owns that number and
+    // the card only points at it. One sentence each, because the two are different claims.
+    const cur = (state.board.shop && state.board.shop.currency) || 'USD';
+    const trial = p.trial ? ', after a ' + p.trial + '-day free trial' : '';
+
+    if (((state.board.billing && state.board.billing.mode) || 'api') === 'api') {
+      return (p.exact
+        ? 'This is what Shopify bills: ' + fmtMoney(p.amount, p.code) + ' every 30 days, on your Shopify invoice' + trial
+        : 'Billed as ' + fmtMoney(p.amount, p.code) + ' every 30 days' + trial + ', which Shopify converts into '
+          + cur + ' at its own rate on the invoice')
+        + '. Change or cancel the plan on this tab.';
+    }
+
+    if (!p.exact) {
+      return 'List price, in US dollars — Shopify converts at its own rate for a store billed in ' + cur
+        + '. The exact amount for your store is on Shopify\u2019s plan page.';
+    }
+
+    return 'List price. Shopify\u2019s plan page shows the exact amount for your store.';
   }
 
   // When the picker link cannot be built, a dead button still has to say why, instead of
@@ -2866,9 +2928,14 @@
   // the plan does and points at the tab that reads the real amount off the store's own
   // subscription — a hardcoded ₹499 in the sentence was the exact bug merchants reported.
   function planBannerBody(s) {
-    if (((s.billing && s.billing.mode) || 'api') !== 'shopify') {
-      const p = planPrice('starter');
-      if (p.amount > 0) return 'Starter (' + fmtMoney(p.amount, p.code) + '/mo) adds WhatsApp alerts, unlimited tasks and the daily digest.';
+    const bp = planPrice('starter');
+
+    if (bp.amount > 0) {
+      return 'Starter (' + fmtMoney(bp.amount, bp.code) + (bp.billed ? '' : '/mo') + ') adds WhatsApp alerts, '
+        + 'unlimited tasks and the daily digest. '
+        + (bp.billed
+          ? 'That amount came off your Shopify subscription, so it is what your invoice says.'
+          : 'Shopify prices the plan and sends the invoice; Shopify\u2019s plan page has the exact amount for your store.');
     }
 
     return 'Starter adds WhatsApp alerts, unlimited tasks and the daily digest. '
@@ -3034,18 +3101,26 @@
           s.shop.plan === key ? h('span', { class: 'cur-badge' }, 'CURRENT') : null,
           h('h3', null, cfg.name),
           h('div', { class: 'price' },
-            byShopify ? (paid ? 'Set at Shopify' : 'Free') : (paid ? fmtMoney(p.amount, p.code) : 'Free'),
-            !byShopify && paid ? h('span', null, ' /month (' + p.code + ')') : null,
-            !byShopify && paid && p.code !== cur
-              ? h('span', { class: 'muted small' }, ' — this app has no ' + cur + ' price for the plan, so Shopify bills the ' + p.code + ' amount and converts it at its own rate')
-              : null,
-            byShopify && paid ? h('span', null, ' in ' + cur) : null),
+            p.amount > 0
+              ? fmtMoney(p.amount, p.code)
+              : (p.free ? 'Free' : (paid ? 'See Shopify' : 'Free')),
+            p.amount > 0 ? h('span', null, p.billed
+              ? ' \u00b7 ' + (p.interval === 'ANNUAL' ? 'per year' : 'per month')
+              : ' /month \u00b7 ' + p.code) : null),
+          h('div', { class: 'price-note' }, planPriceNote(p)),
+          p.drift
+            ? h('p', { class: 'drift' },
+                'Shopify bills ', String(p.drift.shopify), ' for this plan; this app\u2019s list price says ',
+                String(p.drift.list), '. Your invoice follows Shopify. To line the two up, change the plan in '
+                + 'Partner Dashboard → App pricing, or update the prices in config/shopify.php to match '
+                + '(php artisan taskpe:plans shows it for every store).')
+            : null,
           h('ul', null, (features[key] || []).map(f => h('li', null, f))),
           cta);
       }));
 
     const note = h('p', { class: 'muted small mt' }, byShopify
-      ? 'Amount, currency, trial, invoices and cancelling all belong to Shopify. A plan created in US dollars is billed in US dollars; a plan with a rupee price is billed in \u20b9. This page only mirrors what Shopify reports.'
+      ? 'The amount on the plan you are on is Shopify\u2019s, read back from your subscription — that is the one figure here that describes your invoice. Prices on the other cards are this app\u2019s list prices, so the choices are comparable before you open Shopify\u2019s page; a plan created in US dollars is billed in US dollars and one with a rupee price is billed in \u20b9. Amount, currency, trial, invoices and cancelling all belong to Shopify, and nothing on this page changes them.'
       : cur === 'INR'
         ? 'Indian stores are shown and charged in \u20b9 (INR) on their Shopify invoice — no USD conversion and no forex fee on this subscription.'
         : 'Prices are shown in your store\u2019s billing currency (' + cur + ') where this app has a price for it; otherwise the US price is used and Shopify converts it at its own rate on the invoice.');

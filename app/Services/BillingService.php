@@ -82,7 +82,7 @@ class BillingService
 
         $appHandle = strtolower(trim((string) config('shopify.billing.app_handle', '')));
 
-        if ($appHandle === '' || $shop === null || trim((string) $shop->handle) === '') {
+        if ($appHandle === '' || $shop === null || $shop->adminHandle() === '') {
             return '';
         }
 
@@ -275,10 +275,82 @@ class BillingService
     }
 
     /**
+     * The price table the Plan tab prints, with an honesty marker on every number.
+     *
+     * Three kinds of value, and they must never be confused on screen:
+     *
+     *   `billed`  Shopify's own figure for the plan this store is actually on — read back from
+     *             the subscription. This is the only number that may be presented as "what you pay",
+     *             and it is what the current plan's card shows (the bug this whole area was
+     *             rebuilt around was a config ₹499 sitting beside a $5.99 invoice).
+     *   `list`    this app's table, shown on the plans the store is NOT on so the page is
+     *             readable — labelled as a list price, with `exact` false when we have no price
+     *             in the store's billing currency, because "US$5.99, converted by Shopify at
+     *             checkout" is a different promise from "₹499".
+     *   `drift`   the two disagree. The app cannot fix that (Shopify's number wins on the
+     *             invoice), so it says so out loud and names where to change it, and
+     *             `php artisan taskpe:plans` does the same for every store at once.
+     */
+    public function planCatalog(): array
+    {
+        $currency = (string) ($this->shop->currency ?: config('shopify.billing_fallback_currency', 'USD'));
+        $bill     = (array) $this->shop->setting('billing', []);
+        $readback = ($bill['available'] ?? null) !== false && ($bill['subscribed'] ?? false);
+
+        $out = [];
+
+        foreach ((array) config('shopify.plans') as $key => $plan) {
+            $prices = (array) ($plan['prices'] ?? []);
+            $entry  = [
+                'name'       => (string) ($plan['name'] ?? $key),
+                'trial_days' => (int) ($plan['trial_days'] ?? 0),
+                'list'       => null,
+                'exact'      => false,
+                // 'free_plan' is not the same fact as 'list => null': one is a plan that costs
+                // nothing, the other is this app having no number for it. Printed as "Free" by
+                // accident, the second one is a false promise about money.
+                'free_plan'  => $prices === [],
+            ];
+
+            if ($prices !== []) {
+                [$amount, $code] = static::resolvePrice($key, $currency);
+
+                $entry['list']  = round((float) $amount, 2);
+                $entry['code']  = (string) $code;
+                $entry['exact'] = isset($prices[$currency]);
+            }
+
+            // Only the plan the store is actually on can be confirmed against the invoice.
+            if ($readback && $key === $this->shop->plan && isset($bill['amount']) && $bill['amount'] !== null) {
+                $entry['billed'] = [
+                    'amount'    => round((float) $bill['amount'], 2),
+                    'currency'  => (string) ($bill['currency'] ?? $currency),
+                    'interval'  => (string) ($bill['interval'] ?? 'EVERY_30_DAYS'),
+                    'renews_at' => $bill['renews_at'] ?? null,
+                    'test'      => (bool) ($bill['test'] ?? false),
+                    'trial'     => (int) ($bill['trial_days'] ?? 0),
+                ];
+
+                if ($entry['list'] !== null && abs((float) $entry['list'] - (float) $bill['amount']) > 0.009) {
+                    $entry['drift'] = [
+                        'list'    => $entry['list'].' '.$entry['code'],
+                        'shopify' => $bill['amount'].' '.($bill['currency'] ?? $currency),
+                    ];
+                }
+            }
+
+            $out[$key] = $entry;
+        }
+
+        return $out;
+    }
+
+    /**
      * What Shopify says this store is billed, in the currency Shopify uses. This is the
-     * only price the Plan tab may present when the Dashboard owns the plans: the store's
-     * currency, the amount off the subscription, and the renewal date — never our config's
-     * number with the store's currency symbol glued onto it.
+     * only figure the Plan tab may describe as what the merchant pays, in either billing
+     * mode: the store's currency, the amount off the subscription, and the renewal date —
+     * never our config's number with the store's currency symbol glued onto it. (The list
+     * prices in `planCatalog()` do appear beside it, labelled as list prices.)
      *
      * Tolerant by design: a failed read must not turn the Plan tab into an error screen, so
      * callers get ['available' => false] and fall back to "we could not read it".

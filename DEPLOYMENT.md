@@ -842,6 +842,53 @@ history page" is the second half of what 1.2.3 checks. In the reply, name the cl
 Choose Starter → Shopify's plan page → approve" — rather than the commit, because the reviewer re-tests
 the flow.
 
+### Prices on the Plan tab, and the drift check that keeps them honest
+
+The day the buttons worked, the next question arrived: *show the price*. Stripping `prices` out of
+the payload had been the fix for a different complaint — a hardcoded ₹499 printed beside a $5.99 plan,
+with the app implying it knew the merchant's bill — and the cure left the cards reading "Set at
+Shopify", which is honest and useless in the same sentence. Both requirements fit, because they were
+never about the same number:
+
+| Number on the page | Where it comes from | What it may be described as |
+|---|---|---|
+| the amount on the **plan the store is on** | `currentAppInstallation` → `lineItems.plan.pricingDetails … AppRecurringPricing.price` (stored on the shop's `billing` setting at sync) | the invoice. "Billed by Shopify every 30 days, renews <date>" |
+| the amount on every **other** plan | `config/shopify.php → plans.<key>.prices`, resolved to the store's billing currency | a **list price**, with the line "List price. Shopify's plan page shows the exact amount for your store." |
+| a **missing entry** for the store's currency | the USD row, with `exact: false` | "List price, in US dollars — Shopify converts at its own rate for a store billed in INR." |
+| `Free` | only when the plan has no `prices` at all (`free_plan: true`) | "No charge, and no card needed." A paid plan with no price reads "See Shopify", never "Free" |
+
+The payload is `BillingService::planCatalog()` (`GET /api/board` → `plans.<key>`: `name`,
+`trial_days`, `list`, `code`, `exact`, `free_plan`, plus `billed` and `drift` on the current plan).
+It is sent in **both** billing modes now — `BoardController` no longer unsets anything — and the card
+never promotes a list price into a bill, because the two arrive as different fields with different
+labels rather than one `prices` blob the renderer has to guess about.
+
+**Drift.** When Shopify's read-back for the current plan and `config` disagree by more than a cent,
+`drift` is set and the card says so in the open: which two numbers disagree, that the invoice follows
+Shopify, and where to change each one. Silence here is the failure mode — a merchant who spots a price
+on your page that their invoice contradicts stops believing the rest of the page.
+
+```bash
+php artisan taskpe:plans            # the config table, then every store: list price vs Shopify's
+php artisan taskpe:plans --live     # re-read each subscription first (one Admin API call per store)
+php artisan taskpe:plans house-of-indha.myshopify.com
+```
+
+Exit code is non-zero while any store is being shown a stale price, so it can gate a deploy. It also
+warns when `SHOPIFY_APP_HANDLE` is missing in `shopify` mode: the Plan tab can then print a price but
+cannot link to the page that changes it, which is the 1.2.3 complaint wearing a different hat.
+
+**After changing either side** — `Partner Dashboard → App pricing` or `config/shopify.php` — run
+`php artisan config:clear && php artisan cache:clear` and `taskpe:plans --live`.
+
+**Files this change touches** — unlike a copy-only fix, it is not just the two built assets:
+`app/Services/BillingService.php`, `app/Http/Controllers/Api/BoardController.php`,
+`app/Console/Commands/PlansCommand.php`, `app/Models/Shop.php`, `config/shopify.php`,
+`public/js/app.js`, `public/css/app.css`. No migration, nothing new in `.env`, and the
+extension does not need re-uploading. In `shopify` mode the
+config is display copy for the plans a store is not on, and display copy that contradicts the invoice
+is worse than none.
+
 ## 18. Two 500s from that deploy: an undefined helper, and `throttle:` asking about a user
 
 Reported straight off the running app, inside the embedded page:
@@ -877,6 +924,11 @@ altogether, because plain PHP cannot be missing:
 
         return $p;
     })->all();
+
+That is the shape it had that day, kept here because the mistake is the point. It is no longer
+what the endpoint does: hiding the price table turned into its own problem, and the builder now
+calls `BillingService::planCatalog()`, which sends labelled prices in both modes (§ 17). Anyone
+reading this to decide what `plans` contains should read the code, not the snippet.
 
 Two habits that keep this class away: prefer a language construct or a repo-proven
 helper in payload builders (`collect()`, `config()`, `now()`, `abort_if()` appear

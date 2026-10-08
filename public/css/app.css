@@ -357,7 +357,12 @@ input, select, textarea { font: inherit; }
 .plan-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; background: var(--surface); position: relative; }
 .plan-card.current { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
 .plan-card h3 { font-size: 16px; }
-.plan-card .price { font-size: 26px; font-weight: 750; margin: 8px 0; }
+.plan-card .price { font-size: 26px; font-weight: 750; margin: 8px 0 2px; }
+.plan-card .price-note { font-size: 12.5px; line-height: 1.45; color: var(--text-subdued); margin-bottom: 10px; }
+.plan-card .drift {
+  font-size: 12.5px; line-height: 1.45; margin: 0 0 10px; padding: 8px 10px; border-radius: 8px;
+  background: var(--warning-bg); color: var(--warning);
+}
 .plan-card .price span { font-size: 13px; font-weight: 500; color: var(--text-subdued); }
 .plan-card ul { list-style: none; margin: 12px 0 16px; }
 .plan-card li { padding: 3px 0 3px 22px; position: relative; color: var(--text-subdued); font-size: 13.5px; }

@@ -89,8 +89,16 @@ REVIEW STORE (provided for testing)
 9. BILLING AND PLAN CHANGES (plans and prices are managed by Shopify)
    Plan tab -> "Choose Starter" on the Starter card. Expected: the app leaves the iframe and opens
    Shopify's own plan page for this store (admin.shopify.com/store/<handle>/charges/<app
-   handle>/pricing_plans). In this mode the app never quotes a price and never calls
-   appSubscriptionCreate, because the plans and their prices live in the Partner Dashboard. On a
+   handle>/pricing_plans). In this mode the app never creates a charge - appSubscriptionCreate is
+   not called, because the plans and their prices live in the Partner Dashboard - but the cards do
+   show numbers, each one labelled with where it came from: the plan you are on carries Shopify's own
+   read-back amount ("Billed by Shopify every 30 days, renews ..."), the other cards carry this app's
+   LIST price, and a plan with no price in your billing currency says the US figure plus "Shopify
+   converts at its own rate". A paid plan is never printed as "Free", and if Shopify's amount and the
+   list price disagree, the current card says so in a warning box. Both are checked on the server with
+   `php artisan taskpe:plans` (add --live to re-read every subscription), which is the command to run
+   after changing a price in either place. On a development store owned by the same partner
+   organisation the plan is selectable at $0, so the whole flow can be completed with no card involved.
    development store owned by the same partner organisation the plan is selectable at $0, so the
    whole flow can be completed end to end with no card involved.
 
