@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Shop;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -151,12 +152,16 @@ class BillingService
                 'shop' => $this->shop->domain, 'err' => $e->getMessage(),
             ]);
 
+            $this->rememberHandleFailure($e->getMessage());
+
             return $held !== '' ? $held : null;      // a stale answer beats no answer, and beats breaking the page
         }
 
         $handle = strtolower(trim((string) data_get($data, 'currentAppInstallation.app.handle', '')));
 
         if ($handle === '' || !preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/', $handle)) {
+            $this->rememberHandleFailure('Shopify answered with no usable app handle');
+
             return $held !== '' ? $held : null;
         }
 
@@ -176,6 +181,7 @@ class BillingService
             'handle'     => $handle,
             'checked_at' => now()->toIso8601String(),
             'domain'     => $this->shop->domain,
+            'error'      => '',
         ]);
         $this->shop->save();
 
@@ -183,18 +189,85 @@ class BillingService
     }
 
     /**
-     * The handle behind the plan link, and whether it can be trusted. `source` is what the Plan tab
-     * and `taskpe:plans` print, because "unverified" is actionable and "unknown" is not.
+     * Write the billing read-back into the shop's `billing` node WITHOUT replacing it.
      *
-     * @return array{handle:string,source:string,verified:bool,matches_config:bool}
+     * That node also carries what this app learned from Shopify — the app handle it confirmed per
+     * store (`app_handle_check`) and the plan handles a store has been billed on (`plan_handles`).
+     * `setSetting('billing', $bill)` wrote the node whole and deleted both on every sync, so the
+     * verified handle went stale, every store looked "not confirmed" again, and a plan button went
+     * back to guessing. Merge, and let the new read win only for the keys it actually re-read.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function rememberBilling(array $values): void
+    {
+        $this->shop->setSetting('billing', array_merge(
+            (array) $this->shop->setting('billing', []),
+            $values
+        ));
+        $this->shop->save();
+    }
+
+    /**
+     * The billing fields a merchant's screen is shown, and nothing else. `taskpe:plans` and the log
+     * read the stored node in full; the browser gets the numbers under the plan cards, because the
+     * node also carries handles and failure reasons that are this app's own diagnostics.
+     *
+     * @return array<string, mixed>
+     */
+    public function clientBilling(): array
+    {
+        return Arr::only((array) $this->shop->setting('billing', []), self::CLIENT_BILLING_KEYS);
+    }
+
+    /** The billing fields a merchant's screen is shown, and nothing else. */
+    public const CLIENT_BILLING_KEYS = [
+        'available', 'subscribed', 'name', 'amount', 'currency',
+        'interval', 'trial_days', 'renews_at', 'test', 'read_at',
+    ];
+
+    /**
+     * Why a store's handle could not be confirmed, kept beside the handle it did not replace.
+     *
+     * "not confirmed" alone sends a human off to read logs: the reason is almost always a token
+     * this deployment cannot use any more, and only the answer to THAT is to open the app in the
+     * store once. So the failure is stored next to the value it refused to overwrite, and
+     * `taskpe:plans --links` prints it per store.
+     */
+    private function rememberHandleFailure(string $reason): void
+    {
+        $check = (array) $this->shop->setting('billing.app_handle_check', []);
+
+        if (($check['error'] ?? '') === $reason) {
+            return;     // same answer as last time: nothing to record, nothing to write
+        }
+
+        $check['error']     = mb_substr($reason, 0, 240);
+        $check['failed_at'] = now()->toIso8601String();
+
+        $this->shop->setSetting('billing.app_handle_check', $check);
+        $this->shop->save();
+    }
+
+    /**
+     * The handle behind the plan link, and whether it can be trusted. `source` is what the Plan tab
+     * and `taskpe:plans` print, because "unverified" is actionable and "unknown" is not. `error` is
+     * why an unconfirmed link is still unconfirmed, which is the only part a human can act on.
+     *
+     * @return array{handle:string,source:string,verified:bool,matches_config:bool,error:string,failed_at:string}
      */
     public function appHandleStatus(): array
     {
         $reported   = $this->shop->shopifyAppHandle();
         $configured = strtolower(trim((string) config('shopify.billing.app_handle', '')));
+        $check      = (array) $this->shop->setting('billing.app_handle_check', []);
+        $why        = [
+            'error'     => (string) ($check['error'] ?? ''),
+            'failed_at' => (string) ($check['failed_at'] ?? ''),
+        ];
 
         if ($reported !== '') {
-            return [
+            return $why + [
                 'handle'         => $reported,
                 'source'         => 'shopify',
                 'verified'       => true,
@@ -202,7 +275,7 @@ class BillingService
             ];
         }
 
-        return [
+        return $why + [
             'handle'         => $configured,
             'source'         => $configured !== '' ? 'env (not confirmed with Shopify)' : 'none',
             'verified'       => false,
@@ -491,10 +564,15 @@ class BillingService
 
         if (!$active) {
             $this->shop->forceFill(['plan' => config('shopify.default_plan'), 'charge_id' => null])->save();
-            $this->shop->setSetting('billing', ['available' => true, 'subscribed' => false, 'read_at' => now()->toIso8601String()]);
+            $this->rememberBilling([
+                'available' => true, 'subscribed' => false,
+                'plan_key'  => null, 'mapped_by' => null,
+                'shopify_plan_name' => '', 'shopify_handle' => '',
+                'read_at'   => now()->toIso8601String(),
+            ]);
             $this->shop->save();
 
-            return ['plan' => $this->shop->plan, 'active' => false, 'billing' => $this->shop->setting('billing')];
+            return ['plan' => $this->shop->plan, 'active' => false, 'billing' => $this->clientBilling()];
         }
 
         // Which of OUR plans is this? Shopify only tells us a name and, on the way back from its
@@ -519,13 +597,12 @@ class BillingService
             $this->rememberPlanHandle($planKey, (string) $bill['plan_handle']);
         }
 
-        $this->shop->setSetting('billing', $bill + [
+        $this->rememberBilling($bill + [
             'plan_key'          => $planKey,
             'mapped_by'         => $mappedBy,
             'shopify_plan_name' => (string) ($active['name'] ?? ''),
             'shopify_handle'    => (string) ($planHandle ?? ''),
         ]);
-        $this->shop->save();
 
         $ours = static::resolvePrice($planKey, (string) ($bill['currency'] ?? ($this->shop->currency ?: 'USD')));
         if ($bill['available'] && ($bill['subscribed'] ?? false) && $bill['amount'] !== null

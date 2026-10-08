@@ -995,6 +995,12 @@ bounce is gone — and Shopify still answers "There's no page at this address", 
 broken: the app is linking to a page the Dashboard never undertook to make. `php artisan taskpe:plans` prints
 this diagnosis with the two checks below, because the app cannot see either fact through the Admin API.
 
+A confirmed handle is worth more than one store: `app.handle` is a property of the app, so when
+`taskpe:plans --links` shows `shopify (config disagrees!)` on one row and `env` on the others, the fix is to
+copy the confirmed value into `.env` (`SHOPIFY_APP_HANDLE=taskpe-2`, then `php artisan config:clear`) — the
+command prints exactly that line when it sees the pattern. A store whose own confirmation later disagrees still
+wins, because the per-store answer is what Shopify gave that install.
+
 1. **The pricing model.** If the app is on "Set up your own pricing" in the Dashboard, there is no
    Shopify-hosted plan page at all, and the app must not be calling the Billing API either —
    `SHOPIFY_BILLING_MODE` then belongs set to `api` (the app creates and switches the charge itself, in the
@@ -1010,6 +1016,19 @@ Once the page exists nothing in the app changes: the same link opens, the click 
 `.../plans/{handle}` is now filled from `AppRecurringPricing.planHandle` on that plan's own subscription, a
 store that has switched once goes straight to that plan's page from then on with no `TASKPE_PLAN_*_HANDLE` set —
 the field is an override and a pre-fill, not a requirement.
+
+#### What the app remembers, and why it used to forget
+
+Two of the three facts above are things the app learns per store and keeps in the shop's `billing` settings
+node: the handle Shopify confirmed for the install (`app_handle_check`), and the plan handles it has been
+billed on (`plan_handles`). `syncActiveSubscription()` used to write its read-back with
+`setSetting('billing', $bill)`, which replaces the whole node — so every sync silently deleted both caches,
+`--links` reported "env (not confirmed with Shopify)" for stores that had been confirmed, and a deep link
+came back to `list` after the next plan change. The write is now `rememberBilling()`, which merges; and
+`taskpe:plans --links` prints *why* a store is unconfirmed (no usable token, or the exact Shopify failure,
+stored by `rememberHandleFailure()`) instead of leaving a human in the log files. The `billing` node is also
+no longer handed to the browser whole: `Arr::only(..., CLIENT_BILLING_KEYS)` sends the Plan tab the numbers it
+renders, and keeps handles and failure reasons server-side.
 
 **The flag that silently stops revenue** is `SHOPIFY_BILLING_TEST=true`, and it matters only in `api` mode: a
 charge created with `test: true` is a working subscription on a demo store and a fiction on a paying one. It is

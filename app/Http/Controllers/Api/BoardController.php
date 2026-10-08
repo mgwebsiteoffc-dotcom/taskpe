@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use Illuminate\Support\Arr;
 use App\Models\Task;
 use App\Services\BillingService;
 use App\Support\ShopContext;
@@ -46,7 +47,10 @@ class BoardController extends Controller
                 // merchant — it is the signal for the SPA to ask Shopify once, quietly, before the
                 // first click turns into a trip to the Apps list.
                 'handle'    => $billingService->appHandleStatus(),
-                'shopify'   => (array) $shop->setting('billing', []),
+                // The read-back for the line under the plan cards. Only those fields: the same
+                // node also holds what the app learned from Shopify (handles) and why an ask
+                // failed, which is a server-side diagnosis and not something to ship to a browser.
+                'shopify'   => Arr::only((array) $shop->setting('billing', []), BillingService::CLIENT_BILLING_KEYS),
             ],
             'shop' => [
                 'domain'   => $shop->domain,

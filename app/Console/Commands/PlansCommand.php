@@ -276,6 +276,8 @@ class PlansCommand extends Command
 
         $rows   = [];
         $broken = 0;
+        $unconfirmed = [];
+        $confirmed   = [];
 
         foreach ($shops as $shop) {
             if ($this->option('verify')) {
@@ -295,6 +297,12 @@ class PlansCommand extends Command
 
             if ($picker === '' || !$status['verified']) {
                 $broken++;
+            }
+
+            if ($status['verified']) {
+                $confirmed[$status['handle']][] = $shop->domain;
+            } else {
+                $unconfirmed[] = [$shop, $status, $picker];
             }
 
             $rows[] = [
@@ -318,14 +326,78 @@ class PlansCommand extends Command
             $this->line('not a failure.');
         } else {
             $this->line('<comment>'.$broken.' store(s) have a plan link that Shopify has not confirmed.</comment>');
-            $this->line('Run this with --verify to ask Shopify for the real handle, and confirm App Pricing lists at');
-            $this->line('least one plan (Partner Dashboard -> your app -> App pricing): with no plans there is no page');
-            $this->line('at that address, and Shopify answers with its Apps list. If a link is right and the admin');
-            $this->line('still opens its Apps list, the store slug is the suspect: set SHOPIFY_PLANS_URL_STYLE=myshopify');
-            $this->line('to build the same URL through {shop}.myshopify.com/admin instead, then php artisan config:clear.');
+            $this->line('Run this with --verify to ask Shopify for the real handle.');
+
+            foreach ($unconfirmed as [$shop, $status, $picker]) {
+                $this->line('  ' . $shop->domain . ': ' . $this->unconfirmedWhy($shop, $status)
+                    . ($picker === '' ? '; and no link can be built at all from it' : ''));
+            }
+
+            $this->line('  Two different Shopify answers mean two different fixes. Shopify\'s Apps list means the');
+            $this->line('  handle in the link is not the one this install was made from. "There\'s no page at this');
+            $this->line('  address" means the handle IS right and there is no plan page to open, which only the');
+            $this->line('  Partner Dashboard can create (App pricing: model and at least one plan).');
+            $this->line('  A third possibility, a link that is right and still opens the Apps list, is the store');
+            $this->line('  slug: set SHOPIFY_PLANS_URL_STYLE=myshopify to build the same URL through');
+            $this->line('  {shop}.myshopify.com/admin instead, then php artisan config:clear.');
+        }
+
+        $configured = strtolower(trim((string) config('shopify.billing.app_handle', '')));
+
+        if ($confirmed !== []) {
+            // The handle belongs to the app, not to a store, so the one Shopify confirmed is the
+            // answer for every install in this database — including the stores whose token could not
+            // be asked. Printed instead of applied, because writing .env from a command is how a
+            // deploy ends up with a value nobody remembers choosing.
+            foreach ($confirmed as $handle => $domains) {
+                $this->line('');
+
+                if ($configured === $handle) {
+                    $this->line('Handle Shopify confirmed: ' . $handle . ' (on '
+                        . implode(', ', array_slice($domains, 0, 3)) . ').');
+                    $this->line('SHOPIFY_APP_HANDLE agrees, so every store links to the same, correct place.');
+
+                    continue;
+                }
+
+                $this->line('<comment>Shopify says this app\'s handle is ' . $handle . '</comment> — confirmed on '
+                    . implode(', ', array_slice($domains, 0, 3))
+                    . ($configured === ''
+                        ? ', and SHOPIFY_APP_HANDLE is empty.'
+                        : ', while SHOPIFY_APP_HANDLE says ' . $configured . '.'));
+                $this->line('That handle is a property of the app, not of the store: stores Shopify could not');
+                $this->line('confirm are still linking with the config value. Set it once and let the unconfirmed');
+                $this->line('stores inherit the truth:');
+                $this->line('    SHOPIFY_APP_HANDLE=' . $handle . '   then   php artisan config:clear');
+                $this->line('Re-run taskpe:plans --links afterwards: the handle source should read "shopify" or');
+                $this->line('"env" for every store, and never "config disagrees".');
+            }
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Why this store's plan link is still unconfirmed, in the words a human can act on. The reason
+     * is stored by BillingService::rememberHandleFailure() next to the handle it refused to replace,
+     * because "not confirmed" is a symptom and "the token expired in March" is a task.
+     */
+    protected function unconfirmedWhy(Shop $shop, array $status): string
+    {
+        if (!$shop->hasUsableToken()) {
+            return 'no live token — Shopify cannot be asked about this install until the app is '                .'opened in that store once';
+        }
+
+        $error = trim((string) ($status['error'] ?? ''));
+
+        if ($error === '') {
+            return 'Shopify has not been asked about this store yet — re-run with --verify';
+        }
+
+        $when = strtotime((string) ($status['failed_at'] ?? ''));
+
+        return 'asking Shopify failed'.($when ? ' on '.date('Y-m-d', $when) : '')
+            .': '.$error;
     }
 
     /**
