@@ -137,11 +137,77 @@ class PlansCommand extends Command
             $this->line('or SHOPIFY_APP_PLANS_URL to a full URL — then: php artisan config:clear');
         }
 
+        $this->roadReport($shops);
         $this->mappingReport($shops);
 
         $links = $this->option('links') ? $this->linksReport($shops) : self::SUCCESS;
 
         return $stale === 0 ? $links : self::FAILURE;
+    }
+
+    /**
+     * Which billing road this install is on, and whether it can work at all.
+     *
+     * The line this exists for is Shopify's "There's no page at this address" on
+     * /charges/{app}/pricing_plans. That page is not the app's to create: it exists only when the
+     * Partner Dashboard has App Pricing ENABLED with at least one PLAN, and neither fact is visible
+     * to the app through the Admin API. So instead of guessing, print what the app believes, what it
+     * built, and the two answers that make the 404 go away.
+     */
+    protected function roadReport(Collection $shops): void
+    {
+        $managed = BillingService::shopifyManaged();
+
+        $this->line('');
+        $this->line('Billing road');
+        $this->line('  mode: ' . ($managed
+            ? 'shopify — Shopify App Pricing; the Dashboard prices the plans and this app only links to them'
+            : 'api — this app creates the subscription with appSubscriptionCreate from its own price table'));
+
+        $forced = config('shopify.billing.test_charges');
+
+        if ($forced === null || $forced === '') {
+            $this->line('  test charges: decided per store from shop.plan.partnerDevelopment, so a real');
+            $this->line('  merchant is never handed a fake charge and nobody has to remember a flag.');
+        } elseif ($forced) {
+            $this->line('  test charges: <comment>FORCED ON</comment> by SHOPIFY_BILLING_TEST=true. Every charge this app');
+            $this->line('  creates is a test charge — nobody pays, while the Plan tab still looks healthy.');
+            $this->line('  Remove that line on a production host; it is the setting that quietly costs all revenue.');
+        } else {
+            $this->line('  test charges: forced off. A development store then cannot rehearse approval unless its');
+            $this->line('  Dashboard plan is marked free to test; set SHOPIFY_BILLING_TEST=true there only.');
+        }
+
+        if (!$managed) {
+            return;
+        }
+
+        $learned = 0;
+
+        foreach ($shops as $shop) {
+            $handles = (array) $shop->setting('billing.plan_handles', []);
+
+            if ($handles !== []) {
+                $learned++;
+                $this->line('  ' . $shop->domain . ': plan handles Shopify itself told us — '
+                    . collect($handles)->map(fn ($h, $k) => $k . '=' . $h)->join(', '));
+            }
+        }
+
+        $this->line('  plan page: not verifiable from the app — the Dashboard creates it. Check, in order:');
+        $this->line('    1. Partner Dashboard → your app → App pricing: the pricing model must be Shopify App');
+        $this->line('       Pricing, not “Set up your own pricing”. That choice and SHOPIFY_BILLING_MODE disagreeing');
+        $this->line('       IS this 404: the app links to a page the Dashboard never undertook to make.');
+        $this->line('    2. At least one plan exists — Free should be one of them — each with the welcome link');
+        $this->line('       /billing/callback. With no plans there is no page at that address to open.');
+        $this->line('    The alternative that needs nothing in the Dashboard: SHOPIFY_BILLING_MODE=api, where');
+        $this->line('    this app creates the charge itself, in the store’s billing currency.');
+
+        if ($learned === 0) {
+            $this->line('  deep links: no plan handles known yet, so a plan click opens the plan list. The app reads');
+            $this->line('  each plan’s own handle from the store’s subscription (AppRecurringPricing.planHandle), so');
+            $this->line('  after one plan change per store the next click goes straight to that plan’s approval page.');
+        }
     }
 
     /**

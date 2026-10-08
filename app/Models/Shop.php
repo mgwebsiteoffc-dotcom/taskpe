@@ -364,6 +364,24 @@ class Shop extends Model
         return 'https://'.strtolower(trim((string) $this->domain)).'/admin';
     }
 
+    /**
+     * Is this a partner development shop? Cached, and asked through BillingService on first use —
+     * see BillingService::ensureShopPlanFlags(). This decides whether an app-created charge is a
+     * test charge, so "unknown" must mean no.
+     */
+    public function isPartnerDevelopmentStore(?\App\Services\BillingService $service = null): bool
+    {
+        $held = (array) $this->setting('shopify.plan', []);
+
+        if (array_key_exists('partner_development', $held)) {
+            return (bool) $held['partner_development'];
+        }
+
+        $service = $service ?: new \App\Services\BillingService($this);
+
+        return (bool) ($service->ensureShopPlanFlags()['partner_development'] ?? false);
+    }
+
     public function adminBaseUrl(): string
     {
         return 'https://admin.shopify.com/store/'.$this->adminHandle();

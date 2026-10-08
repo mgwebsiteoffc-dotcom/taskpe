@@ -3171,12 +3171,12 @@
 
       if (sw.kind === 'shopify-plan') {
         return { label: 'Continue at Shopify', url: sw.url, kind: sw.kind,
-          note: 'Opens Shopify’s approval page with ' + name + ' already chosen — the amount, the trial and the invoice are theirs, and nothing changes until you approve it there.' };
+          note: 'Opens Shopify’s approval page with ' + name + ' already chosen — the amount, the trial and the invoice are theirs, and nothing changes until you approve it there. If Shopify answers that there is no page at that address, the plan has not been published to the App Store yet — tell us from the Support card and we will sort it out with you.' };
       }
 
       if (sw.kind === 'shopify-picker') {
         return { label: 'Continue at Shopify', url: sw.url, kind: sw.kind,
-          note: 'Opens Shopify’s plan page — pick ' + name + ' there. Shopify sends the invoice, and the change comes back to this tab on its own.' };
+          note: 'Opens Shopify’s plan page — pick ' + name + ' there. Shopify sends the invoice, and the change comes back to this tab on its own. If no plan page opens, tell us from the Support card and we will sort it out with you.' };
       }
 
       if (sw.kind === 'charge') {

@@ -692,20 +692,31 @@ Three separate things made that possible, and the rupee sign was the least of th
     SHOPIFY_BILLING_MODE=shopify      # plans/prices/trials created at Shopify (default)
     SHOPIFY_APP_PLANS_URL=            # optional: https://apps.shopify.com/<your-handle>
 
-**`shopify`** — the config price table stops being displayed *and* stops being sent.
-`BoardController` strips `prices` out of the `plans` payload (there is then nothing on the client
-to quote), `BillingApiController::subscribe()` and `::cancel()` answer **422 `billing_managed_by_shopify`**
-with one plain sentence before anything is validated, `BillingService::createSubscription()` /
-`::cancelSubscription()` carry the same guard for any other caller, and the Plan tab has no
-Choose/Cancel buttons: one **Open Shopify's plan page** when `SHOPIFY_APP_PLANS_URL` is set, and
-otherwise the admin path written out in words (`Settings → Apps and sales channels → <app> → plan /
-billing`). A button to a URL we guessed would be worse than a sentence — that is why the env value is
-optional instead of derived.
+**`shopify`** — the config price table stops being the number the merchant is asked to pay. The app never
+calls `appSubscriptionCreate` or `appSubscriptionCancel` (`BillingApiController::subscribe()` and `::cancel()`
+answer **422 `billing_managed_by_shopify`** before anything is validated, and `BillingService::createSubscription()`
+/ `::cancelSubscription()` carry the same guard for any other caller). The Plan tab still switches plans — the
+segmented control, each card's button and "Move to Free" all stay, because a plan change must not need a support
+ticket or a reinstall (1.2.3) — but every one of those actions ends in Shopify's own page: the merchant picks
+and approves there, and the read-back of `currentAppInstallation` is what unlocks features here. Prices on the
+cards are Shopify's too: the read-back amount for the plan a store is on, a labelled list price for the others
+(`BoardController` strips `prices` out of the `plans` payload so the client cannot quote a number nobody will
+bill). If Shopify publishes no handle to link to, `switch.kind` is `none` and the tab explains the admin path in
+words (`Settings → Apps and sales channels → <app> → plan / billing`) instead of showing a button that goes
+nowhere.
 
-**`api`** — the old behaviour for an app that really does own its price table: same cards, same
-mutation, currency per store. The note under the cards is now conditional instead of promising INR
-to everyone: with no price for the store's currency it says the US price is used and Shopify converts
-it at its own rate on the invoice.
+**`api`** — for an app that really does own its price table: the same cards, the same segmented control, but
+the next click calls `appSubscriptionCreate` from this app with `config/shopify.php` prices in the store's own
+billing currency, and the merchant approves inside Shopify's confirmation screen as before. With no price for
+the store's currency the note says the US figure is used and Shopify converts it at its own rate.
+
+The two roads are exclusive. An app whose Dashboard pricing model is Shopify App Pricing is not meant to
+create charges through the Billing API at all (the hosted plan page is the supported path, and a charge created
+there is what `currentAppInstallation` reports), and an app on "Set up your own pricing" has no
+`.../pricing_plans` page for the link to open. `SHOPIFY_BILLING_MODE` is therefore not cosmetic: it is the app's
+claim about which model the Dashboard is on, and the pair disagreeing is the cause of both plan-link failures in
+this section. `php artisan taskpe:plans` prints the mode next to the links, so the disagreement is visible from
+one command.
 
 ### What the Plan tab shows instead
 
@@ -974,6 +985,39 @@ optional (they pre-seed plan handles the app otherwise learns from Shopify's own
 extension does not need re-uploading. In `shopify` mode the
 config is display copy for the plans a store is not on, and display copy that contradicts the invoice
 is worse than none.
+
+### Shopify answers "There's no page at this address"
+
+This is the other half of the failure, and the half a fixed handle cannot cure. `.../charges/{app}/pricing_plans`
+is not a page Shopify makes for every app: it exists only when the Partner Dashboard has that app on the
+**Shopify App Pricing** model **with at least one plan created**. So when the handle is right — the Apps-list
+bounce is gone — and Shopify still answers "There's no page at this address", nothing in this repository is
+broken: the app is linking to a page the Dashboard never undertook to make. `php artisan taskpe:plans` prints
+this diagnosis with the two checks below, because the app cannot see either fact through the Admin API.
+
+1. **The pricing model.** If the app is on "Set up your own pricing" in the Dashboard, there is no
+   Shopify-hosted plan page at all, and the app must not be calling the Billing API either —
+   `SHOPIFY_BILLING_MODE` then belongs set to `api` (the app creates and switches the charge itself, in the
+   store's own billing currency, which is also the better answer for a non-US launch). Leaving it at `shopify`
+   produces precisely this 404.
+2. **The plans.** Create Free, Starter and Growth — handle, price per currency, trial days, and the **Redirect
+   URL / welcome URL set to `/billing/callback`**, without which a merchant who accepts a plan lands back in the
+   app with Shopify never having told it the plan is active. Publish with at least one plan; a plan-less
+   listing cannot be approved.
+
+Once the page exists nothing in the app changes: the same link opens, the click returns through
+`/billing/callback`, and `currentAppInstallation` confirms it. And because a plan's approval deep link
+`.../plans/{handle}` is now filled from `AppRecurringPricing.planHandle` on that plan's own subscription, a
+store that has switched once goes straight to that plan's page from then on with no `TASKPE_PLAN_*_HANDLE` set —
+the field is an override and a pre-fill, not a requirement.
+
+**The flag that silently stops revenue** is `SHOPIFY_BILLING_TEST=true`, and it matters only in `api` mode: a
+charge created with `test: true` is a working subscription on a demo store and a fiction on a paying one. It is
+no longer a default in any sense — with that line absent, `BillingService::isDevMode()` decides per store from
+Shopify's own `shop.plan.partnerDevelopment` (one cached GraphQL call), so a development store can still
+rehearse a plan change while a paying merchant is always billed for real. `php artisan taskpe:plans` prints the
+mode, whether charges are forced to test, and what follows from it, because from the merchant's side of the
+screen a store on test charges looks exactly like a billed one.
 
 ## 18. Two 500s from that deploy: an undefined helper, and `throttle:` asking about a user
 

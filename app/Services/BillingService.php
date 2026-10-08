@@ -285,9 +285,69 @@ class BillingService
         return ['kind' => $picker !== '' ? 'shopify-picker' : 'none', 'url' => $picker];
     }
 
+    /**
+     * Should the charge this app creates be a TEST charge?
+     *
+     * A test charge is approvable without money moving, which is what makes a billing flow
+     * rehearseable — and what makes it catastrophic as a default: a public app whose host left the
+     * flag on bills nobody, shows a working Plan tab, and reports zero revenue for months. So the
+     * answer comes from Shopify's own description of the store unless a human overrode it.
+     */
     public function isDevMode(): bool
     {
-        return (bool) env('SHOPIFY_BILLING_TEST', true);
+        $explicit = config('shopify.billing.test_charges');
+
+        if ($explicit !== null && $explicit !== '') {
+            return (bool) $explicit;
+        }
+
+        return $this->shop->isPartnerDevelopmentStore($this);
+    }
+
+    /**
+     * `shop.plan.partnerDevelopment`, asked once per store and cached on the shop row: Shopify's own
+     * statement of "this is a development shop". A failure to ask resolves to false, because the
+     * safe mistake is a developer who cannot fake-approve, not a merchant who is never billed.
+     */
+    public function ensureShopPlanFlags(): array
+    {
+        $held = (array) $this->shop->setting('shopify.plan', []);
+
+        if (isset($held['partner_development'])) {
+            return $held;
+        }
+
+        $query = <<<'GQL'
+        {
+          shop {
+            plan {
+              partnerDevelopment
+              publicDisplayName
+            }
+          }
+        }
+        GQL;
+
+        try {
+            $data = (new ShopifyClient($this->shop))->graphql($query);
+
+            $held = [
+                'partner_development' => (bool) data_get($data, 'shop.plan.partnerDevelopment', false),
+                'display_name'        => (string) data_get($data, 'shop.plan.publicDisplayName', ''),
+                'checked_at'          => now()->toIso8601String(),
+            ];
+
+            $this->shop->setSetting('shopify.plan', $held);
+            $this->shop->save();
+        } catch (\Throwable $e) {
+            Log::info('Billing: could not read shop.plan, treating the store as a real one', [
+                'shop' => $this->shop->domain, 'err' => $e->getMessage(),
+            ]);
+
+            return ['partner_development' => false, 'display_name' => '', 'checked_at' => null];
+        }
+
+        return $held;
     }
 
     /** true when the plan costs money (has any price entry). */
@@ -451,6 +511,14 @@ class BillingService
         // mode, and by nothing at all here) disagrees. The log line is for the developer
         // who edits one and not the other; the merchant just sees Shopify's number.
         $bill = $this->readBilling();
+
+        // Shopify just told us the handle behind the plan this store is on. Remembering it makes
+        // the next switch start on that plan's approval page — and it is Shopify's own string, so
+        // nothing here is guessing at a naming scheme.
+        if (!empty($bill['plan_handle'])) {
+            $this->rememberPlanHandle($planKey, (string) $bill['plan_handle']);
+        }
+
         $this->shop->setSetting('billing', $bill + [
             'plan_key'          => $planKey,
             'mapped_by'         => $mappedBy,
@@ -634,6 +702,7 @@ class BillingService
                     ... on AppRecurringPricing {
                       price { amount currencyCode }
                       interval
+                      planHandle
                     }
                   }
                 }
@@ -677,6 +746,11 @@ class BillingService
             'amount'       => isset($price['price']['amount']) ? (float) $price['price']['amount'] : null,
             'currency'     => $price['price']['currencyCode'] ?? null,
             'interval'     => $price['interval'] ?? null,
+            // With Shopify App Pricing this is the plan's own handle ("The app store pricing plan
+            // handle"), which is the piece the in-app switcher needs to open that plan's approval
+            // page instead of the plan list. Reading it here costs nothing — this query already runs
+            // — and it means no .env line has to be right for the deep link to work.
+            'plan_handle'  => isset($price['planHandle']) ? (string) $price['planHandle'] : null,
             'read_at'      => now()->toIso8601String(),
         ];
     }

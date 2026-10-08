@@ -141,9 +141,11 @@ return [
             'prices'           => ['USD' => 5.99, 'INR' => 499],
             // Shopify's own handle for this App Pricing plan. With it, the in-app switcher can
             // open Shopify's approval page FOR THAT PLAN; without it the merchant lands on the
-            // plan list and picks there. The app also learns handles from the `?plan_handle=`
-            // parameter Shopify puts on the return redirect, so this line is only needed to skip
-            // that first trip — see DEPLOYMENT.md § 17. Leave empty to use the plan list.
+            // plan list and picks there. The app learns handles by itself — from the `?plan_handle=`
+            // parameter Shopify puts on the return redirect, and from `planHandle` on the store's
+            // own subscription — so this line only skips that first trip. A wrong value is a 404,
+            // so the plan list is the safer answer: leave empty unless you are sure.
+            // See DEPLOYMENT.md § 17.
             'plan_handle'      => env('TASKPE_PLAN_STARTER_HANDLE', ''),
             'trial_days'       => 7,
             'member_limit'     => 5,
@@ -224,6 +226,22 @@ return [
         | bounces the `admin` form. It changes how the link is spelled and nothing else.
         */
         'plans_url_style' => strtolower(trim((string) env('SHOPIFY_PLANS_URL_STYLE', 'admin'))),
+
+        /*
+        | Test charges (`appSubscriptionCreate.test`) — only meaningful in `api` mode.
+        |
+        | Unset means "decide per store": Shopify says whether a store is a partner development shop
+        | (`shop.plan.partnerDevelopment`), and only those get a fake-approvable charge. That default
+        | exists because the opposite one was a silent revenue bug: with `true` as the default, every
+        | real merchant got a test charge, the app looked like it worked, and nothing was ever billed.
+        |
+        |   SHOPIFY_BILLING_TEST=true    force test charges (a demo store Shopify does not flag)
+        |   SHOPIFY_BILLING_TEST=false   force real charges (what a production host should say)
+        |   (unset)                      ask Shopify per store — the safe answer
+        |
+        | `php artisan taskpe:plans` refuses to stay quiet while this is forced on.
+        */
+        'test_charges' => env('SHOPIFY_BILLING_TEST'),
     ],
 
     'default_plan' => 'free',
