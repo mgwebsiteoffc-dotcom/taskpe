@@ -43,8 +43,16 @@ class BillingController extends Controller
         $status     = 'declined';
 
         try {
-            $result = (new BillingService($shop))->syncActiveSubscription();
-            $status = $result['active'] ? 'active' : 'declined';
+            $service = new BillingService($shop);
+            $result  = $service->syncActiveSubscription();
+            $status  = $result['active'] ? 'active' : 'declined';
+
+            // Shopify named the plan it just sold. Keep that pairing: the next switch can then
+            // open that plan's own approval page instead of the list, using a handle Shopify
+            // supplied rather than one this app guessed.
+            if ($status === 'active') {
+                $service->rememberPlanHandle($result['plan'] ?? null, $planHandle);
+            }
 
             // A plan_handle from Shopify with nothing active on the installation yet is a
             // propagation gap, not a refusal. Saying "declined" here is how a merchant ends up

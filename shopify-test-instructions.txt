@@ -87,9 +87,20 @@ REVIEW STORE (provided for testing)
    per message), which is also disclosed in the pricing section of the listing.
 
 9. BILLING AND PLAN CHANGES (plans and prices are managed by Shopify)
-   Plan tab -> "Choose Starter" on the Starter card. Expected: the app leaves the iframe and opens
+   Plan tab -> the "Switch plan" panel at the top. Click the Starter pill: nothing is charged yet,
+   the pill is just chosen, and the sentence under the button says what the next click does. Then
+   "Continue at Shopify". Expected: the app leaves the iframe and opens Shopify for THAT plan.
+   The same action is available on each plan card ("Choose Starter"), so the panel is a shortcut,
+   not the only door.
+
+   A downgrade and "Move to Free" are reachable from the same strip and ask once before they post -
+   a plan change must never need a support ticket (Shopify 1.2.3), including the ones that lose money. Expected: the app leaves the iframe and opens
    Shopify's own plan page for this store (admin.shopify.com/store/<handle>/charges/<app
-   handle>/pricing_plans). In this mode the app never creates a charge - appSubscriptionCreate is
+   handle>/pricing_plans) or, when Shopify's own handle for that plan is known, straight to its
+   approval page (admin.shopify.com/store/<handle>/charges/<app handle>/plans/<plan handle>). The app
+   learns plan handles from Shopify's return redirect, or from TASKPE_PLAN_STARTER_HANDLE /
+   TASKPE_PLAN_GROWTH_HANDLE if you paste them; with neither it uses the plan list, which always
+   works. In this mode the app never creates a charge - appSubscriptionCreate is
    not called, because the plans and their prices live in the Partner Dashboard - but the cards do
    show numbers, each one labelled with where it came from: the plan you are on carries Shopify's own
    read-back amount ("Billed by Shopify every 30 days, renews ..."), the other cards carry this app's

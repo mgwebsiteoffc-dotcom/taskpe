@@ -139,6 +139,12 @@ return [
         'starter' => [
             'name'             => 'Starter',
             'prices'           => ['USD' => 5.99, 'INR' => 499],
+            // Shopify's own handle for this App Pricing plan. With it, the in-app switcher can
+            // open Shopify's approval page FOR THAT PLAN; without it the merchant lands on the
+            // plan list and picks there. The app also learns handles from the `?plan_handle=`
+            // parameter Shopify puts on the return redirect, so this line is only needed to skip
+            // that first trip — see DEPLOYMENT.md § 17. Leave empty to use the plan list.
+            'plan_handle'      => env('TASKPE_PLAN_STARTER_HANDLE', ''),
             'trial_days'       => 7,
             'member_limit'     => 5,
             'task_limit'       => 0,                  // 0 = unlimited
@@ -148,6 +154,7 @@ return [
         'growth' => [
             'name'             => 'Growth',
             'prices'           => ['USD' => 11.99, 'INR' => 999],
+            'plan_handle'      => env('TASKPE_PLAN_GROWTH_HANDLE', ''),
             'trial_days'       => 7,
             'member_limit'     => 0,
             'task_limit'       => 0,

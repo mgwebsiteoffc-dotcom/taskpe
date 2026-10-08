@@ -95,6 +95,75 @@ class BillingService
         return static::plansUrl($shop) !== '';
     }
 
+    /**
+     * Shopify's handle for one of its App Pricing plans.
+     *
+     * Two sources, in order of trust: the handle Shopify itself told us for THIS store (it appends
+     * `?plan_handle=` to the return redirect after a plan change, so any store that has switched
+     * once is never guessed about again), then the configured one. A wrong handle is a 404 on the
+     * one page where a merchant had decided to pay, so nothing here infers one — no handle, no deep
+     * link, and the plan list is a perfectly good answer.
+     */
+    public function planHandleFor(string $planKey): string
+    {
+        $seen = (array) $this->shop->setting('billing.plan_handles', []);
+        $own  = trim((string) ($seen[$planKey] ?? ''));
+
+        if ($own !== '') {
+            return $own;
+        }
+
+        return trim((string) config("shopify.plans.{$planKey}.plan_handle", ''));
+    }
+
+    /**
+     * Persist what Shopify just told us, so the next switch goes straight to that plan's page.
+     * Idempotent and cheap: a board load that changes nothing performs no write.
+     */
+    public function rememberPlanHandle(?string $planKey, string $handle): void
+    {
+        $planKey = trim((string) $planKey);
+        $handle  = trim($handle);
+
+        if ($planKey === '' || $handle === '' || !preg_match('/^[A-Za-z0-9_-]{1,64}$/', $handle)) {
+            return;     // the handle goes into a URL path; anything else is not a handle
+        }
+
+        $seen = (array) $this->shop->setting('billing.plan_handles', []);
+
+        if (($seen[$planKey] ?? null) === $handle) {
+            return;
+        }
+
+        $seen[$planKey] = $handle;
+        $this->shop->setSetting('billing.plan_handles', $seen);
+        $this->shop->save();
+    }
+
+    /**
+     * Where "switch to this plan" takes the merchant when Shopify owns the money.
+     *
+     * `shopify-plan`   Shopify's approval page, already showing that plan — one decision, not two.
+     * `shopify-picker` Shopify's plan list (the documented, always-available page).
+     * `none`           nothing to open: this install cannot build an admin URL. The Plan tab then
+     *                  names the setting instead of rendering a button that goes nowhere.
+     */
+    public function planLink(string $planKey): array
+    {
+        $picker = static::plansUrl($this->shop);
+        $handle = $planKey === '' ? '' : $this->planHandleFor($planKey);
+
+        if ($handle !== '' && $picker !== '') {
+            $deep = preg_replace('#/pricing_plans/?$#', '/plans/'.rawurlencode($handle), $picker, 1);
+
+            if ($deep !== $picker && is_string($deep)) {
+                return ['kind' => 'shopify-plan', 'url' => $deep];
+            }
+        }
+
+        return ['kind' => $picker !== '' ? 'shopify-picker' : 'none', 'url' => $picker];
+    }
+
     public function isDevMode(): bool
     {
         return (bool) env('SHOPIFY_BILLING_TEST', true);
@@ -127,7 +196,10 @@ class BillingService
     {
         abort_if(static::shopifyManaged(), 422, static::managedMessage());
 
-        abort_unless(static::isPaidPlan($planKey), 422, 'Unknown or free plan');
+        abort_unless(
+            static::isPaidPlan($planKey), 422,
+            'There is no charge to create for that plan. Free is not a charge — to move a store to '            .'Free, cancel the current one (Plan tab → Move to Free).'
+        );
 
         $shopCurrency = $this->resolveShopCurrency();
         [$amount, $currencyCode] = static::resolvePrice($planKey, $shopCurrency);
@@ -338,6 +410,14 @@ class BillingService
                     ];
                 }
             }
+
+            // How a switch to THIS plan happens, decided server-side: the SPA must not guess
+            // whether it is creating a charge, opening Shopify's approval page, opening the plan
+            // list, or telling the merchant nothing is possible from here. `cancel` is the
+            // Billing-API road to Free, because that one the app really can do itself.
+            $entry['switch'] = static::shopifyManaged()
+                ? $this->planLink($key)
+                : ['kind' => $prices === [] ? 'cancel' : 'charge', 'url' => ''];
 
             $out[$key] = $entry;
         }

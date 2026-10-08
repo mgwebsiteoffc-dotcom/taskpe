@@ -842,6 +842,47 @@ history page" is the second half of what 1.2.3 checks. In the reply, name the cl
 Choose Starter → Shopify's plan page → approve" — rather than the commit, because the reviewer re-tests
 the flow.
 
+### Switching a plan inside the app (and what the app is still not allowed to do)
+
+The Plan tab has a **Switch plan** panel above the cards: one segment per plan (current one marked,
+each showing its price), then a single action button whose sentence names what the next click does.
+Four outcomes exist and the server picks which one it is — `planCatalog()` puts a `switch` on every
+plan, so the SPA never guesses:
+
+| `switch.kind` | When | What the click does |
+|---|---|---|
+| `shopify-plan` | App Pricing **and** this store knows that plan's Shopify handle | opens `…/charges/{app}/plans/{plan_handle}` — Shopify's approval page with the plan already selected |
+| `shopify-picker` | App Pricing, no handle known | opens `…/charges/{app}/pricing_plans`; the copy says "pick Starter there" instead of pretending the choice carried over |
+| `charge` | `api` mode, paid plan | `appSubscriptionCreate` with `replacementBehavior: APPLY_IMMEDIATELY` → Shopify's confirmation page, prorated replacement of the old plan |
+| `cancel` | `api` mode, Free | `appSubscriptionCancel` — the one direction with no page to visit, so the button says the plan has moved, without navigating anywhere |
+| `none` | the admin URL cannot be built | disabled button whose tooltip names the missing `.env` line |
+
+Two deliberate limits. **Approval is never the app's to skip:** a recurring charge needs the merchant
+to confirm it on a Shopify page, in either mode, so "inside the app" means the decision and the
+proration happen here while the signature happens there — 1.2.3 asks that no support ticket and no
+reinstall is needed, not that the iframe never closes. And **a downgrade is never the default choice:**
+the strip points at the next tier up, or another paid plan when there is nothing above, and Free only
+when it is clicked on purpose — wearing `.btn danger`, with a `confirm()` before it posts.
+
+```
+https://admin.shopify.com/store/{store handle}/charges/{app handle}/plans/{plan handle}
+```
+
+That second form is **not documented by Shopify** — it is what the plan-selection page links to
+internally, and there is an open community request for an official "direct approval link". So the app
+never invents a handle: it uses the one Shopify itself sent back as `?plan_handle=` on a previous
+plan change (stored per store in `shops.settings → billing.plan_handles`, validated against
+`^[A-Za-z0-9_-]{1,64}$` before it goes into a URL path), or `TASKPE_PLAN_STARTER_HANDLE` /
+`TASKPE_PLAN_GROWTH_HANDLE` if you paste them in. A wrong handle is a 404 on the page where somebody
+had just decided to pay, which is why the plan list stays the fallback for every unknown case. If
+Shopify ever changes that path, nothing here breaks: the picker is still what the app opens.
+
+`POST /api/billing/subscribe` is the single door for all of it — `{plan}` from any plan card, the
+strip, or a direct API call; it accepts every key in `config/shopify.php → plans` (including `free`),
+answers 200 with `redirect_url` when a page owns the decision, and is throttled
+`throttle:12,1` because it can spend money. `/billing/callback` then re-reads the store's own
+subscription and, while it is there, records the handle for next time.
+
 ### Prices on the Plan tab, and the drift check that keeps them honest
 
 The day the buttons worked, the next question arrived: *show the price*. Stripping `prices` out of
@@ -884,7 +925,10 @@ cannot link to the page that changes it, which is the 1.2.3 complaint wearing a 
 **Files this change touches** — unlike a copy-only fix, it is not just the two built assets:
 `app/Services/BillingService.php`, `app/Http/Controllers/Api/BoardController.php`,
 `app/Console/Commands/PlansCommand.php`, `app/Models/Shop.php`, `config/shopify.php`,
-`public/js/app.js`, `public/css/app.css`. No migration, nothing new in `.env`, and the
+`.env.example`, `routes/api.php`, `app/Http/Controllers/Api/BillingApiController.php`,
+`app/Http/Controllers/BillingController.php`, `public/js/app.js`, `public/css/app.css`.
+No migration, and nothing you must set — `TASKPE_PLAN_STARTER_HANDLE` and `TASKPE_PLAN_GROWTH_HANDLE` are
+optional (they pre-seed plan handles the app otherwise learns from Shopify's own return redirect), and the
 extension does not need re-uploading. In `shopify` mode the
 config is display copy for the plans a store is not on, and display copy that contradicts the invoice
 is worse than none.

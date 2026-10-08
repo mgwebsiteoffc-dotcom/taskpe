@@ -73,6 +73,7 @@
   const state = {
     board: null,          // /api/board payload
     view: viewFromLocation(),   // board | team | settings | plan
+    planChoice: null,     // plan the switcher on the Plan tab is pointed at (a choice, not a change)
     settings: null,       // /api/settings payload (lazy)
     me: Number(readPref('taskpe_me') || 0),
     drawerTaskId: null,
@@ -3009,6 +3010,20 @@
       try {
         const r = await api('/billing/subscribe', { method: 'POST', body: { plan: key } });
         const url = r && (r.redirect_url || r.confirmation_url);
+
+        // Going back to Free in Billing-API mode is a cancellation this app performs itself, so
+        // there is no page to open and "no URL" is the SUCCESS answer. Reading it as a failure is
+        // how a working button ends up showing an error toast.
+        if (!url && r && r.changed === 'cancelled') {
+          toast(r.plan === key || key === 'free'
+            ? 'Moved to Free — Shopify has cancelled the charge. Your boards and tasks are untouched.'
+            : 'Plan changed.');
+          state.planChoice = null;
+          await refreshBoard();
+          render();
+          return;
+        }
+
         if (!url) throw new Error((r && r.message) || 'Shopify returned no page to open.');
         open(url, '_top');
       } catch (err) {
@@ -3051,6 +3066,138 @@
           ? h('p', { class: 'mt small' }, 'To change the plan: Shopify admin \u2192 Settings \u2192 Apps and sales channels \u2192 '
             + (s.shop.name || 'this app') + ' \u2192 plan / billing. That page cancels it too, so the refund and the invoice stay with Shopify.')
           : null));
+
+    /*
+     * Switching plans without leaving the app.
+     *
+     * The merchant decides HERE; only the money is settled elsewhere, and the copy below says which
+     * of the four things is about to happen rather than dressing them all up as "Upgrade":
+     *
+     *   shopify-plan    Shopify's approval page, opened with that plan already selected. Fastest,
+     *                   and only used when we know the plan's Shopify handle — which we learn from
+     *                   the `?plan_handle=` Shopify puts on the return redirect, or from config.
+     *   shopify-picker  Shopify's plan list (the documented page, always available). This is still
+     *                   an in-app action: 1.2.3 asks that no support ticket and no reinstall is
+     *                   needed, not that the iframe never closes.
+     *   charge          Billing-API mode: this app creates the charge, Shopify requires the
+     *                   approval, and the switch REPLACES the old subscription (prorated).
+     *   cancel          Billing-API mode back to Free — the one direction with no page at all, so
+     *                   the button is honest about having done it.
+     *
+     * A choice is not a change: clicking a segment selects a plan and renders the consequence. The
+     * switch happens on the second click, and downgrades ask once more, because that is the direction
+     * a mistaken click hurts in.
+     */
+    const order = Object.keys(s.plans || {});
+    const rankOf = k => order.indexOf(k);
+    const currentRank = rankOf(s.shop.plan);
+
+    function switchCopy(key) {
+      const plan = (s.plans || {})[key] || {};
+      const sw = plan.switch || { kind: 'none', url: '' };
+      const name = plan.name || key;
+      const p = planPrice(key);
+      const price = fmtMoney(p.amount, p.code);
+
+      // The current plan is a segment too (a plan page that hides it reads as if the merchant's
+      // own plan were missing), so it needs its own answer rather than a generic "continue".
+      if (key === s.shop.plan) {
+        return {
+          label: 'This is your plan', url: '', kind: 'current', note:
+            'Nothing to change. Pick another plan below to see what switching would do'
+            + (byShopify ? ' — and to cancel, which also happens here.' : '.'),
+        };
+      }
+
+      if (sw.kind === 'shopify-plan') {
+        return { label: 'Continue at Shopify', url: sw.url, kind: sw.kind,
+          note: 'Opens Shopify’s approval page with ' + name + ' already chosen — the amount, the trial and the invoice are theirs, and nothing changes until you approve it there.' };
+      }
+
+      if (sw.kind === 'shopify-picker') {
+        return { label: 'Continue at Shopify', url: sw.url, kind: sw.kind,
+          note: 'Opens Shopify’s plan page — pick ' + name + ' there. Shopify sends the invoice, and the change comes back to this tab on its own.' };
+      }
+
+      if (sw.kind === 'charge') {
+        return { label: 'Switch to ' + name, url: '', kind: sw.kind,
+          note: 'Creates a Shopify charge of ' + price + ' every 30 days'
+            + (p.trial ? ', starting after a ' + p.trial + '-day free trial' : '')
+            + '. It replaces your current plan and Shopify prorates it; close the page without approving and nothing is billed.' };
+      }
+
+      if (sw.kind === 'cancel') {
+        return { label: 'Move to Free', url: '', kind: sw.kind,
+          note: 'Cancels the paid plan with Shopify right away. Tasks, boards, teams and history stay exactly as they are — the Free limits apply from then on.' };
+      }
+
+      return { label: 'Continue at Shopify', url: '', kind: 'none', missing: true, note: BillingMissingHint() };
+    }
+
+    const switcher = (() => {
+      if (order.length < 2) return null;
+
+      let choice = state.planChoice;
+
+      if (!choice || !order.includes(choice) || choice === s.shop.plan) {
+        // Default to the next step UP. Never to a cancellation: a store that pays must not find
+        // "Move to Free" as the highlighted button on its own plan page, even though it stays one
+        // click away. With nothing above it, the default is another paid plan, and only after that
+        // Free.
+        choice = order.find(k => k !== s.shop.plan && rankOf(k) > currentRank)
+          || order.find(k => k !== s.shop.plan && ((s.plans[k] || {}).list != null))
+          || order.find(k => k !== s.shop.plan)
+          || order[0];
+      }
+
+      const copy = switchCopy(choice);
+      const chosenName = (s.plans[choice] || {}).name || choice;
+      const downgrade = rankOf(choice) < currentRank || copy.kind === 'cancel';
+
+      async function act(btn) {
+        if (downgrade && !confirm(copy.kind === 'cancel'
+          ? 'Cancel this store’s paid plan and move it to Free? Shopify stops billing you, and the paid features go with it.'
+          : 'Switch this store from ' + ((s.plans[s.shop.plan] || {}).name || s.shop.plan) + ' to ' + chosenName
+            + '? Shopify bills the new plan and prorates it.')) return;
+
+        await choosePlan(choice, btn);
+      }
+
+      return h('section', { class: 'panel' },
+        h('div', { class: 'p-head' },
+          h('h2', null, 'Switch plan'),
+          h('span', { class: 'sub' }, 'Currently on '
+            + ((s.plans[s.shop.plan] || {}).name || 'Free')
+            + '. Picking one below is a choice, not a change — the step after it is where anything happens.')),
+        h('div', { class: 'p-body' },
+        h('div', { class: 'plan-seg' }, order.map(key => {
+          const plan = s.plans[key];
+          const pp = planPrice(key);
+
+          return h('button', {
+            class: 'plan-seg-b' + (key === choice ? ' on' : '') + (key === s.shop.plan ? ' cur' : ''),
+            title: key === s.shop.plan ? 'This is the plan the store is on' : 'Point the switch at ' + (plan.name || key),
+            onclick: () => { state.planChoice = key; render(); },
+          },
+            h('b', null, plan.name || key),
+            key === s.shop.plan
+              ? h('span', { class: 'plan-seg-cur' }, 'current')
+              : h('span', null, pp.amount > 0 ? fmtMoney(pp.amount, pp.code) + '/mo' : 'Free'));
+        })),
+        h('div', { class: 'plan-switch-go' },
+          (copy.missing && !plansUrl) || copy.kind === 'current'
+            ? h('button', { class: 'btn sm', disabled: true, title: copy.note }, copy.label)
+            // A move to Free is a cancellation, so it wears the destructive colour rather than
+            // the inviting one, whatever the sentence next to it says.
+            : h('button', {
+                class: 'btn sm ' + (copy.kind === 'cancel' ? 'danger' : 'primary'),
+                onclick: ev => act(ev.currentTarget),
+              }, copy.label),
+          h('p', { class: 'muted small' }, copy.note),
+          downgrade
+            ? h('p', { class: 'muted small' }, 'Downgrades are allowed on purpose: a plan change must not need a support ticket (that is Shopify’s 1.2.3 rule, and we would rather agree with it).')
+            : null)));
+    })();
 
     const cards = h('div', { class: 'plans' },
       Object.entries(s.plans || {}).map(([key, cfg]) => {
@@ -3125,7 +3272,7 @@
         ? 'Indian stores are shown and charged in \u20b9 (INR) on their Shopify invoice — no USD conversion and no forex fee on this subscription.'
         : 'Prices are shown in your store\u2019s billing currency (' + cur + ') where this app has a price for it; otherwise the US price is used and Shopify converts it at its own rate on the invoice.');
 
-    return h('div', { class: 'page' }, billPanel, cards, note);
+    return h('div', { class: 'page' }, billPanel, switcher, cards, note);
   }
 
   function handleBillingFlag(flag) {
@@ -3137,9 +3284,8 @@
       toast('Shopify is applying the change…');
       setTimeout(() => { void api('/billing/sync', { method: 'POST' }).then(refreshBoard).then(render).catch(() => {}); }, 4000);
     }
-    else if (flag === 'error') toast('Shopify could not be reached to confirm the plan — use Check again on the Plan tab.', true);
-    else if (flag === 'declined') toast('Plan not approved — still on Free settings.', true);
-    else if (flag === 'error') toast('Could not confirm the charge — use "Check again" on the Plan tab once the invoice page is closed.', true);
+    else if (flag === 'error') toast('Shopify could not be reached to confirm the plan. Nothing you clicked is lost — use Check again on the Plan tab once the invoice page is closed.', true);
+    else if (flag === 'declined') toast('Plan not approved — this store is still on its previous plan.', true);
   }
 
   /* ----------------------------------------------------------------- modal */

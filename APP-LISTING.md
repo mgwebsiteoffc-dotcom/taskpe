@@ -90,6 +90,7 @@ Whatify, Shiprocket, Delhivery, XpressBees
 | --- | --- |
 | Primary billing method | **Recurring charge** (not “Free to install” — we have paid plans) |
 | Plans | Enter them **in the Partner Dashboard first** (App pricing), then mirror the names here: `Free`, `TaskPe Starter`, `TaskPe Growth`. Mark the Free plan as free → “Free plan available” shows in search. Plans display lowest→highest automatically. |
+| Plan handle (optional, nothing to fill in the form) | `TASKPE_PLAN_STARTER_HANDLE` / `TASKPE_PLAN_GROWTH_HANDLE` in `.env` let the app open one plan’s approval page instead of the plan list. The app learns the same handles from Shopify’s own return redirect after the first plan change, so leaving both empty costs a step and nothing else. |
 | Plan descriptions | Free: “2 team members, 50 open tasks, board and activity timeline, no WhatsApp.” Starter: “5 team members, unlimited tasks, WhatsApp alerts to staff, daily owner digest.” Growth: “Unlimited team members, priority support.” |
 | Trial | Whatever the Dashboard plan says (currently **7 days**). Shopify *recommends* 14 — raise it in the Dashboard if you want, but the listing, the Dashboard and the in-app copy must agree. |
 | Additional charges (per plan) | “WhatsApp messages are billed by your own Whatify account (about ₹0.12 per message), not by TaskPe.” |
@@ -398,9 +399,20 @@ REVIEW STORE (provided for testing)
    per message), which is also disclosed in the pricing section of the listing.
 
 9. BILLING AND PLAN CHANGES (plans and prices are managed by Shopify)
-   Plan tab -> "Choose Starter" on the Starter card. Expected: the app leaves the iframe and opens
+   Plan tab -> the "Switch plan" panel at the top. Click the Starter pill: nothing is charged yet,
+   the pill is just chosen, and the sentence under the button says what the next click does. Then
+   "Continue at Shopify". Expected: the app leaves the iframe and opens Shopify for THAT plan.
+   The same action is available on each plan card ("Choose Starter"), so the panel is a shortcut,
+   not the only door.
+
+   A downgrade and "Move to Free" are reachable from the same strip and ask once before they post -
+   a plan change must never need a support ticket (Shopify 1.2.3), including the ones that lose money. Expected: the app leaves the iframe and opens
    Shopify's own plan page for this store (admin.shopify.com/store/<handle>/charges/<app
-   handle>/pricing_plans). In this mode the app never creates a charge - appSubscriptionCreate is
+   handle>/pricing_plans) or, when Shopify's own handle for that plan is known, straight to its
+   approval page (admin.shopify.com/store/<handle>/charges/<app handle>/plans/<plan handle>). The app
+   learns plan handles from Shopify's return redirect, or from TASKPE_PLAN_STARTER_HANDLE /
+   TASKPE_PLAN_GROWTH_HANDLE if you paste them; with neither it uses the plan list, which always
+   works. In this mode the app never creates a charge - appSubscriptionCreate is
    not called, because the plans and their prices live in the Partner Dashboard - but the cards do
    show numbers, each one labelled with where it came from: the plan you are on carries Shopify's own
    read-back amount ("Billed by Shopify every 30 days, renews ..."), the other cards carry this app's
@@ -462,7 +474,7 @@ a listing image must not show a picker entry the app no longer has.
 
 | Risk | Fix |
 | --- | --- |
-| **1.2.3 — a Plan page with no way to change the plan** (this is what the first review rejected) | Every plan card is a button, not a sentence. With Shopify-owned pricing the app cannot create charges, so the button opens Shopify’s hosted plan page: `https://admin.shopify.com/store/{store}/charges/{app handle}/pricing_plans`, built per store from `SHOPIFY_APP_HANDLE`. Upgrade, downgrade to Free and cancel all happen there; Shopify prorates, invoices, and the charges show in the merchant’s app charge history. Rehearse it on a development store (plans are $0 for your own organisation): Free → Starter → Growth → Free, then screenshot the charge history for the feedback thread. The cards do carry prices, each labelled with where it came from: the plan a store is on shows Shopify’s own read-back amount (“Billed by Shopify every 30 days”), the other cards show this app’s list price with a line saying so. That list price is a number the Dashboard must match — `php artisan taskpe:plans` reports any store being shown a price its invoice contradicts. |
+| **1.2.3 — a Plan page with no way to change the plan** (this is what the first review rejected) | A **Switch plan** panel plus a button on every plan card — never a sentence of instructions. With Shopify-owned pricing the app cannot create charges, so the button opens Shopify’s hosted plan page: `https://admin.shopify.com/store/{store}/charges/{app handle}/pricing_plans`, built per store from `SHOPIFY_APP_HANDLE`. Upgrade, downgrade to Free and cancel all happen there; Shopify prorates, invoices, and the charges show in the merchant’s app charge history. Rehearse it on a development store (plans are $0 for your own organisation): Free → Starter → Growth → Free, then screenshot the charge history for the feedback thread. The cards do carry prices, each labelled with where it came from: the plan a store is on shows Shopify’s own read-back amount (“Billed by Shopify every 30 days”), the other cards show this app’s list price with a line saying so. That list price is a number the Dashboard must match — `php artisan taskpe:plans` reports any store being shown a price its invoice contradicts. Downgrading to Free and cancelling sit on the same control (asked once, because that direction is the one that loses a merchant their features), so no way out needs a support ticket. Where Shopify’s own plan handle is known — learned from its return redirect, or pasted into `TASKPE_PLAN_STARTER_HANDLE` / `TASKPE_PLAN_GROWTH_HANDLE` — the app deep-links straight to that plan’s approval page (`…/charges/{app}/plans/{handle}`) and falls back to the plan list otherwise: that short form is not documented by Shopify, so it is an accelerator here and never a dependency. |
 | **The Admin API token is the wrong kind for a public app** (the listing looks fine, then every store starts failing one hour after install) | Shopify refuses **non-expiring** offline tokens for GraphQL Admin API calls from public apps - now for new apps, for all of them after **1 January 2027**. The app asks for the expiring pair (`expiring=1` at the token exchange), stores the refresh token and both expiry dates, and renews them itself (`app/Services/TokenVault.php`, `php artisan taskpe:tokens`, DEPLOYMENT.md section 19). Check before submitting: `php artisan taskpe:tokens --probe` must print `expiring` for every store, and the merchant must never see “re-install the app” for what is only a login problem. |
 | App icon is 1600px or 1024px | Shopify wants exactly 1200x1200. Use `assets/listing/app-icon-1200.png` (generated from the 1600 master). Corners are pre-rounded in the art; Shopify rounds its own, which is accepted, but if you can supply a full-bleed square that is cleaner. |
 | Screenshots contain pricing or a plan card | Deliberately excluded - listing images must not carry pricing (4.4.x). Keep the Plan tab out of screenshots and let the Pricing section hold the numbers. |

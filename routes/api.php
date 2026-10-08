@@ -70,7 +70,12 @@ Route::middleware('shopify.token')->group(function () {
     Route::get('/digest/preview', [DigestController::class, 'preview']);
     Route::post('/digest/send', [DigestController::class, 'send']);
 
-    Route::post('/billing/subscribe', [BillingApiController::class, 'subscribe']);
-    Route::post('/billing/cancel', [BillingApiController::class, 'cancel']);
+    // Throttled because both can spend money: 12 clicks a minute is more than a human deciding
+    // to upgrade needs, and it bounds a stuck button from creating replacement charges on a loop.
+    // Safe in this app only because NoLaravelUser answers `throttle:`'s `$request->user()` first.
+    Route::post('/billing/subscribe', [BillingApiController::class, 'subscribe'])
+        ->middleware('throttle:12,1');
+    Route::post('/billing/cancel', [BillingApiController::class, 'cancel'])
+        ->middleware('throttle:12,1');
     Route::post('/billing/sync', [BillingApiController::class, 'sync']);
 });

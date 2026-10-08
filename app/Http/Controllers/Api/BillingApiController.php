@@ -11,7 +11,14 @@ use Illuminate\Validation\Rule;
 
 class BillingApiController extends Controller
 {
-    /** POST /api/billing/subscribe { plan: starter|growth } → Shopify-hosted confirmation URL. */
+    /**
+     * POST /api/billing/subscribe { plan: free|starter|growth } → whatever switches the plan.
+     *
+     * One endpoint for every direction, because a merchant should not have to know which billing
+     * model this install runs on: the Plan tab asks to switch and this answers with either a URL to
+     * open or a thing that has already happened. 200 with `redirect_url` whenever a page owns the
+     * decision, 422 only when there is genuinely nowhere to send them.
+     */
     public function subscribe(Request $request, ShopContext $ctx)
     {
         // Asked before it validates, so a merchant on an old tab or a direct API call gets a
@@ -21,7 +28,7 @@ class BillingApiController extends Controller
         // the URL Shopify hosts for plan changes, and 1.2.3 (plan changes without support or a
         // reinstall) is exactly the test a reviewer runs on this button.
         if (BillingService::shopifyManaged()) {
-            return $this->managedByShopify($ctx->shop());
+            return $this->managedByShopify($ctx->shop(), $this->planFrom($request));
         }
 
         // `free` is accepted here because a plan change in either direction has to be possible
@@ -29,17 +36,52 @@ class BillingApiController extends Controller
         // that lists Free. In `api` mode the service still refuses it, because "free" is the
         // absence of a charge rather than a charge to create.
         $data = $request->validate([
-            'plan' => ['required', Rule::in(['starter', 'growth', 'free'])],
+            'plan' => ['required', Rule::in(array_keys((array) config('shopify.plans', [])))],
         ]);
 
+        $service = new BillingService($ctx->shop());
+
+        // Downgrade-to-Free is the one direction this app can complete by itself: there is no
+        // charge to create, only the current one to cancel. Sending it to a page instead would be
+        // the 1.2.3 failure with extra steps.
+        if ($data['plan'] === 'free' || !BillingService::isPaidPlan($data['plan'])) {
+            try {
+                $service->cancelSubscription();
+            } catch (\Throwable $e) {
+                return response()->json(['error' => 'cancel_failed', 'message' => $e->getMessage()], 502);
+            }
+
+            $fresh = $ctx->shop()->fresh() ?? $ctx->shop();
+
+            return response()->json(['ok' => true, 'plan' => (string) $fresh->plan, 'changed' => 'cancelled']);
+        }
+
         try {
-            $url = (new BillingService($ctx->shop()))->createSubscription($data['plan']);
+            $url = $service->createSubscription($data['plan']);
         } catch (\Throwable $e) {
             return response()->json(['error' => 'billing_failed', 'message' => $e->getMessage()], 502);
         }
 
-        // Front-end breaks out of the iframe with open(url, "_top").
-        return response()->json(['confirmation_url' => $url]);
+        // Front-end breaks out of the iframe with open(url, "_top"). Approval is Shopify's to
+        // require — no app may create a recurring charge the merchant has not confirmed — so this
+        // returns the page rather than pretending the switch is done.
+        return response()->json([
+            'confirmation_url' => $url,
+            'plan'             => $data['plan'],
+            'changed'          => 'approval',
+        ]);
+    }
+
+    /**
+     * Which plan did they click? Unknown or missing is not an error here: with Shopify owning the
+     * prices, the plan list answers every question, and refusing the click to demand a parameter
+     * the merchant never sees would trade a working page for a strict one.
+     */
+    protected function planFrom(Request $request): string
+    {
+        $plan = mb_strtolower(trim((string) $request->input('plan', '')));
+
+        return array_key_exists($plan, (array) config('shopify.plans', [])) ? $plan : '';
     }
 
     /** POST /api/billing/cancel — back to Free. */
@@ -68,9 +110,16 @@ class BillingApiController extends Controller
      * .env line: that is our misconfiguration, and a merchant should not be told to go looking
      * through Settings → Apps for a page we could have linked.
      */
-    private function managedByShopify(Shop $shop)
+    private function managedByShopify(Shop $shop, string $planKey = '')
     {
-        $url = BillingService::plansUrl($shop);
+        $service = new BillingService($shop);
+
+        $link = $planKey === ''
+            ? ['kind' => BillingService::plansUrl($shop) === '' ? 'none' : 'shopify-picker',
+               'url'  => BillingService::plansUrl($shop)]
+            : $service->planLink($planKey);
+
+        $url = $link['url'];
 
         if ($url === '') {
             return response()->json([
@@ -96,10 +145,22 @@ class BillingApiController extends Controller
             'Lax'
         );
 
+        // `shopify-plan` means the link opens Shopify's approval page with THIS plan already
+        // chosen, so the sentence says what the next click is; `shopify-picker` means the merchant
+        // still has to pick there, and saying so is the difference between a smooth hand-off and a
+        // page that looks like it ignored the button.
+        $planName = (string) config("shopify.plans.{$planKey}.name", $planKey);
+
+        $message = $planKey !== '' && $link['kind'] === 'shopify-plan'
+            ? 'Shopify has the amount and the trial for ' . $planName . ' — approve it there and TaskPe unlocks itself.'
+            : BillingService::managedMessage();
+
         return response()->json([
             'mode'         => 'shopify',
             'redirect_url' => $url,
-            'message'      => BillingService::managedMessage(),
+            'switch_kind'  => $link['kind'],
+            'plan'         => $planKey !== '' ? $planKey : null,
+            'message'      => $message,
         ]);
     }
 

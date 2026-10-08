@@ -1007,3 +1007,29 @@ div.tm-row:hover { background: transparent; }
     .skbar, .skline { animation: none; background-image: none; }
     .skslow { animation: none; opacity: 1; }
 }
+
+/* ---------------- the in-app plan switcher (renderPlan → "Switch plan") ----------------
+   A choice and a change are two clicks apart on purpose, and the primary button names which of
+   the four things its click does: open Shopify with this plan preselected, open Shopify's plan
+   list, create a charge for approval, or cancel one. A merchant should never have to guess, and
+   a button whose next screen is a surprise is how a paid plan gets cancelled by accident. */
+.plan-seg { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
+.plan-seg-b {
+  display: inline-flex; align-items: baseline; gap: 8px; cursor: pointer; appearance: none;
+  border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
+  border-radius: 999px; padding: 7px 13px; font-size: 13.5px; line-height: 1.25;
+}
+.plan-seg-b b { font-weight: 650; }
+.plan-seg-b > span { color: var(--text-subdued); font-size: 12.5px; }
+.plan-seg-b:hover { background: var(--surface-hover); }
+.plan-seg-b.on { border-color: var(--primary); background: rgba(0, 91, 211, .05); box-shadow: 0 0 0 1px var(--primary); }
+.plan-seg-b.on > span { color: var(--primary); }
+.plan-seg-b.cur { border-style: dashed; }
+.plan-seg-b.cur.on { border-style: solid; }
+.plan-seg-cur {
+  background: var(--success-bg); color: var(--success); border-radius: 999px;
+  padding: 1px 8px; font-size: 11px; font-weight: 650;
+}
+.plan-switch-go { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin-top: 12px; }
+.plan-switch-go p { margin: 4px 0 0; flex: 1 1 34ch; max-width: 76ch; }
+.plan-switch-go .btn { flex: 0 0 auto; }

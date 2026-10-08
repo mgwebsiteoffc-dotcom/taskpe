@@ -171,8 +171,24 @@ const okSettings = {
 
 const okBoard = {
   shop: { domain: 'demo.myshopify.com', name: 'Demo Store', plan: 'free', plan_cfg: {}, timezone: 'Asia/Kolkata', currency: 'INR', onboarded: true },
-  plans: { free: { name: 'Free', prices: {}, trial_days: 0 },
-           starter: { name: 'Starter', prices: { USD: 5.99, INR: 499 }, trial_days: 7 } },
+  // Exactly what /api/board sends now: `list` + `exact` per plan, `billed` only on the plan the
+  // store is on, and `switch` naming which kind of action the switch button performs. The probe
+  // keeps its old assertions; only the shape is retargeted, so the Plan tab is tested against a
+  // payload the server can actually produce instead of one it stopped sending two rounds ago.
+  plans: {
+    free: { name: 'Free', trial_days: 0, list: null, exact: false, free_plan: true,
+            switch: { kind: 'shopify-picker', url: 'https://admin.shopify.com/store/demo/charges/taskpe/pricing_plans' } },
+    starter: { name: 'Starter', trial_days: 7, list: 499, code: 'INR', exact: true, free_plan: false,
+               switch: { kind: 'shopify-plan', url: 'https://admin.shopify.com/store/demo/charges/taskpe/plans/taskpe-starter' } },
+    growth: { name: 'Growth', trial_days: 7, list: 11.99, code: 'USD', exact: false, free_plan: false,
+              switch: { kind: 'shopify-plan', url: 'https://admin.shopify.com/store/demo/charges/taskpe/plans/taskpe-growth' } },
+  },
+  billing: {
+    mode: 'shopify',
+    plans_url: 'https://admin.shopify.com/store/demo/charges/taskpe/pricing_plans',
+    picker: true,
+    shopify: { available: true, subscribed: false, read_at: '2026-10-08T09:00:00+00:00' },
+  },
   task_templates: {
     cod_confirm: { icon: 'phone', name: 'COD confirmation', tagline: 'Verify before ship',
                    resource_type: 'order', priority: 'high', due_in_hours: 24,
