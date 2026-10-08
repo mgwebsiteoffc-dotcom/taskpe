@@ -189,6 +189,51 @@ class BillingService
     }
 
     /**
+     * Re-read the subscription when the board is about to render from a stale answer.
+     *
+     * In `api` mode this app is the one creating and cancelling charges, so a merchant's plan state
+     * has three ways to change (here, on Shopify's own billing screen, and through a webhook that
+     * only fires when Shopify feels like it). Reading at board time closes all three without making
+     * anyone wait for a support ticket. Two guards keep it cheap: a read younger than
+     * `billing_sync_stale_minutes` is reused, and a failed attempt is not retried for five minutes,
+     * so an unreachable Shopify slows one board load rather than every one.
+     */
+    public function syncIfStale(?int $minutes = null): bool
+    {
+        if (static::shopifyManaged() || !$this->shop->hasUsableToken()) {
+            return false;
+        }
+
+        $minutes = $minutes ?? max(1, (int) config('shopify.billing_sync_stale_minutes', 30));
+        $bill    = (array) $this->shop->setting('billing', []);
+        $read    = strtotime((string) ($bill['read_at'] ?? ''));
+        $attempt = strtotime((string) $this->shop->setting('billing.sync_attempted_at', ''));
+
+        if ($read && $read > time() - $minutes * 60) {
+            return false;
+        }
+
+        if ($attempt && $attempt > time() - 300) {
+            return false;
+        }
+
+        $this->shop->setSetting('billing.sync_attempted_at', now()->toIso8601String());
+        $this->shop->save();
+
+        try {
+            $this->syncActiveSubscription();
+        } catch (\Throwable $e) {
+            Log::info('Billing: board-time refresh failed, rendering from the last read', [
+                'shop' => $this->shop->domain, 'err' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
      * Write the billing read-back into the shop's `billing` node WITHOUT replacing it.
      *
      * That node also carries what this app learned from Shopify — the app handle it confirmed per
@@ -445,6 +490,67 @@ class BillingService
         return [$prices[$fallback] ?? (float) reset($prices), $prices[$fallback] ? $fallback : (string) array_key_first($prices)];
     }
 
+    /**
+     * The one currency an app-created charge may be priced in (USD, per Shopify's schema for
+     * `AppRecurringPricingInput.price`, which permits exactly one code).
+     */
+    public static function chargeCurrency(): string
+    {
+        $code = strtoupper(trim((string) config('shopify.billing.charge_currency', 'USD')));
+
+        return $code === '' ? 'USD' : $code;
+    }
+
+    /**
+     * [amount, currencyCode] for the mutation — deliberately blind to the store's billing currency.
+     *
+     * This is the thing the price table cannot express by itself: an Indian store can be told about
+     * ₹499 in the Dashboard's App Pricing, but a charge *this app* creates is priced in USD and
+     * Shopify converts it on the invoice. Reading `prices` by store currency here is how a plan that
+     * looks configured ends in "Currency code must be USD" on the page where a merchant had already
+     * agreed to pay, so the lookup goes to the charge currency and nowhere else.
+     *
+     * @return array{0:float,1:string}
+     */
+    public static function chargePrice(string $planKey): array
+    {
+        $price = static::chargePriceFor($planKey);
+
+        if ($price === null) {
+            $code = static::chargeCurrency();
+
+            abort(422, 'This plan cannot be priced in '.$code.' yet, so nothing has been charged. '
+                .'Tell us from the Support card and we will fix it — your board stays as it is until then.');
+        }
+
+        return $price;
+    }
+
+    /**
+     * The same lookup without the abort, for anything that renders rather than charges: a board that
+     * fails over a missing config row is worse than a card with no number on it.
+     *
+     * @return array{0:float,1:string}|null
+     */
+    public static function chargePriceFor(string $planKey, ?string $code = null): ?array
+    {
+        $code = strtoupper((string) ($code ?? static::chargeCurrency()));
+        $prices = (array) config("shopify.plans.{$planKey}.prices", []);
+
+        if (!isset($prices[$code])) {
+            Log::warning('Billing: plan has no price in the charge currency, so no charge can be created', [
+                'plan'     => $planKey,
+                'currency' => $code,
+                'have'     => array_keys($prices),
+                'fix'      => 'config/shopify.php -> plans -> '.$planKey.' -> prices['.$code.']',
+            ]);
+
+            return null;
+        }
+
+        return [(float) $prices[$code], $code];
+    }
+
     /** Create a subscription charge, returns the Shopify confirmation URL. */
     public function createSubscription(string $planKey): string
     {
@@ -455,21 +561,35 @@ class BillingService
             'There is no charge to create for that plan. Free is not a charge — to move a store to '            .'Free, cancel the current one (Plan tab → Move to Free).'
         );
 
-        $shopCurrency = $this->resolveShopCurrency();
-        [$amount, $currencyCode] = static::resolvePrice($planKey, $shopCurrency);
+        // The store's currency is still worth knowing — the Plan tab labels a converted price with
+        // it — but it does not choose the amount: `chargePrice()` answers in the only currency
+        // Shopify accepts for an app-created charge.
+        $this->resolveShopCurrency();
+        [$amount, $currencyCode] = static::chargePrice($planKey);
 
         try {
             return $this->runCreateMutation($planKey, $amount, $currencyCode);
         } catch (\Throwable $e) {
-            // Shop currency ≠ billing currency (rare) → retry once in USD.
-            $fallback = (string) config('shopify.billing_fallback_currency', 'USD');
-            if ($currencyCode === $fallback || !str_contains(strtoupper($e->getMessage()), 'CURREN')) {
+            // Only a config that asked for a non-USD charge currency can produce this, and then the
+            // retry is the difference between a working plan change and a merchant staring at an error.
+            if ($currencyCode === 'USD' || !str_contains(strtoupper($e->getMessage()), 'CURREN')) {
                 throw $e;
             }
-            Log::info('Billing: retrying in fallback currency', ['shop' => $this->shop->domain, 'tried' => $currencyCode]);
-            [$amount, $currencyCode] = static::resolvePrice($planKey, $fallback);
 
-            return $this->runCreateMutation($planKey, $amount, $currencyCode);
+            Log::info('Billing: Shopify refused the charge currency; retrying in USD', [
+                'shop'  => $this->shop->domain,
+                'tried' => $currencyCode,
+            ]);
+
+            // Re-read the amount in USD rather than relabelling the refused one: a price table that
+            // says INR has no USD meaning in it, and $499 would be a worse bug than the error.
+            $usd = static::chargePriceFor($planKey, 'USD');
+
+            if ($usd === null) {
+                throw $e;
+            }
+
+            return $this->runCreateMutation($planKey, $usd[0], $usd[1]);
         }
     }
 
@@ -604,8 +724,17 @@ class BillingService
             'shopify_handle'    => (string) ($planHandle ?? ''),
         ]);
 
-        $ours = static::resolvePrice($planKey, (string) ($bill['currency'] ?? ($this->shop->currency ?: 'USD')));
-        if ($bill['available'] && ($bill['subscribed'] ?? false) && $bill['amount'] !== null
+        $ours = static::shopifyManaged()
+            ? static::resolvePrice($planKey, (string) ($bill['currency'] ?? ($this->shop->currency ?: 'USD')))
+            : static::chargePriceFor($planKey);
+
+        // `$ours` is null for a plan with no price in that currency, which is this app having
+        // nothing to compare rather than a disagreement — and two numbers in two currencies are
+        // never a disagreement, because the gap between them is Shopify's conversion rate.
+        $comparable = is_array($ours)
+            && strcasecmp((string) ($bill['currency'] ?? ''), (string) $ours[1]) === 0;
+
+        if ($comparable && $bill['available'] && ($bill['subscribed'] ?? false) && $bill['amount'] !== null
             && abs((float) $ours[0] - (float) $bill['amount']) > 0.009) {
             Log::info('Billing: Shopify plan price differs from config/shopify.php plans', [
                 'shop'            => $this->shop->domain,
@@ -691,6 +820,11 @@ class BillingService
     public function planCatalog(): array
     {
         $currency = (string) ($this->shop->currency ?: config('shopify.billing_fallback_currency', 'USD'));
+
+        // In `api` mode the card has to show the amount the confirmation page will ask for, which is
+        // the charge price, not this app's guess at the store's currency. A card reading ₹499 above
+        // a Shopify page reading $5.99 is a merchant telling us we lied about the price.
+        $ours = !static::shopifyManaged() ? static::chargeCurrency() : null;
         $bill     = (array) $this->shop->setting('billing', []);
         $readback = ($bill['available'] ?? null) !== false && ($bill['subscribed'] ?? false);
 
@@ -710,11 +844,30 @@ class BillingService
             ];
 
             if ($prices !== []) {
-                [$amount, $code] = static::resolvePrice($key, $currency);
+                if ($ours !== null) {
+                    // No USD entry means this app cannot bill the plan at all. The card then carries
+                    // no number rather than a number from a currency the charge cannot use, and the
+                    // click is refused in plain words by `chargePrice()` — never billed by guesswork.
+                    $charge = static::chargePriceFor($key);
 
-                $entry['list']  = round((float) $amount, 2);
+                    if ($charge === null) {
+                        $entry['unpriceable'] = true;
+                        $amount = null;
+                        $code = static::chargeCurrency();
+                    } else {
+                        [$amount, $code] = $charge;
+                    }
+                } else {
+                    [$amount, $code] = static::resolvePrice($key, $currency);
+                }
+
+                $entry['list']  = $amount === null ? null : round((float) $amount, 2);
                 $entry['code']  = (string) $code;
-                $entry['exact'] = isset($prices[$currency]);
+                // `exact` is the honest version of "this is what you pay in your own currency": true
+                // only when the number on the card is already in the currency the store is billed in.
+                $entry['exact'] = $ours !== null
+                    ? strcasecmp((string) $code, $currency) === 0
+                    : isset($prices[$currency]);
             }
 
             // Only the plan the store is actually on can be confirmed against the invoice.
@@ -728,7 +881,14 @@ class BillingService
                     'trial'     => (int) ($bill['trial_days'] ?? 0),
                 ];
 
-                if ($entry['list'] !== null && abs((float) $entry['list'] - (float) $bill['amount']) > 0.009) {
+                // Two numbers in two currencies are not a disagreement, so drift is only ever
+                // claimed when they are comparable: 5.99 USD beside a 499 INR invoice line is
+                // Shopify's conversion rate, not a price table that has gone stale.
+                $shown = (string) ($entry['code'] ?? '');
+
+                if ($entry['list'] !== null && $shown !== ''
+                    && strcasecmp((string) ($bill['currency'] ?? ''), $shown) === 0
+                    && abs((float) $entry['list'] - (float) $bill['amount']) > 0.009) {
                     $entry['drift'] = [
                         'list'    => $entry['list'].' '.$entry['code'],
                         'shopify' => $bill['amount'].' '.($bill['currency'] ?? $currency),

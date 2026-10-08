@@ -705,10 +705,39 @@ bill). If Shopify publishes no handle to link to, `switch.kind` is `none` and th
 words (`Settings → Apps and sales channels → <app> → plan / billing`) instead of showing a button that goes
 nowhere.
 
-**`api`** — for an app that really does own its price table: the same cards, the same segmented control, but
-the next click calls `appSubscriptionCreate` from this app with `config/shopify.php` prices in the store's own
-billing currency, and the merchant approves inside Shopify's confirmation screen as before. With no price for
-the store's currency the note says the US figure is used and Shopify converts it at its own rate.
+**`api`** — the default this app ships with, and the road that works without anything being configured in the
+Dashboard. The same cards and the same segmented control, but the next click calls `appSubscriptionCreate` with
+the price from `config/shopify.php`, and the merchant approves on Shopify's own confirmation page. Upgrade is a
+replacement (`replacementBehavior: APPLY_IMMEDIATELY`), so Shopify prorates it and the old subscription is
+cancelled by the approval, not by this app; "Move to Free" calls `appSubscriptionCancel`. The plan state then
+comes back from the store itself, three ways: immediately after the approval redirect, on the
+`app_subscriptions/update` webhook, and on the next board load if the cached read is older than
+`billing_sync_stale_minutes` (30) — `BillingService::syncIfStale()`, which is what makes a cancellation made on
+Shopify's billing screen show up here on its own. A failed refresh is retried no sooner than five minutes later
+and never turns the board into an error page: it renders from the last read.
+
+#### The charge is in USD, and no amount of price-table tuning changes that
+
+`AppRecurringPricingInput.price` documents its currency as: *"The amount to be charged to the store every
+billing interval. The only permitted currency code is USD."* Shopify's older REST billing endpoint behaved the
+same way, and the community answer when an app sends `INR` is a flat `Currency code must be USD`. So in `api`
+mode the currency the store is billed in is a **display** fact and never the amount: an app that reads
+`plans.*.prices` by store currency configures a plan beautifully and then fails on the one page where the
+merchant had already said yes.
+
+That is why the charge path never consults the store's currency at all: `BillingService::chargePrice()` reads
+`config/shopify.php → plans.{key}.prices[charge_currency]` (`SHOPIFY_BILLING_CURRENCY`, USD), and the mutation
+is built from it. A plan with no USD entry cannot be billed, and `chargePriceFor()` returns null instead of
+inventing a number — the Plan tab shows no figure for it, `taskpe:plans` names the plan under `cannot bill:`,
+and the click is refused with a plain sentence ("nothing has been charged — tell us from the Support card")
+rather than a 500 or a half-created charge. The one thing that is done with the store's currency is the label:
+`resolveShopCurrency()` still runs at charge time so a rupee store is told *"Billed as $5.99 every 30 days,
+which Shopify converts into INR at its own rate on the invoice"*, which is exactly what its invoice will say.
+
+`shopify` mode keeps the per-currency table for a different purpose — there the Dashboard really can price a
+plan in INR, and the app's numbers are labelled list prices beside Shopify's read-back. The drift check in both
+modes now refuses to compare two currencies: 5.99 USD against 499 INR is Shopify's conversion rate, not a
+price table that has gone stale.
 
 The two roads are exclusive. An app whose Dashboard pricing model is Shopify App Pricing is not meant to
 create charges through the Billing API at all (the hosted plan page is the supported path, and a charge created
@@ -1029,6 +1058,14 @@ came back to `list` after the next plan change. The write is now `rememberBillin
 stored by `rememberHandleFailure()`) instead of leaving a human in the log files. The `billing` node is also
 no longer handed to the browser whole: `Arr::only(..., CLIENT_BILLING_KEYS)` sends the Plan tab the numbers it
 renders, and keeps handles and failure reasons server-side.
+
+#### So which road is this install on?
+
+`SHOPIFY_BILLING_MODE` is read from `.env`, and the shipped default is now `api` — the road that needs nothing
+in the Dashboard. A host that was left with `SHOPIFY_BILLING_MODE=shopify` in its `.env` keeps the App Pricing
+behaviour and its dead link, so after deciding, check the line exists and reads what you chose, then
+`php artisan config:clear`. `php artisan taskpe:plans` prints the mode with the price table, the charge
+currency, any plan it cannot bill, and the sync window, all in the first screenful.
 
 **The flag that silently stops revenue** is `SHOPIFY_BILLING_TEST=true`, and it matters only in `api` mode: a
 charge created with `test: true` is a working subscription on a demo store and a fiction on a paying one. It is

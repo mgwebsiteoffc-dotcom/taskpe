@@ -179,6 +179,35 @@ class PlansCommand extends Command
         }
 
         if (!$managed) {
+            $charge = BillingService::chargeCurrency();
+
+            $this->line('  charge currency: ' . $charge . ' — Shopify permits exactly one code for a charge an app');
+            $this->line('  creates, so a store billed in another currency is shown the '
+                . $charge . ' amount and converts it on its own invoice. The Plan tab says the same thing,');
+            $this->line('  in those words, rather than printing a rupee figure no charge will ever carry.');
+
+            $unpriceable = [];
+
+            foreach ((array) config('shopify.plans') as $key => $plan) {
+                if ((array) ($plan['prices'] ?? []) !== [] && BillingService::chargePriceFor((string) $key) === null) {
+                    $unpriceable[] = (string) ($plan['name'] ?? $key);
+                }
+            }
+
+            if ($unpriceable !== []) {
+                $this->line('  <comment>cannot bill:</comment> ' . implode(', ', $unpriceable)
+                    . ' have no ' . $charge . ' price in config/shopify.php, so a merchant');
+                $this->line('  who picks them gets a plain sentence and no charge. Add a '
+                    . $charge . ' entry to that plan\'s prices.');
+            }
+
+            $stale = max(1, (int) config('shopify.billing_sync_stale_minutes', 30));
+            $this->line('  direct sync: a board load re-reads the subscription when the last read is older than '
+                . $stale);
+            $this->line('  minutes, so a plan changed outside this app shows up here by itself; '
+                . '--live forces it for every');
+            $this->line('  store now, and every approval or cancellation re-reads immediately.');
+
             return;
         }
 

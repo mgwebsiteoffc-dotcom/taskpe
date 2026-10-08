@@ -33,6 +33,14 @@ class BoardController extends Controller
         // Shopify's number and our table disagree, so a stale row can be seen instead of trusted.
         $managed = BillingService::shopifyManaged();
         $billingService = new BillingService($shop);
+
+        // In `api` mode this app owns the charge, so it also owns the duty to notice a change: a
+        // cancellation made on Shopify's own billing screen, a plan approved in another tab, an
+        // update webhook that never arrived. One cheap re-read per board load (throttled inside)
+        // keeps "what am I on" true without a support ticket, and `planCatalog()` below then renders
+        // from the fresh numbers rather than the ones from yesterday.
+        $billingService->syncIfStale();
+
         $plans  = $billingService->planCatalog();
 
         return response()->json([

@@ -39,11 +39,18 @@ def money(amount, code):
     return symbol + ('%.0f' % amount if code == 'INR' else '%.2f' % amount)
 
 
+CHARGE = 'USD'   # Shopify accepts no other currency code for appSubscriptionCreate
+
+
 def price_text(plan):
+    """What the merchant is charged, in the one currency an app-created charge may use."""
     if not plan['prices']:
         return 'Free'
 
-    return '  +  '.join(money(a, c) for c, a in sorted(plan['prices'].items(), key=lambda kv: kv[0] != 'INR'))
+    if CHARGE in plan['prices']:
+        return money(plan['prices'][CHARGE], CHARGE) + ' per 30 days'
+
+    return 'no %s price configured \u2014 the app cannot bill this plan' % CHARGE
 
 L = {}
 L['name'] = "TaskPe"
@@ -54,7 +61,7 @@ L['details'] = (
     "templates create the checklist for an order — verify the payment, call the buyer, chase the courier, "
     "reconcile the remittance — with assignee, due date and priority. Tasks link to the Shopify order itself. "
     "Staff without a Shopify login use the same board on a phone, signing in with a WhatsApp code. Nothing "
-    "touches the storefront. Billing runs through Shopify in your currency."
+    "touches the storefront. Billing runs through Shopify, approved on Shopify\u2019s own page."
 )
 L['features'] = [
     "One-click checklists for COD confirmation, NDR follow-up and RTO risk checks",
@@ -176,18 +183,27 @@ DP = [
 
 RADAR = [
  ("**1.2.3 \u2014 a Plan page with no way to change the plan** (this is what the first review rejected)",
-  "A **Switch plan** panel plus a button on every plan card \u2014 never a sentence of instructions. With Shopify-owned pricing the app cannot create charges, so the button opens Shopify\u2019s hosted plan page: `https://admin.shopify.com/store/{store}/charges/{app handle}/pricing_plans`, built per store from `SHOPIFY_APP_HANDLE`. Upgrade, downgrade to Free and cancel all happen there; Shopify prorates, invoices, and the charges show in the merchant\u2019s app charge history. Rehearse it on a development store (plans are $0 for your own organisation): Free \u2192 Starter \u2192 Growth \u2192 Free, then screenshot the charge history for the feedback thread. The cards do carry prices, each labelled with where it came from: the plan a store is on shows Shopify\u2019s own read-back amount (\u201cBilled by Shopify every 30 days\u201d), the other cards show this app\u2019s list price with a line saying so. That list price is a number the Dashboard must match \u2014 `php artisan taskpe:plans` reports any store being shown a price its invoice contradicts. Downgrading to Free and cancelling sit on the same control (asked once, because that direction is the one that loses a merchant their features), so no way out needs a support ticket. Where Shopify\u2019s own plan handle is known \u2014 learned from its return redirect, or pasted into `TASKPE_PLAN_STARTER_HANDLE` / `TASKPE_PLAN_GROWTH_HANDLE` \u2014 the app deep-links straight to that plan\u2019s approval page (`\u2026/charges/{app}/plans/{handle}`) and falls back to the plan list otherwise: that short form is not documented by Shopify, so it is an accelerator here and never a dependency. The app also asks Shopify for its own app handle (`currentAppInstallation.app.handle`, cached per store) instead of trusting an env value \u2014 a wrong handle does not 404, it opens the admin\u2019s Apps list, which a merchant reports as \u201cthe button did nothing\u201d. `php artisan taskpe:plans --links` shows the URL each button will open and whether Shopify has confirmed the handle behind it."),
+  "A **Switch plan** panel plus a button on every plan card \u2014 never a sentence of instructions, and never a support ticket. The app bills through Shopify\u2019s Billing API: picking a plan calls `appSubscriptionCreate`, the merchant approves on Shopify\u2019s own confirmation page, and Shopify prorates an upgrade, sends the invoice and lists the charge in the store\u2019s app charge history. Moving down to Free and cancelling sit on the same control (asked once, because that direction is the one that loses a merchant their features). `SHOPIFY_BILLING_MODE=api` is the shipped default for a reason: Shopify hosts a plan-selection page only for an app priced with **Shopify App Pricing**, and until plans exist there the link `\u2026/charges/{app}/pricing_plans` answers \u201cThere\u2019s no page at this address\u201d. So in Partner Dashboard \u2192 App pricing the pricing model must be **Set up your own pricing**, and the two must not be mixed: Shopify refuses an app-created charge from an app priced with App Pricing. Prices are shown exactly as they are charged \u2014 `config/shopify.php \u2192 plans` is the price table and the Plan tab prints that number as the amount Shopify bills every 30 days. The charge currency is **USD and nothing else** (Shopify permits exactly one code for an app-created charge), so a store billed in INR is shown the USD figure with a line saying Shopify converts it at its own rate on its invoice, plus the read-back amount from the store\u2019s own subscription for the plan it is already on. Rehearse on a development store \u2014 `shop.plan.partnerDevelopment` is what decides that its charges are test charges, so a real merchant is never handed a fake one: Free \u2192 Starter \u2192 Growth \u2192 Free with no card involved, then screenshot the charge history for the feedback thread. `php artisan taskpe:plans` prints the mode, the price table, each store\u2019s read-back, and whether the two agree. If the app is later priced in the Dashboard instead, the same tab links to Shopify\u2019s page rather than creating a charge: it asks Shopify for its own app handle (`currentAppInstallation.app.handle`, cached per store) because a wrong handle does not 404 but opens the admin\u2019s Apps list, which reads as \u201cthe button did nothing\u201d, and it learns each plan\u2019s handle from the subscription to deep-link to that plan\u2019s approval page. `taskpe:plans --links [--verify]` shows both roads."),
 
  ("**The Admin API token is the wrong kind for a public app** (the listing looks fine, then every store starts failing one hour after install)",
   "Shopify refuses **non-expiring** offline tokens for GraphQL Admin API calls from public apps - now for new apps, for all of them after **1 January 2027**. The app asks for the expiring pair (`expiring=1` at the token exchange), stores the refresh token and both expiry dates, and renews them itself (`app/Services/TokenVault.php`, `php artisan taskpe:tokens`, DEPLOYMENT.md section 19). Check before submitting: `php artisan taskpe:tokens --probe` must print `expiring` for every store, and the merchant must never see “re-install the app” for what is only a login problem."),
  ("App icon is 1600px or 1024px", "Shopify wants exactly 1200x1200. Use `assets/listing/app-icon-1200.png` (generated from the 1600 master). Corners are pre-rounded in the art; Shopify rounds its own, which is accepted, but if you can supply a full-bleed square that is cleaner."),
  ("Screenshots contain pricing or a plan card", "Deliberately excluded - listing images must not carry pricing (4.4.x). Keep the Plan tab out of screenshots and let the Pricing section hold the numbers."),
- ("A price in the app disagreeing with the invoice", "Since the Plan tab shows list prices, whoever edits one has to edit both. Keep `config/shopify.php → plans` equal to Dashboard → App pricing and run `php artisan taskpe:plans` after either change — it exits non-zero while a store is being shown a stale number, and `--live` re-reads every subscription first. The plan card warns on its own when it spots the mismatch; Shopify's amount always wins on the invoice."),
+ ("A price in the app disagreeing with the invoice", "In `api` mode there is one price table, "
+  "`config/shopify.php \u2192 plans`, and it is the amount of the charge, so nothing can drift from a "
+  "Dashboard row. What does happen is a store that joined before a price change: its subscription keeps "
+  "the price it was approved at. That is why the current plan\u2019s card prints Shopify\u2019s read-back "
+  "figure instead of the config one, why `php artisan taskpe:plans --live` shows both per store, and why "
+  "an edit takes effect at the next approval."),
  ("Screenshots look like mockups or show browser chrome", "All six are real captures at exactly 1600x900 with no chrome, no overlays, unique content per image (4.4.4/4.4.5 from 26 March 2026)."),
  ("Alt text missing or too long", "Every image has alt text in two sizes here: <=100 characters for the form, <=64 for fields that cap lower. Automated translation covers alt text for the eight languages, so write plain descriptive English and no keyword lists."),
  ("Customer search reads a name field", "That is Level 2 (`displayName` is derived from first/last name). Either request the Name field with the reason below, or drop the customer tab + `read_customers` and keep the request at Level 1 - the fastest approval, and the more defensible answer to 'minimum data required'."),
  ("`read_all_orders` not yet approved", "Order search outside the install window returns nothing. The reason text below is written for that request; the app already explains the limit in-app, so no merchant is misled while the request is open."),
- ("Trial promised but not delivered", "The listing must match what Shopify's plan page offers. Dashboard trial is 7 days; Shopify's guidance recommends 14 - set it in the Dashboard if you want the recommendation, and keep the copy honest either way."),
+ ("Trial promised but not delivered", "The listing must match what the app actually asks for. In `api` "
+  "mode the trial comes from `config/shopify.php \u2192 plans.*.trial_days` (7 days now) and is passed to "
+  "`appSubscriptionCreate`, so there is no Dashboard field that can disagree with it. Shopify\u2019s "
+  "guidance recommends 14 \u2014 change the config, regenerate this document, and the cards, the "
+  "confirmation page and the listing move together."),
  ("Charges outside Shopify billing hidden", "WhatsApp messages are billed by the merchant's own Whatify account. That belongs in the plan's 'additional charges' line with a link to a page that explains it (4.2)."),
  ("Support and legal links", "Privacy policy URL is required; add Terms of Service and a support/docs URL. `/privacy` and `/terms` are both served by the app (`AppController::privacy|terms`, public, no login). Two things still have to go into `resources/views/terms.blade.php` before that link is quoted anywhere: the legal entity and the governing law - both are marked with `[` on the page, and the page prints a note telling you to delete it afterwards."),
  ("Storefront performance", "Nothing is injected into the storefront (no scripts, no theme edits), so the Lighthouse delta is zero. Say so in the review instructions; it removes a whole class of questions."),
@@ -284,31 +300,39 @@ w("### Pricing section\n")
 w("| Item | Value |")
 w("| --- | --- |")
 w("| Primary billing method | **Recurring charge** (not “Free to install” — we have paid plans) |")
-w("| Plans | Enter them **in the Partner Dashboard first** (App pricing), then mirror the names here: `Free`, `TaskPe Starter`, `TaskPe Growth`. Mark the Free plan as free → “Free plan available” shows in search. Plans display lowest→highest automatically. |")
-w("| Plan handle (optional, nothing to fill in the form) | `TASKPE_PLAN_STARTER_HANDLE` / `TASKPE_PLAN_GROWTH_HANDLE` in `.env` let the app open one plan\u2019s approval page instead of the plan list. The app learns the same handles from Shopify\u2019s own return redirect after the first plan change, so leaving both empty costs a step and nothing else. |")
+w("| Pricing model in the Dashboard | **Set up your own pricing.** This app creates the charge itself through the Billing API, which is what the Plan tab\u2019s buttons do. Choosing **Shopify App Pricing** instead switches who owns the whole flow: Shopify then refuses the app\u2019s own charges (so plan switching breaks with an error the merchant cannot fix), and its hosted plan page only appears once plans exist there. Pick one road; `php artisan taskpe:plans` prints which one the app thinks it is on. |")
+w("| Plans | `Free`, `TaskPe Starter`, `TaskPe Growth`. The app\u2019s cards say `Free` / `Starter` / `Growth` and the charge Shopify shows the merchant is named `TaskPe Starter` (the mutation prefixes the app name), so the listing, the card and the approval page are the same three plans with the same numbers. Mark the Free plan as free \u2192 \u201cFree plan available\u201d shows in search; plans display lowest\u2192highest on their own. |")
+w("| Plan handle | Nothing to fill in, in this mode. Those handles matter only if the app is priced with Shopify App Pricing instead; the app then learns them from the subscription itself and no `.env` line has to be right. |")
 w("| Plan descriptions | Free: “2 team members, 50 open tasks, board and activity timeline, no WhatsApp.” Starter: “5 team members, unlimited tasks, WhatsApp alerts to staff, daily owner digest.” Growth: “Unlimited team members, priority support.” |")
-w("| Trial | Whatever the Dashboard plan says (currently **7 days**). Shopify *recommends* 14 — raise it in the Dashboard if you want, but the listing, the Dashboard and the in-app copy must agree. |")
+w("| Trial | **7 days**, from `config/shopify.php \u2192 plans.*.trial_days`, and passed straight to `appSubscriptionCreate` — so the card, Shopify\u2019s confirmation page and this listing cannot disagree. Shopify *recommends* 14: change the config, regenerate this document, redeploy. |")
 w("| Additional charges (per plan) | “WhatsApp messages are billed by your own Whatify account (about ₹0.12 per message), not by TaskPe.” |")
 w("| Charges billed outside Shopify billing — link | [YOUR PAGE] explaining the Whatify cost. Requirement 4.2 wants outside charges disclosed with a link, and our app genuinely has one. |")
 w("| Pricing page link | [YOUR PRICING PAGE] |")
-w("| Prices shown here | The **same numbers, same currency, as the Dashboard plan**. The app now prints list prices on its Plan tab too (each labelled, with Shopify’s read-back amount on the plan a store is actually on), so **three** places have to agree: Dashboard → App pricing, `config/shopify.php → plans`, and this listing. The table below is generated from that config file — change the code and regenerate rather than retyping here. |")
+w("| Prices shown here | **US dollars.** `AppRecurringPricingInput.price` permits exactly one currency code — USD — whatever the store is billed in, so the USD figure below is the amount of the charge and Shopify converts it for a non-US invoice. The app\u2019s Plan tab prints the same number and says so in words; the plan a store is on shows the amount read back from its own subscription. Two places have to agree: `config/shopify.php \u2192 plans` and this listing. The table below is generated from that config file — change the code and regenerate rather than retyping here. |")
 w("")
 w("#### The price table exactly as the Plan tab prints it (generated from `config/shopify.php`)\n")
-w("| Plan | List price shown in the app | Trial | What to enter in Partner Dashboard → App pricing |")
+w("| Plan | Price the app charges (USD) | Trial | What to enter in the Partner Dashboard |")
 w("| --- | --- | --- | --- |")
 
 for _pl in PLANS:
-    w("| **%s** | %s | %s | same amount, same currency, plus the plan’s redirect URL `/billing/callback` |" % (
+    _last = ('nothing — Free is the absence of a charge, and the app cancels the current one to get back to it'
+             if not _pl['prices'] else
+             'nothing — the app creates the charge from this number, and Shopify prorates an upgrade')
+
+    w("| **%s** | %s | %s | %s |" % (
         _pl['name'],
         price_text(_pl),
         ('%d days' % _pl['trial']) if _pl['trial'] else 'none',
+        _last,
     ))
 
 w("")
-w("A store billed in a currency this table has no entry for is shown the US dollar figure with the line "
-  "“Shopify converts it at its own rate for a store billed in INR” — true, but a worse page to read than an "
-  "exact entry. Add the currency to `prices` *and* create the Dashboard plan in it for every market you "
-  "actually launch in. `DEPLOYMENT.md` § 17 states what each number on a plan card is allowed to claim.")
+w("An `INR` entry in `prices` is read only when the app is priced with Shopify App Pricing: in this mode the "
+  "Dashboard sets a real per-currency price and the app merely displays it. It is **not** a charge this app "
+  "could create — Shopify would answer \u201cCurrency code must be USD\u201d on the page where the merchant had "
+  "already agreed to pay \u2014 so a rupee store is shown the USD figure with the line saying Shopify converts it "
+  "at its own rate on the invoice. That sentence is the promise; nothing in the app claims a rupee price it "
+  "cannot bill. `DEPLOYMENT.md` § 17 states what each number on a plan card is allowed to claim.")
 w("")
 w("### Links, support and eligibility\n")
 w("| Field | Value |")
@@ -458,7 +482,7 @@ w("")
 w("### Still to fill before submitting\n")
 w("1. Both legal pages exist — `https://<host>/privacy` and `https://<host>/terms`. Fill the two placeholders in `resources/views/terms.blade.php` (operating entity, governing law), then link both.")
 w("placeholders in `resources/views/terms.blade.php` (operating entity, governing law), then link both.")
-w("2. Support email, docs URL, demo store URL, emergency developer contact \u2014 and `SHOPIFY_APP_HANDLE` in `.env`, without which the Plan tab cannot link to Shopify's plan page (the 1.2.3 row above).")
+w("2. Support email, docs URL, demo store URL, emergency developer contact. `SHOPIFY_APP_HANDLE` in `.env` is only needed if the app is priced with Shopify App Pricing instead (the 1.2.3 row above); in `api` mode the app creates the charge itself and no hosted plan page is involved.")
 w("3. Pricing page that explains charges billed outside Shopify (Whatify).")
 w("4. Decide the Level 1 / Level 2 fork in section 4, and if Level 1: remove the customer tab + `read_customers`.")
 w("5. Optional but high-value: the 2–3 minute feature video, and re-capturing screenshots from a real store.")

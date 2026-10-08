@@ -2923,7 +2923,10 @@
   // One line of provenance under a price. An unlabelled number on a pricing page is a promise
   // this app cannot always keep, and the merchant is the one who finds out.
   function planPriceNote(p) {
-    if (p.unknown) return 'This app has no price for that plan, so only Shopify can quote it.';
+    if (p.unknown) return ((state.board.billing && state.board.billing.mode) || 'api') === 'shopify'
+      ? 'This app has no price for that plan, so only Shopify can quote it.'
+      : 'No price is set for this plan in the app yet, so it cannot be billed. Tell us from the Support '
+        + 'card and we will add it; nothing is charged until then.';
     if (p.free) return 'No charge, and no card needed.';
 
     if (p.billed) {
@@ -3317,10 +3320,13 @@
           h('div', { class: 'price-note' }, planPriceNote(p)),
           p.drift
             ? h('p', { class: 'drift' },
-                'Shopify bills ', String(p.drift.shopify), ' for this plan; this app\u2019s list price says ',
-                String(p.drift.list), '. Your invoice follows Shopify. To line the two up, change the plan in '
-                + 'Partner Dashboard → App pricing, or update the prices in config/shopify.php to match '
-                + '(php artisan taskpe:plans shows it for every store).')
+                'Shopify bills ', String(p.drift.shopify), ' for this plan; this app\u2019s price for it says ',
+                String(p.drift.list), '. Your invoice follows Shopify either way. ',
+                byShopify
+                  ? 'To line the two up, change the plan in Partner Dashboard → App pricing, or update the '
+                    + 'prices in config/shopify.php to match (php artisan taskpe:plans shows it for every store).'
+                  : 'A subscription keeps the price it was approved at, so this reads as drift until the plan '
+                    + 'changes; the number on the card is what the next approval will be billed at.')
             : null,
           h('ul', null, (features[key] || []).map(f => h('li', null, f))),
           cta);
@@ -3328,9 +3334,11 @@
 
     const note = h('p', { class: 'muted small mt' }, byShopify
       ? 'The amount on the plan you are on is Shopify\u2019s, read back from your subscription — that is the one figure here that describes your invoice. Prices on the other cards are this app\u2019s list prices, so the choices are comparable before you open Shopify\u2019s page; a plan created in US dollars is billed in US dollars and one with a rupee price is billed in \u20b9. Amount, currency, trial, invoices and cancelling all belong to Shopify, and nothing on this page changes them.'
-      : cur === 'INR'
-        ? 'Indian stores are shown and charged in \u20b9 (INR) on their Shopify invoice — no USD conversion and no forex fee on this subscription.'
-        : 'Prices are shown in your store\u2019s billing currency (' + cur + ') where this app has a price for it; otherwise the US price is used and Shopify converts it at its own rate on the invoice.');
+      : 'Charges this app creates are priced in US dollars — Shopify accepts no other currency for an '
+        + 'app-created subscription, whatever the store is billed in. Your invoice shows the same amount in '
+        + cur + ' at Shopify\u2019s own rate, an upgrade is prorated by Shopify, and the figure on the card you '
+        + 'are on is read back from your subscription rather than from this app. Change or cancel a plan on '
+        + 'this tab; none of it needs a support ticket.');
 
     return h('div', { class: 'page' }, billPanel, switcher, cards, note);
   }

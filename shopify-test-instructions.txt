@@ -86,64 +86,57 @@ REVIEW STORE (provided for testing)
    charges nothing here: messages are billed by the merchant's own Whatify account (about INR 0.12
    per message), which is also disclosed in the pricing section of the listing.
 
-9. BILLING AND PLAN CHANGES (plans and prices are managed by Shopify)
+9. BILLING AND PLAN CHANGES (the app bills through Shopify's Billing API)
    Plan tab -> the "Switch plan" panel at the top. Click the Starter pill: nothing is charged yet,
-   the pill is just chosen, and the sentence under the button says what the next click does. Then
-   "Continue at Shopify". Expected: the app leaves the iframe and opens Shopify for THAT plan. The
-   same action is on each plan card ("Choose Starter"), so the panel is a shortcut, not the only
-   door. A downgrade and "Move to Free" come from the same strip and ask once before they post: a
-   plan change must never need a support ticket (Shopify 1.2.3), including the ones that cost money.
+   the pill is only chosen, and the sentence under the button says exactly what the next click does.
+   Then "Switch to Starter". Expected: the app leaves the iframe and opens Shopify's own approval
+   page for that charge - plan name TaskPe Starter, the amount, the 7-day trial, and Shopify's
+   proration note if the store is already paying for a plan. The same action is on each plan card
+   ("Choose Starter"), so the panel is a shortcut, not the only door. A downgrade and "Move to Free"
+   come from the same strip and ask once before they post: a plan change must never need a support
+   ticket (Shopify 1.2.3), including the ones that cost money. Cancelling goes back to Free straight
+   away, with no ticket and no reinstall.
 
-   What Shopify then shows is its own page: either the plan list for this store
-   (admin.shopify.com/store/<store>/charges/<app handle>/pricing_plans) or, once Shopify's own handle
-   for that plan is known, that plan's approval page
-   (admin.shopify.com/store/<store>/charges/<app handle>/plans/<plan handle>). The app learns the
-   handle two ways by itself - from the ?plan_handle= parameter on Shopify's return redirect and from
-   the subscription's own pricing details - or from TASKPE_PLAN_STARTER_HANDLE / TASKPE_PLAN_GROWTH_
-   HANDLE if you paste them; with none of these it uses the plan list, which is always correct.
+   The amount is in US dollars and so is the card, because Shopify permits exactly one currency code
+   for a charge an app creates (AppRecurringPricingInput.price: USD). A store billed in rupees is
+   shown the USD figure with "which Shopify converts into INR at its own rate on the invoice" - that
+   sentence is the promise, and the invoice matches it. Once the store is on a plan, its card stops
+   showing the app's number and shows the amount read back from the subscription: name, amount,
+   currency, interval and renewal date, all Shopify's own figures.
 
-   In this mode the app never creates a charge - appSubscriptionCreate is not called, because the
-   plans and their prices live in the Partner Dashboard - but the cards do show numbers, each one
-   labelled with where it came from: the plan you are on carries Shopify's own read-back amount
-   ("Billed by Shopify every 30 days, renews ..."), the others carry this app's LIST price, and a
-   plan with no price in your billing currency says the US figure plus "Shopify converts at its own
-   rate". A paid plan is never printed as "Free". If Shopify's amount and the list price disagree,
-   the current card says so in a warning box. Both are checked on the server with
-   `php artisan taskpe:plans` (add --live to re-read every subscription), the command to run after
-   changing a price in either place.
+   Approve the plan on Shopify's page and come back. Expected: the tab already reads the live
+   subscription (the approval returns through /billing/callback, which re-reads from
+   currentAppInstallation rather than trusting URL params), WhatsApp alerts and the daily digest
+   unlock, the member and task limits rise, and the charge appears in the store's app charge history
+   at Shopify admin -> Settings -> Apps and sales channels -> TaskPe -> Billing. Then the other
+   direction: "Change or cancel plan" on the current card -> Growth (Shopify prorates it and retires
+   the Starter charge in the same approval), and back down to Free.
 
-   Approve the plan on Shopify's page and return to the app. Expected: the Plan tab reads the live
-   subscription from the store's own installation - plan name, amount, currency, interval and renewal
-   date, all Shopify's numbers - WhatsApp alerts and the daily digest unlock, the member and task
-   limits rise, and no support contact or reinstall was needed at any point. Then the other
-   direction: "Change or cancel plan" on the current card -> Growth, and back down to Free. Shopify
-   handles the proration, Free is listed there as a plan of its own, and every charge and
-   cancellation appears in the store's app charge history at Shopify admin -> Settings -> Apps and
-   sales channels -> TaskPe -> Billing.
+   Two things keep that honest without anyone asking. A plan changed anywhere else - cancelled on
+   Shopify's own billing screen, approved in a second tab - is picked up on the next board load once
+   the cached read is older than 30 minutes, and "Check again" re-reads on demand; the
+   app_subscriptions/update webhook covers a change made while nobody had the app open. And if a
+   change has not propagated by the time you are back, the tab says "Shopify is applying the
+   change..." and re-reads itself after a few seconds rather than reporting a refusal.
 
-   Two failures of the first click belong to the Dashboard, not to this app, and the app says which
-   one it saw. If Shopify answers with its list of installed apps, the app handle in the link is not
-   the one Shopify publishes; the app now asks Shopify for its own handle when the Plan tab is opened
-   with an unconfirmed link and caches it. If Shopify answers "There's no page at this address", the
-   handle is right and there is no plan page to open: App Pricing is switched off, or no plan has
-   been created. `php artisan taskpe:plans --links [--verify]` prints both candidate links, which one
-   is in use, what Shopify says its handle is, and those two Dashboard checks; the fix in the second
-   case is to create the plans, or to run the app with SHOPIFY_BILLING_MODE=api, where the app
-   creates and switches the charge itself in your store's billing currency.
+   On a development store owned by the same partner organisation the charge is created in test mode,
+   so the whole flow completes with no card and no money: the app decides that per store from
+   Shopify's own shop.plan.partnerDevelopment, and there is nothing to set. A real store is billed for
+   real - SHOPIFY_BILLING_TEST, which forces test charges for every store, is deliberately absent and
+   should never appear on a production host.
 
-   If a plan was approved but the board still shows the old limits, look at the mapping line the same
-   command prints: a Dashboard plan whose name this app cannot match ("Scale", or "Growth - monthly"
-   against a config label of "TaskPe Growth") is mapped to its cheapest paid plan and reported as
-   `fallback`. The fix is a Dashboard-side rename so the plan's name contains the config name, or a
-   handle; press Check again.
-
-   Two honest details: if a change has not propagated by the time you are back, the tab says
-   "Shopify is applying the change..." and re-reads itself after a few seconds rather than reporting
-   a refusal; "Check again" re-reads on demand. The app also re-reads on the app_subscriptions/update
-   webhook, so a change made while nobody had the app open is picked up. On a development store owned
-   by the same partner organisation the plan is selectable at $0, so the whole flow completes with no
-   card involved; a store that is not development-owned needs a real charge, and SHOPIFY_BILLING_TEST
-   is deliberately absent, because forcing it makes every charge a test one.
+   The other road, for when this app is priced in the Partner Dashboard instead of here: set
+   SHOPIFY_BILLING_MODE=shopify. The app then never creates a charge - Shopify's hosted plan page
+   does - and the Plan tab's buttons open admin.shopify.com/store/<store>/charges/<app
+   handle>/pricing_plans, or that plan's approval page once Shopify's own plan handle is known (the
+   app learns it from the subscription, so no .env line has to be right). Two failures there belong
+   to the Dashboard and not to this app, and the app says which one it saw: Shopify's Apps list means
+   the app handle in the link is not the one Shopify publishes (the app asks Shopify for it), and
+   "There's no page at this address" means App Pricing has no plans yet. If a Dashboard plan's name
+   matches no plan in config, the mapping line in `php artisan taskpe:plans` reports it as `fallback`
+   rather than quietly unlocking the wrong tier. Both commands to run after changing anything:
+   `php artisan taskpe:plans` and, to re-read every subscription first, `php artisan taskpe:plans
+   --live`; `--links [--verify]` prints what each button will open.
 
 10. DATA, UNINSTALL AND GDPR
    What a linked task stores: the order GID, the display label and an admin URL. No line items, no

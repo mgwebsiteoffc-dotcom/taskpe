@@ -138,6 +138,11 @@ return [
         ],
         'starter' => [
             'name'             => 'Starter',
+            // In `api` mode the USD figure IS the bill: Shopify accepts no other currency code for
+            // an app-created charge. A second entry here would be shown on the card as something
+            // other than what the approval page then asks for, so in `api` mode the cards print the
+            // charge price and say Shopify converts it for the invoice. Extra currencies are read
+            // only in `shopify` mode, where the Dashboard sets the real per-currency price.
             'prices'           => ['USD' => 5.99, 'INR' => 499],
             // Shopify's own handle for this App Pricing plan. With it, the in-app switcher can
             // open Shopify's approval page FOR THAT PLAN; without it the merchant lands on the
@@ -183,7 +188,26 @@ return [
     | registered in the Dashboard.
     */
     'billing' => [
-        'mode'      => strtolower((string) env('SHOPIFY_BILLING_MODE', 'shopify')),
+        /*
+        | `api`  — this app creates the subscription itself with `appSubscriptionCreate`, reads it
+        |          back from `currentAppInstallation`, and needs nothing from the Partner Dashboard
+        |          except the scopes. This is the shipped default because it is the road that works
+        |          while the Dashboard has no Shopify App Pricing plans: Shopify's hosted
+        |          .../charges/{app}/pricing_plans page only exists once plans are created there, and
+        |          a link to it 404s until then.
+        | `shopify` — Shopify App Pricing: the Dashboard prices the plans and hosts the picker, and
+        |          this app must NOT call the Billing API (Shopify refuses app-created charges for an
+        |          app priced that way). Switch to it when the plans exist in the Dashboard.
+        */
+        'mode'      => strtolower((string) env('SHOPIFY_BILLING_MODE', 'api')),
+
+        /*
+        | The currency an app-created charge may be priced in. `AppRecurringPricingInput.price`
+        | documents exactly one permitted code — USD — whatever currency the store is billed in, so
+        | an INR price in `plans.*.prices` is a display figure and never the amount of a charge.
+        | Keep this at USD unless Shopify's schema says otherwise.
+        */
+        'charge_currency' => strtoupper((string) env('SHOPIFY_BILLING_CURRENCY', 'USD')),
 
         /*
         |--------------------------------------------------------------------------
@@ -248,6 +272,13 @@ return [
 
     // Currency used when a plan has no entry for the shop's billing currency.
     'billing_fallback_currency' => 'USD',
+
+    // How long a plan read-back may be reused before the board refreshes it (see
+    // BillingService::syncIfStale(), which runs only in `api` mode). A merchant who cancelled from
+    // Shopify's own billing screen then sees the change here within this window instead of after the
+    // next webhook or a manual "Check again"; the attempt is throttled so an unreachable Shopify
+    // cannot make every board load wait for a timeout.
+    'billing_sync_stale_minutes' => 30,
 
     // Default board created on install.
     'default_columns' => ['To Do', 'In Progress', 'Done'],
