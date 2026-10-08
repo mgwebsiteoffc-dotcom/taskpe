@@ -387,17 +387,28 @@ REVIEW STORE (provided for testing)
    charges nothing here: messages are billed by the merchant's own Whatify account (about INR 0.12
    per message), which is also disclosed in the pricing section of the listing.
 
-9. BILLING (plans and prices are managed by Shopify)
-   Plan tab -> "What Shopify bills you" -> "Check again".
-   Expected: plan name, amount, currency, billing interval and renewal date are read from the
-   store's live subscription through the Admin API, and it re-reads that subscription on the
-   app_subscriptions/update webhook, so a plan change made while the app is closed is picked up
-   without anyone reloading the tab. The app shows no price of its own and never
-   calls appSubscriptionCreate, because the plans are created in the Partner Dashboard; on a
-   development store the subscription is a test charge and the tab labels it "test charge".
-   Approving a plan on Shopify's page and returning to the app unlocks WhatsApp alerts and the
-   digest and raises the member and task limits; cancelling is done on Shopify's own page and the
-   app says where, rather than doing it itself.
+9. BILLING AND PLAN CHANGES (plans and prices are managed by Shopify)
+   Plan tab -> "Choose Starter" on the Starter card. Expected: the app leaves the iframe and opens
+   Shopify's own plan page for this store (admin.shopify.com/store/<handle>/charges/<app
+   handle>/pricing_plans). In this mode the app never quotes a price and never calls
+   appSubscriptionCreate, because the plans and their prices live in the Partner Dashboard. On a
+   development store owned by the same partner organisation the plan is selectable at $0, so the
+   whole flow can be completed end to end with no card involved.
+
+   Approve the plan on Shopify's page, then return to the app. Expected: the Plan tab reads the
+   live subscription from the store's own installation - plan name, amount, currency, interval and
+   renewal date, all Shopify's numbers - WhatsApp alerts and the daily digest unlock, member and
+   task limits rise, and no support contact or reinstall was needed at any point.
+
+   Now the other direction: "Change or cancel plan" on the current card -> Growth, then back down
+   to Free. Expected: the same Shopify page each time (Free is listed there as a plan), Shopify
+   handles the proration, and every charge and cancellation appears in the store's app charge
+   history at Shopify admin -> Settings -> Apps and sales channels -> TaskPe -> Billing.
+
+   Two honest details: if a change has not propagated by the time you are back, the tab says
+   "Shopify is applying the change..." and re-reads itself after a few seconds rather than
+   reporting a refusal; and "Check again" re-reads on demand. The app also re-reads on the
+   app_subscriptions/update webhook, so a change made while nobody had the app open is picked up.
 
 10. DATA, UNINSTALL AND GDPR
    What a linked task stores: the order GID, the display label and an admin URL. No line items, no
@@ -433,6 +444,7 @@ a listing image must not show a picker entry the app no longer has.
 
 | Risk | Fix |
 | --- | --- |
+| **1.2.3 — a Plan page with no way to change the plan** (this is what the first review rejected) | Every plan card is a button, not a sentence. With Shopify-owned pricing the app cannot create charges, so the button opens Shopify’s hosted plan page: `https://admin.shopify.com/store/{store}/charges/{app handle}/pricing_plans`, built per store from `SHOPIFY_APP_HANDLE`. Upgrade, downgrade to Free and cancel all happen there; Shopify prorates, invoices, and the charges show in the merchant’s app charge history. Rehearse it on a development store (plans are $0 for your own organisation): Free → Starter → Growth → Free, then screenshot the charge history for the feedback thread. In this mode the app never quotes its own price — the Plan tab mirrors the live subscription. |
 | **The Admin API token is the wrong kind for a public app** (the listing looks fine, then every store starts failing one hour after install) | Shopify refuses **non-expiring** offline tokens for GraphQL Admin API calls from public apps - now for new apps, for all of them after **1 January 2027**. The app asks for the expiring pair (`expiring=1` at the token exchange), stores the refresh token and both expiry dates, and renews them itself (`app/Services/TokenVault.php`, `php artisan taskpe:tokens`, DEPLOYMENT.md section 19). Check before submitting: `php artisan taskpe:tokens --probe` must print `expiring` for every store, and the merchant must never see “re-install the app” for what is only a login problem. |
 | App icon is 1600px or 1024px | Shopify wants exactly 1200x1200. Use `assets/listing/app-icon-1200.png` (generated from the 1600 master). Corners are pre-rounded in the art; Shopify rounds its own, which is accepted, but if you can supply a full-bleed square that is cleaner. |
 | Screenshots contain pricing or a plan card | Deliberately excluded - listing images must not carry pricing (4.4.x). Keep the Plan tab out of screenshots and let the Pricing section hold the numbers. |
@@ -488,7 +500,7 @@ if any field exceeds its Shopify limit. Edit the copy there, not here, and the l
 
 1. Both legal pages exist — `https://<host>/privacy` and `https://<host>/terms`. Fill the two placeholders in `resources/views/terms.blade.php` (operating entity, governing law), then link both.
 placeholders in `resources/views/terms.blade.php` (operating entity, governing law), then link both.
-2. Support email, docs URL, demo store URL, emergency developer contact.
+2. Support email, docs URL, demo store URL, emergency developer contact — and `SHOPIFY_APP_HANDLE` in `.env`, without which the Plan tab cannot link to Shopify's plan page (the 1.2.3 row above).
 3. Pricing page that explains charges billed outside Shopify (Whatify).
 4. Decide the Level 1 / Level 2 fork in section 4, and if Level 1: remove the customer tab + `read_customers`.
 5. Optional but high-value: the 2–3 minute feature video, and re-capturing screenshots from a real store.

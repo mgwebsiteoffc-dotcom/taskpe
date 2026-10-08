@@ -42,7 +42,11 @@ class BoardController extends Controller
         return response()->json([
             'billing' => [
                 'mode'      => $managed ? 'shopify' : 'api',
-                'plans_url' => BillingService::plansUrl(),
+                // The store-specific URL of Shopify's hosted plan page (empty when this install
+                // cannot build one). 1.2.3 wants a plan change possible from inside the app, so the
+                // Plan tab renders real buttons from this rather than directions.
+                'plans_url' => BillingService::plansUrl($shop),
+                'picker'    => BillingService::canPickPlans($shop),
                 'shopify'   => (array) $shop->setting('billing', []),
             ],
             'shop' => [

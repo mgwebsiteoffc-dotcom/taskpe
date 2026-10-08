@@ -132,6 +132,9 @@ DP = [
 
 
 RADAR = [
+ ("**1.2.3 \u2014 a Plan page with no way to change the plan** (this is what the first review rejected)",
+  "Every plan card is a button, not a sentence. With Shopify-owned pricing the app cannot create charges, so the button opens Shopify\u2019s hosted plan page: `https://admin.shopify.com/store/{store}/charges/{app handle}/pricing_plans`, built per store from `SHOPIFY_APP_HANDLE`. Upgrade, downgrade to Free and cancel all happen there; Shopify prorates, invoices, and the charges show in the merchant\u2019s app charge history. Rehearse it on a development store (plans are $0 for your own organisation): Free \u2192 Starter \u2192 Growth \u2192 Free, then screenshot the charge history for the feedback thread. In this mode the app never quotes its own price \u2014 the Plan tab mirrors the live subscription."),
+
  ("**The Admin API token is the wrong kind for a public app** (the listing looks fine, then every store starts failing one hour after install)",
   "Shopify refuses **non-expiring** offline tokens for GraphQL Admin API calls from public apps - now for new apps, for all of them after **1 January 2027**. The app asks for the expiring pair (`expiring=1` at the token exchange), stores the refresh token and both expiry dates, and renews them itself (`app/Services/TokenVault.php`, `php artisan taskpe:tokens`, DEPLOYMENT.md section 19). Check before submitting: `php artisan taskpe:tokens --probe` must print `expiring` for every store, and the merchant must never see “re-install the app” for what is only a login problem."),
  ("App icon is 1600px or 1024px", "Shopify wants exactly 1200x1200. Use `assets/listing/app-icon-1200.png` (generated from the 1600 master). Corners are pre-rounded in the art; Shopify rounds its own, which is accepted, but if you can supply a full-bleed square that is cleaner."),
@@ -393,7 +396,7 @@ w("")
 w("### Still to fill before submitting\n")
 w("1. Both legal pages exist — `https://<host>/privacy` and `https://<host>/terms`. Fill the two placeholders in `resources/views/terms.blade.php` (operating entity, governing law), then link both.")
 w("placeholders in `resources/views/terms.blade.php` (operating entity, governing law), then link both.")
-w("2. Support email, docs URL, demo store URL, emergency developer contact.")
+w("2. Support email, docs URL, demo store URL, emergency developer contact \u2014 and `SHOPIFY_APP_HANDLE` in `.env`, without which the Plan tab cannot link to Shopify's plan page (the 1.2.3 row above).")
 w("3. Pricing page that explains charges billed outside Shopify (Whatify).")
 w("4. Decide the Level 1 / Level 2 fork in section 4, and if Level 1: remove the customer tab + `read_customers`.")
 w("5. Optional but high-value: the 2–3 minute feature video, and re-capturing screenshots from a real store.")

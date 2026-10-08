@@ -779,6 +779,69 @@ the point — the app cannot misquote a number it does not own.
 
 ---
 
+### Choosing a plan from inside the app (rejection 1.2.3)
+
+The App Store review came back with: *"While testing the Plan page, we clicked “View plans,” but the
+app remains on the same route and provides no actionable way to upgrade from Free to Starter or
+Growth."* That was true, and it was one empty `.env` line that had quietly turned every plan button
+into prose: with Shopify-owned pricing the app must not create charges, so a plan button's only job is
+to open **Shopify's hosted plan page** — and the URL for that came from `SHOPIFY_APP_PLANS_URL`, which
+was unset. `renderPlan()` then fell back to a muted sentence ("Chosen on Shopify's plan page") on each
+card. A reviewer cannot click a sentence, so the app failed on a thing it was built to support.
+
+The page's address is documented and built from two handles:
+
+```
+https://admin.shopify.com/store/{store handle}/charges/{app handle}/pricing_plans
+```
+
+* `{store handle}` is the shop row's `handle`, taken from the domain during OAuth;
+* `{app handle}` is `SHOPIFY_APP_HANDLE`.
+
+so the app derives it per store (`BillingService::plansUrl($shop)`) instead of waiting for a
+hand-written URL. `SHOPIFY_APP_PLANS_URL` still wins when set, for an app Shopify gave another path to.
+
+| Piece | Where it lives | What it must be |
+|---|---|---|
+| `SHOPIFY_APP_HANDLE` | `.env` | Partner Dashboard → app → Settings → General → **App handle** (the same string as `handle` in `shopify.app.toml`). Empty ⇒ the Plan tab's buttons render disabled with a tooltip naming this variable and `/api/billing/subscribe` answers 422 with the same sentence — visible in the app, so nobody has to read a log to learn why a button is dead |
+| Plan selection page | Shopify, inside the admin | Lists every plan **including Free**, so upgrade, downgrade and cancel are one page. The merchant picks; Shopify creates the subscription, prorates and invoices |
+| Redirection URL | Partner Dashboard → App pricing → each plan | For an embedded app with an App Home, a relative path: **`/billing/callback`** (Shopify appends `plan_handle`). An absolute redirect URL also gets the shop domain appended |
+| `SHOPIFY_BILLING_TEST` | `.env` | Meaningful only in `api` mode (legacy test charges). With App Pricing, development stores owned by the same partner organisation select any plan at **$0** — nothing to enable, and no card is needed to rehearse the flow |
+
+What the return does, and why it does not trust the URL: `plan_handle` and `shop` arrive unsigned on a
+top-level navigation, so `BillingController::callback()` uses them as hints about where to look and
+decides from `currentAppInstallation.activeSubscriptions` on the store itself. Two details worth the
+code they cost, both read out of the platform notes rather than guessed:
+
+* **A relative redirect carries no store name.** Only absolute redirect URLs get the shop domain
+  appended, so a merchant returning to `/billing/callback` would have landed on "Unknown shop" after
+  doing everything right. `POST /api/billing/subscribe` therefore sets a 30-minute
+  `taskpe_billing_return` cookie scoped to `/billing/callback` (httpOnly, Secure, SameSite=Lax — Lax
+  still rides a top-level GET); the callback falls back to it and deletes it. If even that is missing,
+  the merchant gets a plain page telling them to reopen the app, never a 404 with a code in it.
+* **A plan that has not propagated is not a refusal.** `plan_handle` present with nothing active yet
+  resolves to `billing=pending`: "Shopify is applying the change…" and one re-read a few seconds later.
+  Before that, the race printed "Plan not approved" over an invoice the merchant had just signed.
+
+App Pricing does not fire a webhook for plan changes — the redirect parameters are the signal — but
+`app_subscriptions/update` still fires for Billing-API-created subscriptions, and both roads lead to
+`syncActiveSubscription()`. **Check again** on the Plan tab is the manual hatch, and a board load
+re-reads when the last sync is stale, so a change made while nobody had the app open lands without a
+support ticket.
+
+In `api` mode the same requirement has a mutation-level answer: `appSubscriptionCreate` now sends
+`replacementBehavior: APPLY_IMMEDIATELY`, so Starter → Growth *replaces* the subscription with Shopify
+prorating the difference, instead of stacking a second charge beside it; and the subscribe endpoint
+accepts `free` in Shopify-priced mode, because a downgrade has to be a button too.
+
+**Before replying in the feedback thread, run it on a development store**: Free → Starter (approve on
+Shopify's page) → confirm the Plan tab shows Starter with Shopify's amount and that WhatsApp unlocks →
+Starter → Growth → Growth → Free → then Shopify admin → Settings → Apps and sales channels → TaskPe →
+Billing, and screenshot the charge history: "charges successfully processed in the application charge
+history page" is the second half of what 1.2.3 checks. In the reply, name the click path — "Plan tab →
+Choose Starter → Shopify's plan page → approve" — rather than the commit, because the reviewer re-tests
+the flow.
+
 ## 18. Two 500s from that deploy: an undefined helper, and `throttle:` asking about a user
 
 Reported straight off the running app, inside the embedded page:

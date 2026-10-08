@@ -48,18 +48,51 @@ class BillingService
         return config('shopify.billing.mode', 'shopify') !== 'api';
     }
 
-    /** The one sentence both endpoints and both mutations use when Shopify owns the billing. */
+    /**
+     * The one sentence both endpoints and both mutations use when Shopify owns the billing.
+     *
+     * It names the button the merchant is looking at rather than a path through five menu
+     * entries, because 1.2.3 is judged on whether a plan change is possible from inside the
+     * app at all: "click the plan you want, Shopify's own page opens" has to be true.
+     */
     public static function managedMessage(): string
     {
-        return 'Plans, prices and billing for this app are managed by Shopify, so the app neither charges, cancels, nor quotes a price. '
-            .'Change the plan where the price lives: Shopify admin → Settings → Apps and sales channels → '
-            .config('app.name').' → plan / billing.';
+        return 'Plans, prices and billing for this app are managed by Shopify, so this app neither charges, cancels, nor quotes a price. '
+            .'Use the plan button on this page — it opens Shopify\'s own plan page, where you can move up, move down or cancel, '
+            .'and the change lands on your Shopify invoice.';
     }
 
-    /** Where the merchant goes to pick or cancel a plan in that mode. */
-    public static function plansUrl(): string
+    /**
+     * Shopify's hosted plan selection page for THIS store.
+     *
+     * `https://admin.shopify.com/store/{store}/charges/{app}/pricing_plans` — documented
+     * under Shopify App Pricing, and the page lists every plan including Free, so the same
+     * link answers "upgrade", "downgrade" and "cancel" without this app touching money.
+     *
+     * Empty string means we cannot build it (no SHOPIFY_APP_HANDLE yet), which callers must
+     * treat as "say where to go in words", never as "the button works".
+     */
+    public static function plansUrl(?Shop $shop = null): string
     {
-        return (string) config('shopify.billing.plans_url', '');
+        $configured = rtrim((string) config('shopify.billing.plans_url', ''), '/');
+
+        if ($configured !== '') {
+            return $configured;
+        }
+
+        $appHandle = strtolower(trim((string) config('shopify.billing.app_handle', '')));
+
+        if ($appHandle === '' || $shop === null || trim((string) $shop->handle) === '') {
+            return '';
+        }
+
+        return $shop->adminBaseUrl().'/charges/'.$appHandle.'/pricing_plans';
+    }
+
+    /** True when the app can send a merchant to Shopify's plan page for this store. */
+    public static function canPickPlans(?Shop $shop = null): bool
+    {
+        return static::plansUrl($shop) !== '';
     }
 
     public function isDevMode(): bool
@@ -121,11 +154,16 @@ class BillingService
         $returnUrl = rtrim((string) config('shopify.app_url'), '/').'/billing/callback?shop='
             .urlencode($this->shop->domain).'&plan='.urlencode($planKey);
 
+        // replacementBehavior is what makes an UPGRADE an upgrade: without it a merchant who
+        // already pays for a plan creates a second subscription next to the first (or is told to
+        // contact support, which is rejection 1.2.3). APPLY_IMMEDIATELY cancels the current
+        // subscription when this one is approved and Shopify prorates the difference itself.
         $mutation = <<<'GQL'
         mutation AppSubscriptionCreate($name: String!, $returnUrl: URL!, $trialDays: Int, $test: Boolean, $amount: Decimal!, $currency: CurrencyCode!) {
           appSubscriptionCreate(
             name: $name,
             returnUrl: $returnUrl,
+            replacementBehavior: APPLY_IMMEDIATELY,
             trialDays: $trialDays,
             test: $test,
             lineItems: [{

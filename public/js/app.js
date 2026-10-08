@@ -2856,6 +2856,12 @@
     return { amount: Number(prices[code] ?? 0), code };
   }
 
+  // When the picker link cannot be built, a dead button still has to say why, instead of
+  // looking like the app refuses to take money.
+  const BillingMissingHint = () => 'This app has not been given its Shopify app handle yet, so it '
+    + 'cannot open Shopify\u2019s plan page. Until then: Shopify admin \u2192 Settings \u2192 Apps and sales '
+    + 'channels \u2192 ' + ((state.board && state.board.shop.name) || 'this app') + ' \u2192 plan / billing.';
+
   // Never a figure the app made up. Where Shopify owns the pricing, the banner says what
   // the plan does and points at the tab that reads the real amount off the store's own
   // subscription — a hardcoded ₹499 in the sentence was the exact bug merchants reported.
@@ -2915,6 +2921,35 @@
       } finally { if (btnEl) btnEl.disabled = false; }
     }
 
+    /*
+     * One action for both billing modes: ask the server, then open whatever URL it hands back
+     * at top level. In `api` mode that is Shopify's confirmation page for the charge this app
+     * created; with Shopify-owned pricing it is Shopify's own plan page, which is where a
+     * merchant upgrades, downgrades or cancels without contacting anyone. Requirement 1.2.3 is
+     * decided by whether that page is reachable from here, so a plan card renders a button and
+     * never a sentence of instructions — the rejection this rewrite answers read "the app
+     * remains on the same route and provides no actionable way to upgrade".
+     *
+     * Going through the endpoint rather than opening the URL directly is also what tags the
+     * store for the return trip: Shopify redirects the merchant back without any session, and
+     * BillingController::callback() needs the marker to know whose plan to re-read.
+     *
+     * If the request fails but the board already carries the picker URL, use it anyway — a
+     * merchant should land on Shopify's page rather than read our error text.
+     */
+    async function choosePlan(key, btnEl) {
+      if (btnEl) btnEl.disabled = true;
+      try {
+        const r = await api('/billing/subscribe', { method: 'POST', body: { plan: key } });
+        const url = r && (r.redirect_url || r.confirmation_url);
+        if (!url) throw new Error((r && r.message) || 'Shopify returned no page to open.');
+        open(url, '_top');
+      } catch (err) {
+        if (plansUrl) { open(plansUrl, '_top'); return; }
+        toast(err.message, true);
+      } finally { if (btnEl) btnEl.disabled = false; }
+    }
+
     const billLine = bill.available === false
       ? h('p', { class: 'muted' }, 'Shopify could not be read just now. Whatever amount is on your Shopify invoice is the one that counts — this page does not set it.')
       : !bill.subscribed
@@ -2941,7 +2976,9 @@
           : 'The amounts below are set in this app and charged through Shopify Billing on your Shopify invoice.'),
         byShopify && plansUrl
           ? h('div', { class: 'row-flex mt' },
-              h('button', { class: 'btn primary sm', onclick: () => open(plansUrl, '_top') }, 'Open Shopify\u2019s plan page'))
+              h('button', { class: 'btn primary sm', onclick: ev => choosePlan(s.shop.plan || 'starter', ev.currentTarget) },
+                'Change plan at Shopify'),
+              h('a', { class: 'small', href: plansUrl, target: '_top', rel: 'noopener' }, 'or open it in a new tab'))
           : null,
         byShopify && !plansUrl
           ? h('p', { class: 'mt small' }, 'To change the plan: Shopify admin \u2192 Settings \u2192 Apps and sales channels \u2192 '
@@ -2956,34 +2993,40 @@
         const cta = (() => {
           if (s.shop.plan === key) {
             if (!paid) return null;
-            // Cancelling belongs to whoever charges the money.
-            return byShopify
-              ? h('span', { class: 'muted small' }, 'Change or cancel at Shopify \u2192 Settings \u2192 Apps and sales channels')
-              : h('button', {
-                class: 'btn danger',
-                onclick: async () => {
-                  if (!confirm('Cancel the paid plan and go back to Free?')) return;
-                  try { await api('/billing/cancel', { method: 'POST' }); await refreshBoard(); toast('Plan cancelled'); }
-                  catch (e) { toast(e.message, true); }
-                },
-              }, 'Cancel plan');
+
+            // Cancelling belongs to whoever charges the money, and with Shopify-owned pricing
+            // that is Shopify — so the button goes to the same page instead of vanishing.
+            if (byShopify) {
+              return plansUrl
+                ? h('button', { class: 'btn', onclick: ev => choosePlan(key, ev.currentTarget) }, 'Change or cancel plan')
+                : h('button', { class: 'btn', disabled: true, title: BillingMissingHint() }, 'Change or cancel plan');
+            }
+
+            return h('button', {
+              class: 'btn danger',
+              onclick: async () => {
+                if (!confirm('Cancel the paid plan and go back to Free?')) return;
+                try { await api('/billing/cancel', { method: 'POST' }); await refreshBoard(); toast('Plan cancelled'); }
+                catch (e) { toast(e.message, true); }
+              },
+            }, 'Cancel plan');
           }
-          if (!paid) return null;
-          if (byShopify) {
-            return plansUrl
-              ? h('button', { class: 'btn primary', onclick: () => open(plansUrl, '_top') }, 'Choose at Shopify')
-              : h('span', { class: 'muted small' }, 'Chosen on Shopify\u2019s plan page');
+
+          // Free is a plan too. A merchant on Starter has to be able to come back down without
+          // emailing anyone, which is the second half of what the requirement checks.
+          if (!paid) {
+            return (byShopify && plansUrl)
+              ? h('button', { class: 'btn', onclick: ev => choosePlan('free', ev.currentTarget) }, 'Switch to Free')
+              : null;
+          }
+
+          if (byShopify && !plansUrl) {
+            return h('button', { class: 'btn', disabled: true, title: BillingMissingHint() }, 'Choose ' + cfg.name);
           }
 
           return h('button', {
             class: 'btn primary',
-            onclick: async e => {
-              e.target.disabled = true;
-              try {
-                const r = await api('/billing/subscribe', { method: 'POST', body: { plan: key } });
-                open(r.confirmation_url, '_top');   // Shopify-hosted approve page
-              } catch (err) { toast(err.message, true); e.target.disabled = false; }
-            },
+            onclick: e => choosePlan(key, e.currentTarget),
           }, 'Choose ' + cfg.name);
         })();
 
@@ -3012,6 +3055,14 @@
 
   function handleBillingFlag(flag) {
     if (flag === 'active') { toast('Plan activated — WhatsApp features unlocked.'); void api('/billing/sync', { method: 'POST' }).then(refreshBoard).catch(() => {}); }
+    else if (flag === 'pending') {
+      // Shopify says a plan was picked, the store's own subscription list has not caught up.
+      // Two ways to read that: call it a refusal, or read it again in a moment. The second is
+      // the one that matches the invoice the merchant is looking at.
+      toast('Shopify is applying the change…');
+      setTimeout(() => { void api('/billing/sync', { method: 'POST' }).then(refreshBoard).then(render).catch(() => {}); }, 4000);
+    }
+    else if (flag === 'error') toast('Shopify could not be reached to confirm the plan — use Check again on the Plan tab.', true);
     else if (flag === 'declined') toast('Plan not approved — still on Free settings.', true);
     else if (flag === 'error') toast('Could not confirm the charge — use "Check again" on the Plan tab once the invoice page is closed.', true);
   }

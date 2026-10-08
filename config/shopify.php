@@ -167,7 +167,26 @@ return [
     */
     'billing' => [
         'mode'      => strtolower((string) env('SHOPIFY_BILLING_MODE', 'shopify')),
-        'plans_url' => rtrim((string) env('SHOPIFY_APP_PLANS_URL', ''), '/'),
+
+        /*
+        |--------------------------------------------------------------------------
+        | Where a merchant changes plan
+        |--------------------------------------------------------------------------
+        | Shopify App Pricing (the mode this app ships in) means Shopify owns the plans AND
+        | hosts the plan selection page. Requirement 1.2.3 is that a merchant can upgrade and
+        | downgrade without contacting support and without reinstalling — so the app has to
+        | actually send them to that page. Its documented pattern is:
+        |
+        |   https://admin.shopify.com/store/{store handle}/charges/{app handle}/pricing_plans
+        |
+        | The store handle is already on the shop row (taken from the domain at OAuth), so the
+        | only missing piece is OUR app handle: Partner Dashboard → App → Settings → General →
+        | App handle (the same string as `handle` in shopify.app.toml, and the last part of an
+        | app URL). Set SHOPIFY_APP_HANDLE and every Plan card gets a working button.
+        | SHOPIFY_APP_PLANS_URL overrides the whole URL when Shopify gives you a different one.
+        */
+        'app_handle' => strtolower(trim((string) env('SHOPIFY_APP_HANDLE', ''))),
+        'plans_url'  => rtrim((string) env('SHOPIFY_APP_PLANS_URL', ''), '/'),
     ],
 
     'default_plan' => 'free',
